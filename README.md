@@ -155,15 +155,33 @@ open_flower/
 
 ## 版本历史
 
-### v1.1.0 (当前版本)
-- 重构代码架构，采用模块化设计
-- 将代码按功能拆分为多个模块（models, workers, ui, utils, config）
-- 提高代码可维护性和可扩展性
-- 为未来功能扩展做好准备
+### v1.0.0 (当前版本)
+- 苗圃助手初始发布
+- 死花模式：自动释放buff并返回市场
+- 活花模式：自动释放buff
+- 可中断的停止机制
+- 设置持久化（INI文件）
+- 拟人化操作（随机延迟、左右走动、多次点击）
+- 位置检测和重试逻辑
 
-### v1.0.0
-- 实现基础技能自动释放功能
-- 支持多技能配置
-- 支持随机延迟
-- 图形化UI界面
+## 打包成 EXE
 
+### 安装 PyInstaller
+```bash
+pip install pyinstaller
+```
+
+### 打包命令
+```bash
+pyinstaller build.spec
+```
+
+或使用一行命令：
+```bash
+pyinstaller --onefile --noconsole --name "苗圃助手" --add-data "templates;templates" --add-data "settings.ini;." main.py
+```
+
+### 输出位置
+打包完成后，EXE 文件位于 `dist/苗圃助手.exe`
+
+> **注意**: 目标机器可能需要安装 Visual C++ Redistributable 才能运行

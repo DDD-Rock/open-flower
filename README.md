@@ -176,12 +176,33 @@ pip install pyinstaller
 pyinstaller build.spec
 ```
 
-或使用一行命令：
-```bash
-pyinstaller --onefile --noconsole --name "苗圃助手" --add-data "templates;templates" --add-data "settings.ini;." main.py
+### 输出位置
+打包完成后，程序文件夹位于 `dist/苗圃助手/`，运行 `苗圃助手.exe` 即可
+
+### 解决 Visual C++ 运行库依赖
+
+如果目标机器没有安装 Visual C++ Redistributable，有两种解决方案：
+
+**方案1：让用户安装运行库（推荐）**
+- 下载 [VC++ Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe) 并安装
+
+**方案2：将 DLL 打包进 EXE**
+
+找到以下 DLL 文件（通常在 `C:\Windows\System32` 或 Python 目录中）：
+- `msvcp140.dll`
+- `vcruntime140.dll`
+- `vcruntime140_1.dll`
+
+修改 `build.spec` 的 `binaries` 部分：
+```python
+binaries=[
+    ('C:/Windows/System32/msvcp140.dll', '.'),
+    ('C:/Windows/System32/vcruntime140.dll', '.'),
+    ('C:/Windows/System32/vcruntime140_1.dll', '.'),
+],
 ```
 
-### 输出位置
-打包完成后，EXE 文件位于 `dist/苗圃助手.exe`
-
-> **注意**: 目标机器可能需要安装 Visual C++ Redistributable 才能运行
+然后重新打包：
+```bash
+pyinstaller build.spec
+```

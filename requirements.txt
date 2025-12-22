@@ -1,23 +1,21 @@
 # UI界面库
-PyQt6==6.9.1
+PyQt6>=6.9.0
 
 # 按键模拟库
-keyboard==0.13.5
+keyboard>=0.13.5
+pynput>=1.8.0
 
 # Windows API库（用于窗口识别）
 pywin32>=306
 
-# 未来拓展所需的包（已导入，暂未使用）
-opencv-contrib-python==4.9.0.80
-numpy==1.26.4
-mss==9.0.1
-pyautogui==0.9.54
-pillow==10.3.0
-pynput==1.8.1
-ultralytics>=8.0.0
-psutil==7.1.1
-screeninfo==0.8.1
+# 图像处理
+opencv-contrib-python>=4.9.0
+numpy>=1.26.0
+mss>=9.0.0
+pillow>=10.0.0
 
-# 打包工具（可选）
-pyinstaller==6.6.0
+# 屏幕工具
+pyautogui>=0.9.50
 
+# 打包工具（可选，开发时用）
+# pyinstaller>=6.6.0

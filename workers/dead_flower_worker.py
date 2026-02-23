@@ -114,7 +114,7 @@ class DeadFlowerWorker(QThread):
             self.log_update.emit(f"市场Logo检测异常: {e}")
             return False
 
-    def _is_in_market(self) -> bool:
+    def _is_in_market(self, log_result: bool = True) -> bool:
         """
         判断是否在市场中
         规则：小地图有市场Logo + 能看到自由市场按钮
@@ -122,7 +122,8 @@ class DeadFlowerWorker(QThread):
         has_logo = self._is_market_logo_visible()
         has_btn = self._is_market_btn_visible()
         is_in = has_logo and has_btn
-        self.log_update.emit(f"市场检测: Logo={has_logo}, 按钮={has_btn}, 在市场={is_in}")
+        if log_result:
+            self.log_update.emit(f"市场检测: Logo={has_logo}, 按钮={has_btn}, 在市场={is_in}")
         return is_in
 
     def _is_market_btn_visible(self) -> bool:
@@ -134,7 +135,7 @@ class DeadFlowerWorker(QThread):
             self.log_update.emit(f"检测异常: {e}")
             return False
     
-    def _is_in_monster_map(self) -> bool:
+    def _is_in_monster_map(self, log_result: bool = True) -> bool:
         """
         判断是否在怪物地图
         规则：没有市场Logo + 能看到自由市场按钮
@@ -142,7 +143,8 @@ class DeadFlowerWorker(QThread):
         has_logo = self._is_market_logo_visible()
         has_btn = self._is_market_btn_visible()
         is_monster = (not has_logo) and has_btn
-        self.log_update.emit(f"怪物地图检测: Logo={has_logo}, 按钮={has_btn}, 怪物地图={is_monster}")
+        if log_result:
+            self.log_update.emit(f"怪物地图检测: Logo={has_logo}, 按钮={has_btn}, 怪物地图={is_monster}")
         return is_monster
 
     def _get_window_size(self) -> Optional[tuple]:
@@ -650,7 +652,7 @@ class DeadFlowerWorker(QThread):
                     # 没有buff需要释放，更新显示并等待
                     wait_time = self._get_time_until_next_cast()
                     
-                    if wait_time > 5 and self._is_in_market() and self.sit_chair_enabled and not self.is_sitting:
+                    if wait_time > 5 and self._is_in_market(log_result=False) and self.sit_chair_enabled and not self.is_sitting:
                         # 只有真的在市场且时间够长且没坐下时才坐下
                         self._sit_chair()
                     

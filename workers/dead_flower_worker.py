@@ -18,6 +18,10 @@ from detection.minimap_monitor import MinimapMonitor
 from detection.market_button import MarketButtonDetector
 from automation.human_input import HumanInput
 from models.buff_config import BuffConfig
+from workers.skill_worker import (
+    PRE_SKILL_MOVE_RIGHT_MIN_MS, PRE_SKILL_MOVE_RIGHT_MAX_MS,
+    POST_SKILL_MOVE_LEFT_MIN_MS, POST_SKILL_MOVE_LEFT_MAX_MS
+)
 
 
 class DeadFlowerWorker(QThread):
@@ -39,14 +43,20 @@ class DeadFlowerWorker(QThread):
         # Buff倒计时跟踪 {key: 下次释放时间戳}
         self.buff_next_cast: Dict[str, float] = {}
         
+        # 窗口大小与位置缓存
+        self._cached_window_size: Optional[tuple] = None           # (width, height)
+        self._cached_market_btn_pos: Optional[tuple] = None        # 屏幕绝对坐标
+        self._cached_market_btn_game_pos: Optional[tuple] = None   # 游戏窗口内坐标
+        self._cached_portal_pos: Optional[tuple] = None            # 小地图内坐标
+        
         # 导航参数
         self.TOLERANCE = 3
         self.DETECT_INTERVAL = (50, 100)
         
         # 时间参数
         self.BATCH_CAST_WINDOW = 10.0  # 10秒内的buff一起放
-        self.BLACK_SCREEN_WAIT = 1.0   # 传送黑屏等待时间
-        self.SCENE_CHECK_INTERVAL = 2.0  # 场景检测间隔
+        self.BLACK_SCREEN_WAIT = 2.5   # 传送黑屏等待时间
+        self.SCENE_CHECK_INTERVAL = 5.0  # 场景检测间隔
 
     def _bring_window_to_front(self) -> bool:
         """将游戏窗口设置为前台"""
@@ -103,10 +113,10 @@ class DeadFlowerWorker(QThread):
         return is_in
 
     def _is_market_btn_visible(self) -> bool:
-        """判断自由市场按钮是否可见（使用模板匹配）"""
+        """判断自由市场按钮是否可见（使用缓存或模板匹配）"""
         try:
-            result = self.market_detector.find_market_button_in_game()
-            return result is not None
+            pos = self._get_market_button_in_game_pos()
+            return pos is not None
         except Exception as e:
             self.log_update.emit(f"检测异常: {e}")
             return False
@@ -121,6 +131,106 @@ class DeadFlowerWorker(QThread):
         is_monster = (not has_logo) and has_btn
         self.log_update.emit(f"怪物地图检测: Logo={has_logo}, 按钮={has_btn}, 怪物地图={is_monster}")
         return is_monster
+
+    def _get_window_size(self) -> Optional[tuple]:
+        """获取当前游戏窗口客户区大小"""
+        try:
+            rect = win32gui.GetClientRect(self.hwnd)
+            return (rect[2], rect[3])  # (width, height)
+        except Exception as e:
+            self.log_update.emit(f"获取窗口大小失败: {e}")
+            return None
+
+    def _check_window_size_changed(self) -> bool:
+        """
+        检查窗口大小是否改变，如果改变则清空所有缓存坐标
+        
+        Returns:
+            True 表示窗口大小已改变且缓存已清空
+        """
+        current_size = self._get_window_size()
+        if current_size is None:
+            return False
+        
+        if self._cached_window_size and current_size != self._cached_window_size:
+            self.log_update.emit(
+                f"窗口大小已改变: {self._cached_window_size} -> {current_size}，重新检测位置..."
+            )
+            self._cached_window_size = current_size
+            self._cached_market_btn_pos = None
+            self._cached_market_btn_game_pos = None
+            self._cached_portal_pos = None
+            return True
+        
+        return False
+
+    def _get_market_button_pos(self) -> Optional[tuple]:
+        """
+        获取自由市场按钮的屏幕绝对坐标（带缓存）
+        
+        首次调用或窗口大小改变后执行检测，后续直接返回缓存值
+        """
+        self._check_window_size_changed()
+        
+        if self._cached_market_btn_pos:
+            self.log_update.emit(f"使用缓存的市场按钮位置: {self._cached_market_btn_pos}")
+            return self._cached_market_btn_pos
+        
+        try:
+            self.log_update.emit("首次检测自由市场按钮位置...")
+            pos = self.market_detector.find_market_button()
+            if pos:
+                self._cached_market_btn_pos = pos
+                self.log_update.emit(f"已缓存市场按钮位置: {pos}")
+            return pos
+        except Exception as e:
+            self.log_update.emit(f"检测市场按钮异常: {e}")
+            return None
+
+    def _get_market_button_in_game_pos(self) -> Optional[tuple]:
+        """
+        获取自由市场按钮在游戏窗口内的坐标（带缓存）
+        
+        用于状态判断（按钮是否可见）
+        """
+        self._check_window_size_changed()
+        
+        if self._cached_market_btn_game_pos:
+            return self._cached_market_btn_game_pos
+        
+        try:
+            pos = self.market_detector.find_market_button_in_game()
+            if pos:
+                self._cached_market_btn_game_pos = pos
+                self.log_update.emit(f"已缓存市场按钮游戏窗口坐标: {pos}")
+            return pos
+        except Exception as e:
+            self.log_update.emit(f"检测市场按钮异常: {e}")
+            return None
+
+    def _get_portal_pos(self) -> Optional[tuple]:
+        """
+        获取传送门在小地图中的坐标（带缓存）
+        
+        首次使用时检测并缓存，后续直接返回
+        窗口大小改变时缓存会被清空
+        """
+        self._check_window_size_changed()
+        
+        if self._cached_portal_pos:
+            self.log_update.emit(f"使用缓存的传送门位置: {self._cached_portal_pos}")
+            return self._cached_portal_pos
+        
+        try:
+            self.log_update.emit("首次检测传送门位置...")
+            pos = self.monitor.find_blue_portal(find_leftmost=True)
+            if pos:
+                self._cached_portal_pos = pos
+                self.log_update.emit(f"已缓存传送门位置: {pos}")
+            return pos
+        except Exception as e:
+            self.log_update.emit(f"检测传送门异常: {e}")
+            return None
 
     def _get_buffs_to_cast(self, include_upcoming: bool = True) -> List[BuffConfig]:
         """
@@ -173,55 +283,48 @@ class DeadFlowerWorker(QThread):
             if i < len(to_cast) - 1:
                 self._random_sleep(1.0, 2.0)
     
-    def _do_humanized_walk(self):
-        """
-        拟人化左右走动 - 传送到怪物地图后执行
-        先向右走几步，再向左走几步，模拟真人操作
-        """
+    def _move_right_before_skill(self):
+        """释放技能前向右移动一段距离（拟人化微调）"""
         if not self.is_running:
             return
         
-        self.log_update.emit("拟人化走动中...")
+        # 拟人化短按 (100-300ms)
+        move_duration = random.uniform(0.1, 0.3)
+        self.log_update.emit(f"向右微调 {int(move_duration * 1000)}ms...")
         
-        # 随机向右走 (150-400ms)
-        right_duration = random.uniform(0.15, 0.40)
         self.human.move_right()
-        self._interruptible_sleep(right_duration)
+        self._interruptible_sleep(move_duration)
         self.human.stop_move()
+    
+    def _move_left_wiggle(self):
+        """释放技能前向左移动一小段距离（拟人化晃动）"""
+        if not self.is_running:
+            return
         
-        # 随机间隔 (100-300ms)
-        self._random_sleep(0.1, 0.3)
+        # 拟人化短按 (100-300ms)
+        move_duration = random.uniform(0.1, 0.3)
+        self.log_update.emit(f"向左微调 {int(move_duration * 1000)}ms...")
         
-        # 随机向左走 (150-400ms)
-        left_duration = random.uniform(0.15, 0.40)
         self.human.move_left()
-        self._interruptible_sleep(left_duration)
+        self._interruptible_sleep(move_duration)
         self.human.stop_move()
-        
-        # 随机间隔后再放技能 (200-500ms)
-        self._random_sleep(0.2, 0.5)
 
     def _return_to_market(self) -> bool:
         """
-        回到市场（使用模板匹配查找并点击"自由市场"按钮）
+        回到市场（使用缓存或模板匹配查找并点击"自由市场"按钮）
         
         Returns:
             是否成功回到市场
         """
         self.log_update.emit("正在回到市场...")
         
-        # 1. 使用模板匹配找到自由市场按钮
-        try:
-            self.log_update.emit("正在查找自由市场按钮...")
-            btn_pos = self.market_detector.find_market_button()  # 返回屏幕绝对坐标
-            if not btn_pos:
-                self.log_update.emit("❌ 未找到自由市场按钮")
-                return False
-        except Exception as e:
-            self.log_update.emit(f"❌ 查找异常: {e}")
+        # 1. 获取自由市场按钮位置（带缓存）
+        btn_pos = self._get_market_button_pos()
+        if not btn_pos:
+            self.log_update.emit("❌ 未找到自由市场按钮")
             return False
         
-        self.log_update.emit(f"找到按钮位置: {btn_pos}")
+        self.log_update.emit(f"按钮位置: {btn_pos}")
         
         # 2. 拟人化多次点击按钮（2-3次短按，防止一次没按好）
         click_count = random.randint(2, 3)
@@ -239,7 +342,7 @@ class DeadFlowerWorker(QThread):
         self.log_update.emit("等待传送...")
         self._interruptible_sleep(self.BLACK_SCREEN_WAIT)
         
-        # 3. 循环检测：市场Logo + 按钮可见 = 回到市场
+        # 4. 循环检测：市场Logo + 按钮可见 = 回到市场
         max_wait = 15  # 最多等待15秒
         start_time = time.time()
         
@@ -262,8 +365,8 @@ class DeadFlowerWorker(QThread):
         """
         self.log_update.emit("正在离开市场...")
         
-        # 1. 检测传送门位置
-        portal_pos = self.monitor.find_blue_portal(find_leftmost=True)
+        # 1. 获取传送门位置（带缓存，首次使用时检测）
+        portal_pos = self._get_portal_pos()
         if not portal_pos:
             self.log_update.emit("❌ 未找到传送门")
             return False
@@ -356,6 +459,10 @@ class DeadFlowerWorker(QThread):
             
             self.monitor.set_window_handle(self.hwnd)
             
+            # 记录初始窗口大小
+            self._cached_window_size = self._get_window_size()
+            self.log_update.emit(f"记录窗口大小: {self._cached_window_size}")
+            
             # 初始化小地图检测
             success, _, _ = self.monitor.debug_save_minimap()
             if not success:
@@ -390,6 +497,7 @@ class DeadFlowerWorker(QThread):
                         # 已经在怪物地图，直接释放技能
                         self.log_update.emit("已在怪物地图，直接释放技能...")
                         self._cast_all_ready_buffs()
+                        self._update_countdown_display()  # 释放后立即刷新倒计时
                     elif in_market:
                         # 在市场，需要先出去
                         if not self._leave_market():
@@ -397,11 +505,24 @@ class DeadFlowerWorker(QThread):
                             self._interruptible_sleep(5)
                             continue
                         
-                        # 拟人化：到达怪物地图后先左右走动一下
-                        self._do_humanized_walk()
+                        # 1. 释放技能前：先向右微调
+                        self._move_right_before_skill()
                         
-                        # 释放所有需要的技能
+                        # 停止移动并拟人化等待
+                        self.human.stop_move()
+                        self._random_sleep(0.3, 0.8)
+                        
+                        # 2. 向左微调
+                        self._move_left_wiggle()
+                        
+                        self.human.stop_move()
+                        self._random_sleep(0.3, 0.8)
+                        
+                        # 3. 释放所有需要的技能
                         self._cast_all_ready_buffs()
+                        self._update_countdown_display()  # 释放后立即刷新倒计时
+                        
+                        # 4. 释放完毕后直接准备回市场 (不需要再移动)
                     else:
                         # 未知状态（可能在加载中）
                         self.log_update.emit("位置状态未知，等待...")

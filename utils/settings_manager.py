@@ -18,29 +18,35 @@ class SettingsManager:
     
     def save_settings(self, 
                       buffs: list,
-                      mode: str = "live",
+                      return_to_market: bool = False,
+                      manual_countdown: bool = False,
                       attack_key: str = "Ctrl",
                       random_behavior_enabled: bool = True,
-                      random_behavior_value: int = 20):
+                      random_behavior_value: int = 20,
+                      movement_mode: str = "none"):
         """
         保存设置到 INI 文件
         
         Args:
             buffs: BuffConfig 列表，包含 enabled, key, duration 属性
-            mode: 运行模式 "live" 或 "dead"
+            return_to_market: 是否释放后回到市场
+            manual_countdown: 是否需要手动打怪倒计时
             attack_key: 攻击键
             random_behavior_enabled: 是否启用随机提前释放
             random_behavior_value: 随机提前释放秒数
+            movement_mode: 移动模式 - "none"(原地不动), "right"(向右走开buff), "left"(向左走开buff)
         """
         # 清空旧配置
         self.config.clear()
         
         # 保存通用设置
         self.config["General"] = {
-            "mode": mode,
+            "return_to_market": str(return_to_market),
+            "manual_countdown": str(manual_countdown),
             "attack_key": attack_key,
             "random_behavior_enabled": str(random_behavior_enabled),
-            "random_behavior_value": str(random_behavior_value)
+            "random_behavior_value": str(random_behavior_value),
+            "movement_mode": movement_mode
         }
         
         # 保存每个 buff 配置
@@ -77,10 +83,12 @@ class SettingsManager:
             self.config.read(self.config_path, encoding='utf-8')
             
             settings = {
-                "mode": self.config.get("General", "mode", fallback="live"),
+                "return_to_market": self.config.getboolean("General", "return_to_market", fallback=False),
+                "manual_countdown": self.config.getboolean("General", "manual_countdown", fallback=False),
                 "attack_key": self.config.get("General", "attack_key", fallback="Ctrl"),
                 "random_behavior_enabled": self.config.getboolean("General", "random_behavior_enabled", fallback=True),
                 "random_behavior_value": self.config.getint("General", "random_behavior_value", fallback=20),
+                "movement_mode": self.config.get("General", "movement_mode", fallback="none"),
                 "buffs": []
             }
             

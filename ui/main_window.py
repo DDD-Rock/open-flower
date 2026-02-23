@@ -44,7 +44,9 @@ class MainWindow(QMainWindow):
         self.window_selector = None
         self.game_window_hwnd = None  # 游戏窗口句柄
         self.is_window_identified = False  # 是否已识别窗口
-        self.current_mode = "live"  # 当前模式: "live" 或 "dead"
+        self.return_to_market = False  # 是否释放后回到市场
+        self.manual_countdown = False  # 是否需要手动打怪倒计时
+        self.movement_mode = "none"  # 移动模式: "none"(原地不动), "right"(向右走开buff), "left"(向左走开buff)
         
         # 初始化窗口选择器
         if WINDOW_SELECTOR_AVAILABLE:
@@ -66,13 +68,16 @@ class MainWindow(QMainWindow):
         # 程序启动后自动查找一次窗口
         self.auto_identify_on_startup()
         
-        # 初始化倒计时定时器
+        # 初始化倒计时定时器（根据 manual_countdown 设置决定是否启动）
         self.countdown_timer = QTimer()
         self.countdown_timer.timeout.connect(self.update_countdown_display)
-        self.countdown_timer.start(1000)  # 每秒更新
+        # 默认不启动，等待 load_default_config 后根据设置启动
         
-        # 初始化键盘监听
+        # 初始化键盘监听（根据 manual_countdown 设置决定是否启动）
         self.setup_keyboard_listener()
+        
+        # 根据默认设置初始化UI可见性
+        self._update_manual_countdown_ui()
     
     def load_default_config(self):
         """加载配置（优先加载保存的设置，否则使用默认值）"""
@@ -96,12 +101,11 @@ class MainWindow(QMainWindow):
     
     def _apply_saved_settings(self, settings: dict):
         """应用保存的设置"""
-        # 加载模式
-        self.current_mode = settings.get("mode", "live")
-        if self.current_mode == "dead":
-            self.dead_mode_radio.setChecked(True)
-        else:
-            self.live_mode_radio.setChecked(True)
+        # 加载模式设置
+        self.return_to_market = settings.get("return_to_market", False)
+        self.manual_countdown = settings.get("manual_countdown", False)
+        self.return_to_market_checkbox.setChecked(self.return_to_market)
+        self.manual_countdown_checkbox.setChecked(self.manual_countdown)
         
         # 加载攻击键
         self.selected_attack_key = settings.get("attack_key", "Ctrl")
@@ -112,6 +116,10 @@ class MainWindow(QMainWindow):
         self.game_config.random_behavior_value = settings.get("random_behavior_value", 20)
         self.random_behavior_checkbox.setChecked(self.game_config.random_behavior_enabled)
         self.random_behavior_input.setText(str(self.game_config.random_behavior_value))
+        
+        # 加载移动模式设置
+        self.movement_mode = settings.get("movement_mode", "none")
+        self._set_movement_mode_radio(self.movement_mode)
         
         # 加载 buff 配置
         buff_configs = settings.get("buffs", [])
@@ -161,10 +169,12 @@ class MainWindow(QMainWindow):
         
         self.settings_manager.save_settings(
             buffs=self.buffs,
-            mode=self.current_mode,
+            return_to_market=self.return_to_market,
+            manual_countdown=self.manual_countdown,
             attack_key=self.selected_attack_key,
             random_behavior_enabled=self.random_behavior_checkbox.isChecked(),
-            random_behavior_value=random_value
+            random_behavior_value=random_value,
+            movement_mode=self.movement_mode
         )
         self.logger.log("设置已保存")
         self.update_log_display()
@@ -235,7 +245,7 @@ class MainWindow(QMainWindow):
     
     def create_settings_section(self, parent_layout):
         """创建设置区域"""
-        # 模式选择区域
+        # 运行模式选项区域
         mode_layout = QHBoxLayout()
         mode_layout.setContentsMargins(5, 0, 5, 5)
         
@@ -243,25 +253,55 @@ class MainWindow(QMainWindow):
         mode_label.setStyleSheet("font-weight: bold;")
         mode_layout.addWidget(mode_label)
         
-        self.mode_group = QButtonGroup(self)
+        # 是否释放后回到市场
+        self.return_to_market_checkbox = QCheckBox("释放后回到市场")
+        self.return_to_market_checkbox.setChecked(False)
+        self.return_to_market_checkbox.setToolTip("勾选后，释放技能后自动返回市场等待下次CD")
+        self.return_to_market_checkbox.toggled.connect(self.on_return_to_market_changed)
+        mode_layout.addWidget(self.return_to_market_checkbox)
         
-        self.live_mode_radio = QRadioButton("活花")
-        self.live_mode_radio.setChecked(True)
-        self.live_mode_radio.setToolTip("原地挂机放技能，需要监听攻击键")
-        self.mode_group.addButton(self.live_mode_radio)
-        mode_layout.addWidget(self.live_mode_radio)
-        
-        self.dead_mode_radio = QRadioButton("死花")
-        self.dead_mode_radio.setToolTip("在市场等待，CD到了出去放技能再回来")
-        self.mode_group.addButton(self.dead_mode_radio)
-        mode_layout.addWidget(self.dead_mode_radio)
+        # 是否需要手动打怪倒计时
+        self.manual_countdown_checkbox = QCheckBox("需要手动打怪倒计时")
+        self.manual_countdown_checkbox.setChecked(False)
+        self.manual_countdown_checkbox.setToolTip("勾选后，监听攻击键并显示5分钟手动打怪倒计时")
+        self.manual_countdown_checkbox.toggled.connect(self.on_manual_countdown_changed)
+        mode_layout.addWidget(self.manual_countdown_checkbox)
         
         mode_layout.addStretch()
         parent_layout.addLayout(mode_layout)
         
-        # 模式切换事件
-        self.live_mode_radio.toggled.connect(self.on_mode_changed)
-        self.dead_mode_radio.toggled.connect(self.on_mode_changed)
+        # 移动模式选项区域（单选按钮组）
+        movement_layout = QHBoxLayout()
+        movement_layout.setContentsMargins(5, 0, 5, 5)
+        
+        movement_label = QLabel("移动模式:")
+        movement_label.setStyleSheet("font-weight: bold;")
+        movement_layout.addWidget(movement_label)
+        
+        # 创建单选按钮组
+        self.movement_mode_group = QButtonGroup(self)
+        
+        self.movement_none_radio = QRadioButton("原地不动")
+        self.movement_none_radio.setToolTip("释放技能时不移动")
+        self.movement_none_radio.setChecked(True)  # 默认选中
+        self.movement_mode_group.addButton(self.movement_none_radio, 0)
+        movement_layout.addWidget(self.movement_none_radio)
+        
+        self.movement_right_radio = QRadioButton("向右走开buff(回左)")
+        self.movement_right_radio.setToolTip("向右移动后释放技能，然后向左回到边缘")
+        self.movement_mode_group.addButton(self.movement_right_radio, 1)
+        movement_layout.addWidget(self.movement_right_radio)
+        
+        self.movement_left_radio = QRadioButton("向左走开buff(回右)")
+        self.movement_left_radio.setToolTip("向左移动后释放技能，然后向右回到边缘")
+        self.movement_mode_group.addButton(self.movement_left_radio, 2)
+        movement_layout.addWidget(self.movement_left_radio)
+        
+        # 连接信号
+        self.movement_mode_group.buttonClicked.connect(self.on_movement_mode_changed)
+        
+        movement_layout.addStretch()
+        parent_layout.addLayout(movement_layout)
         
         # Buff配置区域
         buff_group = QGroupBox("Buff/Skill配置")
@@ -599,22 +639,69 @@ class MainWindow(QMainWindow):
         except ValueError:
             pass
     
-    def on_mode_changed(self, checked: bool):
-        """模式切换处理"""
-        if not checked:  # 只响应选中事件
+    def on_return_to_market_changed(self, checked: bool):
+        """释放后回到市场选项切换"""
+        self.return_to_market = checked
+        status = "开启" if checked else "关闭"
+        self.logger.log(f"释放后回到市场: {status}")
+        self.update_log_display()
+        
+        # 当勾选释放后回到市场时，禁用移动模式选项（强制使用特定逻辑）
+        self._set_movement_mode_enabled(not checked)
+    
+    def on_manual_countdown_changed(self, checked: bool):
+        """手动打怪倒计时选项切换"""
+        self.manual_countdown = checked
+        self._update_manual_countdown_ui()
+        
+        status = "开启" if checked else "关闭"
+        self.logger.log(f"手动打怪倒计时: {status}")
+        self.update_log_display()
+    
+    def on_movement_mode_changed(self, button):
+        """移动模式选项切换"""
+        if button == self.movement_none_radio:
+            self.movement_mode = "none"
+            mode_text = "原地不动"
+        elif button == self.movement_right_radio:
+            self.movement_mode = "right"
+            mode_text = "向右走开buff(回左)"
+        elif button == self.movement_left_radio:
+            self.movement_mode = "left"
+            mode_text = "向左走开buff(回右)"
+        else:
             return
         
-        is_live_mode = self.live_mode_radio.isChecked()
-        self.current_mode = "live" if is_live_mode else "dead"
-        
-        # 活花模式：显示攻击键和倒计时
-        # 死花模式：隐藏攻击键和倒计时
-        self.attack_key_widget.setVisible(is_live_mode)
-        self.countdown_label.setVisible(is_live_mode)
-        
-        mode_name = "活花" if is_live_mode else "死花"
-        self.logger.log(f"切换到{mode_name}模式")
+        self.logger.log(f"移动模式: {mode_text}")
         self.update_log_display()
+    
+    def _set_movement_mode_radio(self, mode: str):
+        """根据模式设置单选按钮状态"""
+        if mode == "none":
+            self.movement_none_radio.setChecked(True)
+        elif mode == "right":
+            self.movement_right_radio.setChecked(True)
+        elif mode == "left":
+            self.movement_left_radio.setChecked(True)
+        else:
+            self.movement_none_radio.setChecked(True)
+    
+    def _update_manual_countdown_ui(self):
+        """更新手动打怪倒计时相关UI和功能"""
+        enabled = self.manual_countdown
+        
+        # 显示/隐藏攻击键设置和倒计时显示
+        self.attack_key_widget.setVisible(enabled)
+        self.countdown_label.setVisible(enabled)
+        
+        # 启动/停止倒计时定时器
+        if enabled:
+            if not self.countdown_timer.isActive():
+                self.countdown_timer.start(1000)
+        else:
+            self.countdown_timer.stop()
+            # 重置倒计时状态
+            self.last_detect_key_time = None
     
     def auto_identify_on_startup(self):
         """程序启动时自动识别窗口"""
@@ -792,10 +879,10 @@ class MainWindow(QMainWindow):
         if self.worker:
             self.worker.stop()
         
-        # 根据模式启动不同的worker
-        if self.current_mode == "dead":
-            # 死花模式
-            self.logger.log("启动死花模式...")
+        # 根据是否需要回到市场启动不同的worker
+        if self.return_to_market:
+            # 需要回到市场模式（原死花模式逻辑）
+            self.logger.log("启动回市场模式...")
             self.update_log_display()
             
             self.worker = DeadFlowerWorker(self.game_window_hwnd, self.buffs)
@@ -805,7 +892,7 @@ class MainWindow(QMainWindow):
             self.worker.countdown_update.connect(self.on_countdown_update)
             
             self.worker.start()
-            self.logger.log("死花模式已启动")
+            self.logger.log("回市场模式已启动")
         else:
             # 活花模式（原有逻辑）
             # 将buff转换为技能配置
@@ -838,8 +925,8 @@ class MainWindow(QMainWindow):
             # 获取攻击键配置
             attack_key = self.selected_attack_key.lower()
             
-            # 创建新的worker
-            self.worker = SkillWorker(skills, self.window_selector, self.game_window_hwnd, attack_key)
+            # 创建新的worker，传入移动模式
+            self.worker = SkillWorker(skills, self.window_selector, self.game_window_hwnd, attack_key, self.movement_mode)
             self.worker.status_update.connect(self.on_status_update)
             self.worker.skill_pressed.connect(self.on_skill_pressed)
             self.worker.error_occurred.connect(self.on_error)
@@ -850,7 +937,7 @@ class MainWindow(QMainWindow):
             
             # 启动worker
             self.worker.start()
-            self.logger.log("活花模式已启动")
+            self.logger.log("原地挂机模式已启动")
         
         self.update_log_display()
         
@@ -860,8 +947,9 @@ class MainWindow(QMainWindow):
         
         # 禁用buff设置区域和模式切换
         self._set_buff_settings_enabled(False)
-        self.live_mode_radio.setEnabled(False)
-        self.dead_mode_radio.setEnabled(False)
+        self.return_to_market_checkbox.setEnabled(False)
+        self.manual_countdown_checkbox.setEnabled(False)
+        self._set_movement_mode_enabled(False)
         
         # 显示buff倒计时区域
         self._show_buff_countdown(True)
@@ -929,8 +1017,9 @@ class MainWindow(QMainWindow):
         
         # 启用buff设置区域和模式切换
         self._set_buff_settings_enabled(True)
-        self.live_mode_radio.setEnabled(True)
-        self.dead_mode_radio.setEnabled(True)
+        self.return_to_market_checkbox.setEnabled(True)
+        self.manual_countdown_checkbox.setEnabled(True)
+        self._set_movement_mode_enabled(True)
         
         # 隐藏buff倒计时区域
         self._show_buff_countdown(False)
@@ -989,6 +1078,12 @@ class MainWindow(QMainWindow):
         self.random_behavior_checkbox.setEnabled(enabled)
         self.random_behavior_input.setEnabled(enabled)
         self.attack_key_btn.setEnabled(enabled)
+    
+    def _set_movement_mode_enabled(self, enabled: bool):
+        """设置移动模式单选按钮的启用/禁用状态"""
+        self.movement_none_radio.setEnabled(enabled)
+        self.movement_right_radio.setEnabled(enabled)
+        self.movement_left_radio.setEnabled(enabled)
     
     def on_select_attack_key(self):
         """弹出虚拟键盘选择攻击键"""

@@ -455,6 +455,7 @@ class DeadFlowerWorker(QThread):
         # 2. 导航到传送门
         retry_count = 0
         max_retries = 100
+        has_jumped = False  # 整个出市场流程中，防卡跳跃只执行一次
         
         while self.is_running and retry_count < max_retries:
             player_pos = self.monitor.find_player_position()
@@ -462,7 +463,9 @@ class DeadFlowerWorker(QThread):
             if not player_pos:
                 self.log_update.emit("未找到玩家位置(可能被遮盖)，向右移动寻找...")
                 if self.human.current_direction != 'right':
-                    self._jump_before_move()
+                    if not has_jumped:
+                        self._jump_before_move()
+                        has_jumped = True
                 self.human.move_right()
                 self._random_sleep(0.2, 0.4)
                 retry_count += 1
@@ -480,11 +483,15 @@ class DeadFlowerWorker(QThread):
             
             if dx > self.TOLERANCE:
                 if self.human.current_direction != 'right':
-                    self._jump_before_move()
+                    if not has_jumped:
+                        self._jump_before_move()
+                        has_jumped = True
                 self.human.move_right()
             elif dx < -self.TOLERANCE:
                 if self.human.current_direction != 'left':
-                    self._jump_before_move()
+                    if not has_jumped:
+                        self._jump_before_move()
+                        has_jumped = True
                 self.human.move_left()
             
             self._random_sleep(*[x/1000 for x in self.DETECT_INTERVAL])

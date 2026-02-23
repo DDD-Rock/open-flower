@@ -111,6 +111,11 @@ class MainWindow(QMainWindow):
         self.selected_attack_key = settings.get("attack_key", "Ctrl")
         self.attack_key_btn.setText(self.selected_attack_key)
         
+        # 加载跳跃键
+        self.selected_jump_key = settings.get("jump_key", "Alt")
+        if hasattr(self, 'jump_key_btn'):
+            self.jump_key_btn.setText(self.selected_jump_key)
+        
         # 加载随机行为设置
         self.game_config.random_behavior_enabled = settings.get("random_behavior_enabled", True)
         self.game_config.random_behavior_value = settings.get("random_behavior_value", 20)
@@ -154,6 +159,12 @@ class MainWindow(QMainWindow):
         # 设置默认速度阈值
         self.speed_threshold_input.setText(str(self.game_config.speed_threshold))
         
+        # 默认跳跃键
+        if hasattr(self, 'selected_jump_key'):
+            self.selected_jump_key = "Alt"
+        if hasattr(self, 'jump_key_btn'):
+            self.jump_key_btn.setText("Alt")
+        
         # 默认开启随机行为，值为20
         self.game_config.random_behavior_enabled = True
         self.game_config.random_behavior_value = 20
@@ -172,6 +183,7 @@ class MainWindow(QMainWindow):
             return_to_market=self.return_to_market,
             manual_countdown=self.manual_countdown,
             attack_key=self.selected_attack_key,
+            jump_key=getattr(self, 'selected_jump_key', 'Alt'),
             random_behavior_enabled=self.random_behavior_checkbox.isChecked(),
             random_behavior_value=random_value,
             movement_mode=self.movement_mode
@@ -393,6 +405,37 @@ class MainWindow(QMainWindow):
         self.random_behavior_input.setMaximumHeight(22)
         options_layout.addWidget(self.random_behavior_checkbox)
         options_layout.addWidget(self.random_behavior_input)
+        
+        # 跳跃按键
+        jump_label = QLabel("  离开市场跳跃键:")
+        options_layout.addWidget(jump_label)
+        
+        self.selected_jump_key = "Alt"
+        self.jump_key_btn = QPushButton(self.selected_jump_key)
+        self.jump_key_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #e3f2fd;
+                border: 1px solid #1976d2;
+                border-radius: 3px;
+                font-size: 11px;
+                font-weight: bold;
+                color: #1976d2;
+                padding: 2px 8px;
+                min-width: 50px;
+                max-height: 22px;
+                outline: none;
+            }
+            QPushButton:hover {
+                background-color: #bbdefb;
+            }
+            QPushButton:focus {
+                outline: none;
+                border: 1px solid #1976d2;
+            }
+        """)
+        self.jump_key_btn.clicked.connect(self.on_select_jump_key)
+        options_layout.addWidget(self.jump_key_btn)
+        
         options_layout.addStretch()
         
         parent_layout.addLayout(options_layout)
@@ -894,7 +937,7 @@ class MainWindow(QMainWindow):
             self.logger.log("启动回市场模式...")
             self.update_log_display()
             
-            self.worker = DeadFlowerWorker(self.game_window_hwnd, self.buffs)
+            self.worker = DeadFlowerWorker(self.game_window_hwnd, self.buffs, getattr(self, 'selected_jump_key', 'Alt'))
             self.worker.log_update.connect(self.on_status_update)
             self.worker.finished_signal.connect(self.on_worker_finished)
             self.worker.error_signal.connect(self.on_error)
@@ -1106,6 +1149,15 @@ class MainWindow(QMainWindow):
             self.update_log_display()
             # 更新键盘钩子
             self.update_keyboard_hook()
+            
+    def on_select_jump_key(self):
+        """弹出虚拟键盘选择跳跃键"""
+        dialog = VirtualKeyboardDialog(self, self.selected_jump_key)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.selected_jump_key = dialog.get_selected_key()
+            self.jump_key_btn.setText(self.selected_jump_key)
+            self.logger.log(f"跳跃键已设置为: {self.selected_jump_key}")
+            self.update_log_display()
     
     def on_status_update(self, message: str):
         """状态更新回调"""

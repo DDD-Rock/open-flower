@@ -21,6 +21,7 @@ class SettingsManager:
                       return_to_market: bool = False,
                       manual_countdown: bool = False,
                       attack_key: str = "Ctrl",
+                      jump_key: str = "Alt",
                       random_behavior_enabled: bool = True,
                       random_behavior_value: int = 20,
                       movement_mode: str = "none"):
@@ -44,6 +45,7 @@ class SettingsManager:
             "return_to_market": str(return_to_market),
             "manual_countdown": str(manual_countdown),
             "attack_key": attack_key,
+            "jump_key": jump_key,
             "random_behavior_enabled": str(random_behavior_enabled),
             "random_behavior_value": str(random_behavior_value),
             "movement_mode": movement_mode
@@ -86,6 +88,7 @@ class SettingsManager:
                 "return_to_market": self.config.getboolean("General", "return_to_market", fallback=False),
                 "manual_countdown": self.config.getboolean("General", "manual_countdown", fallback=False),
                 "attack_key": self.config.get("General", "attack_key", fallback="Ctrl"),
+                "jump_key": self.config.get("General", "jump_key", fallback="Alt"),
                 "random_behavior_enabled": self.config.getboolean("General", "random_behavior_enabled", fallback=True),
                 "random_behavior_value": self.config.getint("General", "random_behavior_value", fallback=20),
                 "movement_mode": self.config.get("General", "movement_mode", fallback="none"),

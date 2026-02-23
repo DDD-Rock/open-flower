@@ -17,6 +17,7 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from detection.minimap_monitor import MinimapMonitor
 from detection.market_button import MarketButtonDetector
 from automation.human_input import HumanInput
+from pynput.keyboard import Key
 from models.buff_config import BuffConfig
 from workers.skill_worker import (
     PRE_SKILL_MOVE_RIGHT_MIN_MS, PRE_SKILL_MOVE_RIGHT_MAX_MS,
@@ -30,7 +31,7 @@ class DeadFlowerWorker(QThread):
     error_signal = pyqtSignal(str)
     countdown_update = pyqtSignal(dict)  # buff倒计时更新
 
-    def __init__(self, hwnd: int, buffs: List[BuffConfig]):
+    def __init__(self, hwnd: int, buffs: List[BuffConfig], jump_key: str = "alt"):
         super().__init__()
         self.hwnd = hwnd
         self.buffs = [b for b in buffs if b.enabled and b.key]  # 只保留启用的buff
@@ -39,6 +40,7 @@ class DeadFlowerWorker(QThread):
         self.monitor.set_window_handle(hwnd)
         self.market_detector = MarketButtonDetector(hwnd=hwnd, confidence=0.3)
         self.human = HumanInput()
+        self.jump_key = self._resolve_key(jump_key)
         
         # Buff倒计时跟踪 {key: 下次释放时间戳}
         self.buff_next_cast: Dict[str, float] = {}
@@ -257,16 +259,42 @@ class DeadFlowerWorker(QThread):
                 to_cast.append(buff)
         
         return to_cast
+    # 特殊键映射（pynput需要Key对象而不是字符串）
+    SPECIAL_KEY_MAP = {
+        'shift': Key.shift,
+        'ctrl': Key.ctrl, 'control': Key.ctrl,
+        'alt': Key.alt,
+        'tab': Key.tab,
+        'space': Key.space,
+        'enter': Key.enter,
+        'backspace': Key.backspace,
+        'delete': Key.delete,
+        'insert': Key.insert,
+        'home': Key.home,
+        'end': Key.end,
+        'page_up': Key.page_up, 'pageup': Key.page_up,
+        'page_down': Key.page_down, 'pagedown': Key.page_down,
+        'f1': Key.f1, 'f2': Key.f2, 'f3': Key.f3, 'f4': Key.f4,
+        'f5': Key.f5, 'f6': Key.f6, 'f7': Key.f7, 'f8': Key.f8,
+        'f9': Key.f9, 'f10': Key.f10, 'f11': Key.f11, 'f12': Key.f12,
+    }
+
+    def _resolve_key(self, key_str: str):
+        """将按键字符串转换为pynput可识别的按键"""
+        return self.SPECIAL_KEY_MAP.get(key_str.lower(), key_str)
 
     def _cast_buff(self, buff: BuffConfig):
         """释放单个buff"""
         self.log_update.emit(f"释放技能: {buff.key}")
         
+        # 解析按键
+        key = self._resolve_key(buff.key)
+        
         # 拟人化按键
         duration = random.uniform(0.05, 0.15)
-        self.human.keyboard.press(buff.key)
+        self.human.keyboard.press(key)
         time.sleep(duration)
-        self.human.keyboard.release(buff.key)
+        self.human.keyboard.release(key)
         
         # 更新下次释放时间
         self.buff_next_cast[buff.key] = time.time() + buff.duration
@@ -317,6 +345,21 @@ class DeadFlowerWorker(QThread):
         self.human.move_left()
         self._interruptible_sleep(move_duration)
         self.human.stop_move()
+
+    def _jump_before_move(self):
+        """移动前短按跳跃键拟人化处理"""
+        if not self.is_running:
+            return
+        # 拟人化短按跳跃键 (50-150ms)
+        jump_duration = random.uniform(0.05, 0.15)
+        self.log_update.emit(f"防卡死，短按跳跃键 {int(jump_duration * 1000)}ms...")
+        self.human.keyboard.press(self.jump_key)
+        self._interruptible_sleep(jump_duration)
+        self.human.keyboard.release(self.jump_key)
+        
+        # 释放后与方向键的拟人化间隔 (100-300ms)
+        wait_duration = random.uniform(0.1, 0.3)
+        self._interruptible_sleep(wait_duration)
 
     def _return_to_market(self) -> bool:
         """
@@ -408,8 +451,12 @@ class DeadFlowerWorker(QThread):
                 break
             
             if dx > self.TOLERANCE:
+                if self.human.current_direction != 'right':
+                    self._jump_before_move()
                 self.human.move_right()
             elif dx < -self.TOLERANCE:
+                if self.human.current_direction != 'left':
+                    self._jump_before_move()
                 self.human.move_left()
             
             self._random_sleep(*[x/1000 for x in self.DETECT_INTERVAL])

@@ -284,73 +284,33 @@ class MinimapMonitor:
 
     def debug_save_minimap(self) -> Tuple[bool, str, str]:
         """
-        调试方法：保存识别到的小地图区域和标记了玩家/传送门位置的图片
+        初始化小地图检测（自动检测区域、查找传送门和玩家位置）
         
         Returns:
-            (success, minimap_path, marked_path)
+            (success, info_message, "")
         """
-        # 确保 screenshots 目录存在
-        if not os.path.exists("screenshots"):
-            os.makedirs("screenshots")
-        
-        timestamp = int(time.time())
-        
         # 如果没有配置小地图区域，先尝试自动检测
         if self.minimap_region is None:
             result = self.auto_detect_dark_region()
             if result is None:
                 return False, "自动检测小地图区域失败", ""
         
-        # 截取小地图
+        # 截取小地图验证
         minimap = self.capture_minimap()
         if minimap is None:
             return False, "截取小地图失败", ""
         
-        # 保存原始小地图
-        minimap_path = f"screenshots/minimap_{timestamp}.png"
-        cv2.imwrite(minimap_path, minimap)
-        
-        marked_img = minimap.copy()
-        
-        # 1. 查找并标记蓝色传送门（最左侧）
+        # 查找蓝色传送门
         portal_pos = self.find_blue_portal(find_leftmost=True)
         if portal_pos:
-            px, py = portal_pos
-            # 蓝色方框标记传送门
-            cv2.rectangle(marked_img, (px - 8, py - 12), (px + 8, py + 12), (255, 0, 0), 2)
-            cv2.putText(marked_img, "Portal", (px + 10, py - 5), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 0, 0), 1)
-            cv2.putText(marked_img, f"({px},{py})", (px + 10, py + 8), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 0, 0), 1)
-            print(f"✅ 检测到传送门位置: ({px}, {py})")
-        else:
-            print("⚠️ 未检测到蓝色传送门")
+            print(f"✅ 检测到传送门位置: {portal_pos}")
         
-        # 2. 查找并标记玩家位置
+        # 查找玩家位置
         player_pos = self.find_player_position()
         if player_pos:
-            cx, cy = player_pos
-            # 红色圆圈 + 十字准星
-            cv2.circle(marked_img, (cx, cy), 8, (0, 0, 255), 2)
-            cv2.circle(marked_img, (cx, cy), 3, (0, 255, 255), -1)
-            cv2.line(marked_img, (cx - 12, cy), (cx + 12, cy), (0, 255, 0), 1)
-            cv2.line(marked_img, (cx, cy - 12), (cx, cy + 12), (0, 255, 0), 1)
-            cv2.putText(marked_img, f"Player({cx},{cy})", (cx + 10, cy - 10), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 255, 0), 1)
-            print(f"✅ 检测到玩家位置: ({cx}, {cy})")
-            
-            # 3. 如果同时检测到玩家和传送门，计算距离
-            if portal_pos:
-                dx = portal_pos[0] - cx
-                print(f"📏 玩家距传送门X距离: {dx} 像素")
-        else:
-            print("⚠️ 未检测到玩家黄点")
+            print(f"✅ 检测到玩家位置: {player_pos}")
         
-        # 保存标记后的小地图
-        marked_path = f"screenshots/minimap_marked_{timestamp}.png"
-        cv2.imwrite(marked_path, marked_img)
-        
-        return True, minimap_path, marked_path
+        return True, "小地图检测成功", ""
 
     def capture_game_screen(self) -> Optional[np.ndarray]:
         """
@@ -442,7 +402,7 @@ class MinimapMonitor:
         return (center_x, center_y)
 
     def find_template_multiscale(self, template_path: str, threshold: float = 0.7, 
-                                  scales: list = None, save_debug: bool = False) -> Optional[Tuple[int, int, int, int, float, float]]:
+                                  scales: list = None) -> Optional[Tuple[int, int, int, int, float, float]]:
         """
         多尺度模板匹配（容忍不同分辨率和非等比例拉伸）
         
@@ -450,7 +410,6 @@ class MinimapMonitor:
             template_path: 模板图片路径
             threshold: 匹配阈值
             scales: 尝试的缩放比例列表，宽高独立组合
-            save_debug: 是否保存调试截图
             
         Returns:
             (screen_x, screen_y, width, height, scale_x, scale_y) 或 None
@@ -511,12 +470,6 @@ class MinimapMonitor:
         
         if best_val < threshold:
             print(f"未找到匹配（阈值={threshold}）")
-            if save_debug:
-                # 保存游戏画面供调试
-                timestamp = int(time.time())
-                debug_path = f"screenshots/debug_screen_{timestamp}.png"
-                cv2.imwrite(debug_path, screen)
-                print(f"调试截图已保存: {debug_path}")
             return None
         
         # 计算屏幕绝对坐标
@@ -525,29 +478,5 @@ class MinimapMonitor:
         
         screen_x = client_pos[0] + best_loc[0]
         screen_y = client_pos[1] + best_loc[1]
-        
-        if save_debug:
-            # 保存匹配结果
-            timestamp = int(time.time())
-            
-            # 1. 保存匹配区域截图
-            match_x, match_y = best_loc
-            matched_region = screen[match_y:match_y+template_h, match_x:match_x+template_w]
-            match_path = f"screenshots/matched_btn_{timestamp}.png"
-            cv2.imwrite(match_path, matched_region)
-            print(f"匹配区域已保存: {match_path}")
-            
-            # 2. 保存标记后的完整画面
-            marked_screen = screen.copy()
-            cv2.rectangle(marked_screen, best_loc, 
-                         (best_loc[0] + template_w, best_loc[1] + template_h), 
-                         (0, 255, 0), 2)
-            cv2.putText(marked_screen, f"X:{best_scale_x:.1f} Y:{best_scale_y:.1f} V:{best_val:.2f}", 
-                       (best_loc[0], best_loc[1] - 5), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-            marked_path = f"screenshots/marked_screen_{timestamp}.png"
-            cv2.imwrite(marked_path, marked_screen)
-            print(f"标记画面已保存: {marked_path}")
-        
         return (screen_x, screen_y, template_w, template_h, best_scale_x, best_scale_y)
 

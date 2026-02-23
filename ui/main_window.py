@@ -44,7 +44,7 @@ class MainWindow(QMainWindow):
         self.window_selector = None
         self.game_window_hwnd = None  # 游戏窗口句柄
         self.is_window_identified = False  # 是否已识别窗口
-        self.return_to_market = False  # 是否释放后回到市场
+        self.return_to_market = True  # 是否释放后回到市场
         self.manual_countdown = False  # 是否需要手动打怪倒计时
         self.movement_mode = "none"  # 移动模式: "none"(原地不动), "right"(向右走开buff), "left"(向左走开buff)
         
@@ -255,7 +255,7 @@ class MainWindow(QMainWindow):
         
         # 是否释放后回到市场
         self.return_to_market_checkbox = QCheckBox("释放后回到市场")
-        self.return_to_market_checkbox.setChecked(False)
+        self.return_to_market_checkbox.setChecked(True)
         self.return_to_market_checkbox.setToolTip("勾选后，释放技能后自动返回市场等待下次CD")
         self.return_to_market_checkbox.toggled.connect(self.on_return_to_market_changed)
         mode_layout.addWidget(self.return_to_market_checkbox)

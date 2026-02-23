@@ -3,20 +3,18 @@ from PyInstaller.utils.hooks import collect_all
 
 block_cipher = None
 
-# 收集完整的包
+# 只收集必要的包（numpy和cv2是核心依赖）
 numpy_datas, numpy_binaries, numpy_hiddenimports = collect_all('numpy')
 cv2_datas, cv2_binaries, cv2_hiddenimports = collect_all('cv2')
-pkg_datas, pkg_binaries, pkg_hiddenimports = collect_all('pkg_resources')
-pdir_datas, pdir_binaries, pdir_hiddenimports = collect_all('platformdirs')
 
 a = Analysis(
     ['main.py'],
     pathex=[],
-    binaries=numpy_binaries + cv2_binaries + pkg_binaries + pdir_binaries,
+    binaries=numpy_binaries + cv2_binaries,
     datas=[
         ('templates', 'templates'),
         ('settings.ini', '.'),
-    ] + numpy_datas + cv2_datas + pkg_datas + pdir_datas,
+    ] + numpy_datas + cv2_datas,
     hiddenimports=[
         'pynput.keyboard._win32',
         'pynput.mouse._win32',
@@ -26,23 +24,16 @@ a = Analysis(
         'win32con',
         'win32api',
         'win32process',
-        'jaraco',
-        'jaraco.text',
-        'jaraco.functools',
-        'jaraco.context',
-        'platformdirs',
-        'more_itertools',
-    ] + numpy_hiddenimports + cv2_hiddenimports + pkg_hiddenimports + pdir_hiddenimports,
+    ] + numpy_hiddenimports + cv2_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=['hooks/runtime_hook.py'],
     excludes=[
+        # 未使用的大型包
         'ultralytics',
         'torch',
         'torchvision',
         'tensorflow',
-        'psutil',
-        'screeninfo',
         'matplotlib',
         'pandas',
         'scipy',
@@ -51,6 +42,21 @@ a = Analysis(
         'jupyter',
         'notebook',
         'pytest',
+        'PIL',
+        'Pillow',
+        'psutil',
+        'screeninfo',
+        # 未使用的依赖
+        'pkg_resources',
+        'setuptools',
+        'jaraco',
+        'platformdirs',
+        'more_itertools',
+        # numpy 测试和文档（很大但不需要）
+        'numpy.tests',
+        'numpy.doc',
+        'numpy.f2py',
+        'numpy.distutils',
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,

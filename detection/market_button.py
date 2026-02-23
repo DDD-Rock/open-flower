@@ -12,7 +12,6 @@ import time
 import win32gui
 import mss
 from typing import Optional, Tuple
-from PIL import Image, ImageDraw
 
 import sys
 

@@ -56,7 +56,7 @@ class DeadFlowerWorker(QThread):
         # 时间参数
         self.BATCH_CAST_WINDOW = 10.0  # 10秒内的buff一起放
         self.BLACK_SCREEN_WAIT = 2.5   # 传送黑屏等待时间
-        self.SCENE_CHECK_INTERVAL = 5.0  # 场景检测间隔
+        self.SCENE_CHECK_INTERVAL = 3.0  # 场景检测间隔
 
     def _bring_window_to_front(self) -> bool:
         """将游戏窗口设置为前台"""

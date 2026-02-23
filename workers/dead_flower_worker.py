@@ -463,14 +463,8 @@ class DeadFlowerWorker(QThread):
             player_pos = self.monitor.find_player_position()
             
             if not player_pos:
-                self.log_update.emit("未找到玩家位置(可能被遮盖)，向右移动寻找...")
-                if self.human.current_direction != 'right':
-                    if not has_jumped:
-                        self._jump_before_move()
-                        has_jumped = True
-                self.human.move_right()
-                self._random_sleep(0.2, 0.4)
                 retry_count += 1
+                self._random_sleep(0.1, 0.2)
                 continue
             
             player_x, player_y = player_pos

@@ -183,6 +183,7 @@ class MainWindow(QMainWindow):
         """初始化UI界面 - 瘦长垂直布局"""
         self.setWindowTitle(APP_NAME)
         self.setGeometry(WINDOW_X, WINDOW_Y, WINDOW_WIDTH, 550)
+        self.setFixedWidth(WINDOW_WIDTH)  # 固定宽度，防止切换模式时窗口大小变化
         # 去掉最大化按钮
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowMaximizeButtonHint)
         
@@ -281,18 +282,18 @@ class MainWindow(QMainWindow):
         # 创建单选按钮组
         self.movement_mode_group = QButtonGroup(self)
         
-        self.movement_none_radio = QRadioButton("原地不动")
+        self.movement_none_radio = QRadioButton("原地不动(慎选)")
         self.movement_none_radio.setToolTip("释放技能时不移动")
         self.movement_none_radio.setChecked(True)  # 默认选中
         self.movement_mode_group.addButton(self.movement_none_radio, 0)
         movement_layout.addWidget(self.movement_none_radio)
         
-        self.movement_right_radio = QRadioButton("向右走开buff(回左)")
+        self.movement_right_radio = QRadioButton("向右走再释放(回左)")
         self.movement_right_radio.setToolTip("向右移动后释放技能，然后向左回到边缘")
         self.movement_mode_group.addButton(self.movement_right_radio, 1)
         movement_layout.addWidget(self.movement_right_radio)
         
-        self.movement_left_radio = QRadioButton("向左走开buff(回右)")
+        self.movement_left_radio = QRadioButton("向左走再释放(回右)")
         self.movement_left_radio.setToolTip("向左移动后释放技能，然后向右回到边缘")
         self.movement_mode_group.addButton(self.movement_left_radio, 2)
         movement_layout.addWidget(self.movement_left_radio)
@@ -300,8 +301,16 @@ class MainWindow(QMainWindow):
         # 连接信号
         self.movement_mode_group.buttonClicked.connect(self.on_movement_mode_changed)
         
+        # 回到市场模式下的提示标签
+        self.movement_auto_label = QLabel("自动移动（离开市场→释放技能→返回市场）")
+        self.movement_auto_label.setStyleSheet("color: #666; font-style: italic;")
+        movement_layout.addWidget(self.movement_auto_label)
+        
         movement_layout.addStretch()
         parent_layout.addLayout(movement_layout)
+        
+        # 根据默认的 return_to_market 状态设置移动模式显示
+        self._update_movement_mode_visibility()
         
         # Buff配置区域
         buff_group = QGroupBox("Buff/Skill配置")
@@ -646,8 +655,8 @@ class MainWindow(QMainWindow):
         self.logger.log(f"释放后回到市场: {status}")
         self.update_log_display()
         
-        # 当勾选释放后回到市场时，禁用移动模式选项（强制使用特定逻辑）
-        self._set_movement_mode_enabled(not checked)
+        # 更新移动模式显示
+        self._update_movement_mode_visibility()
     
     def on_manual_countdown_changed(self, checked: bool):
         """手动打怪倒计时选项切换"""
@@ -662,13 +671,13 @@ class MainWindow(QMainWindow):
         """移动模式选项切换"""
         if button == self.movement_none_radio:
             self.movement_mode = "none"
-            mode_text = "原地不动"
+            mode_text = "原地不动(慎选)"
         elif button == self.movement_right_radio:
             self.movement_mode = "right"
-            mode_text = "向右走开buff(回左)"
+            mode_text = "向右走再释放(回左)"
         elif button == self.movement_left_radio:
             self.movement_mode = "left"
-            mode_text = "向左走开buff(回右)"
+            mode_text = "向左走再释放(回右)"
         else:
             return
         
@@ -949,7 +958,7 @@ class MainWindow(QMainWindow):
         self._set_buff_settings_enabled(False)
         self.return_to_market_checkbox.setEnabled(False)
         self.manual_countdown_checkbox.setEnabled(False)
-        self._set_movement_mode_enabled(False)
+        self._update_movement_mode_visibility()
         
         # 显示buff倒计时区域
         self._show_buff_countdown(True)
@@ -1019,7 +1028,7 @@ class MainWindow(QMainWindow):
         self._set_buff_settings_enabled(True)
         self.return_to_market_checkbox.setEnabled(True)
         self.manual_countdown_checkbox.setEnabled(True)
-        self._set_movement_mode_enabled(True)
+        self._update_movement_mode_visibility()
         
         # 隐藏buff倒计时区域
         self._show_buff_countdown(False)
@@ -1079,11 +1088,13 @@ class MainWindow(QMainWindow):
         self.random_behavior_input.setEnabled(enabled)
         self.attack_key_btn.setEnabled(enabled)
     
-    def _set_movement_mode_enabled(self, enabled: bool):
-        """设置移动模式单选按钮的启用/禁用状态"""
-        self.movement_none_radio.setEnabled(enabled)
-        self.movement_right_radio.setEnabled(enabled)
-        self.movement_left_radio.setEnabled(enabled)
+    def _update_movement_mode_visibility(self):
+        """根据 return_to_market 状态显示/隐藏移动模式选项"""
+        show_radios = not self.return_to_market
+        self.movement_none_radio.setVisible(show_radios)
+        self.movement_right_radio.setVisible(show_radios)
+        self.movement_left_radio.setVisible(show_radios)
+        self.movement_auto_label.setVisible(not show_radios)
     
     def on_select_attack_key(self):
         """弹出虚拟键盘选择攻击键"""

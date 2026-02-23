@@ -8,7 +8,7 @@ APP_NAME = "枫灵 MapleKeeper"
 APP_VERSION = "1.0.0"
 
 # UI配置
-WINDOW_WIDTH = 280  # 窗口宽度（瘦长布局）
+WINDOW_WIDTH = 450  # 窗口宽度
 WINDOW_HEIGHT = 700  # 窗口高度（瘦长布局）
 WINDOW_X = 100
 WINDOW_Y = 100

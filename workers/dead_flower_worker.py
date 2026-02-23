@@ -74,18 +74,24 @@ class DeadFlowerWorker(QThread):
     def _interruptible_sleep(self, seconds: float):
         """
         可中断的睡眠 - 每100ms检查一次is_running标志
-        这样stop()调用后最多100ms内就能响应
+        同时每秒更新一次倒计时显示
         """
         if seconds <= 0:
             return
         
         interval = 0.1  # 100ms检查间隔
         elapsed = 0.0
+        last_countdown_update = 0.0  # 上次更新倒计时的时间
         
         while elapsed < seconds and self.is_running:
             sleep_time = min(interval, seconds - elapsed)
             time.sleep(sleep_time)
             elapsed += sleep_time
+            
+            # 每秒更新一次倒计时显示
+            if elapsed - last_countdown_update >= 1.0:
+                last_countdown_update = elapsed
+                self._update_countdown_display()
 
     def _random_sleep(self, min_sec: float, max_sec: float):
         """拟人化随机延迟（可中断）"""

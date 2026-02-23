@@ -64,6 +64,8 @@ class SkillWorker(QObject):
             game_window_hwnd: 游戏窗口句柄
             attack_key: 攻击键，用于检测玩家是否正在攻击
             movement_mode: 移动模式 - "none"(原地不动), "right"(向右走开buff), "left"(向左走开buff)
+            sit_chair_enabled: 是否空闲时坐椅子
+            chair_key: 椅子按键
         """
         super().__init__()
         self.skills = skills
@@ -75,6 +77,46 @@ class SkillWorker(QObject):
         self.thread = None
         # 初始化拟人化输入控制器（用于移动）
         self.human_input = HumanInput()
+        
+        # 椅子配置
+        self.sit_chair_enabled = sit_chair_enabled
+        self.chair_key = self._resolve_key(chair_key)
+        self.is_sitting = False
+
+    def _resolve_key(self, key_str: str):
+        """将按键字符串转换为可识别的按键"""
+        mapping = {
+            'shift': 'shift', 'ctrl': 'ctrl', 'control': 'ctrl', 'alt': 'alt',
+            'tab': 'tab', 'space': 'space', 'enter': 'enter', 'backspace': 'backspace',
+            'delete': 'delete', 'insert': 'insert', 'home': 'home', 'end': 'end',
+            'page_up': 'page up', 'pageup': 'page up', 'page_down': 'page down', 'pagedown': 'page down',
+            'f1': 'f1', 'f2': 'f2', 'f3': 'f3', 'f4': 'f4', 'f5': 'f5', 'f6': 'f6',
+            'f7': 'f7', 'f8': 'f8', 'f9': 'f9', 'f10': 'f10', 'f11': 'f11', 'f12': 'f12',
+            '=': '='
+        }
+        return mapping.get(key_str.lower(), key_str)
+        
+    def _sit_chair(self):
+        """空闲时坐下"""
+        if not self.sit_chair_enabled or self.is_sitting or not self.is_running:
+            return
+        
+        self.status_update.emit(f"空闲时间过长，按下椅子键...")
+        try:
+            from automation.human_input import Key
+            if hasattr(self.human_input.keyboard, 'press'):
+                key_obj = self.chair_key
+                # 如果是特殊键需要转换，暂时用简单方式
+                if len(key_obj) > 1 and hasattr(Key, key_obj):
+                    key_obj = getattr(Key, key_obj)
+                self.human_input.keyboard.press(key_obj)
+                time.sleep(random.uniform(0.05, 0.15))
+                self.human_input.keyboard.release(key_obj)
+            else:
+                press_key(self.chair_key)
+            self.is_sitting = True
+        except Exception as e:
+            self.status_update.emit(f"坐椅子失败: {str(e)}")
 
     
     def start(self):
@@ -136,10 +178,17 @@ class SkillWorker(QObject):
                 
                 # 每秒发送一次倒计时更新（通过UI显示）
                 countdown_info = {}
+                min_remaining = 3600
                 for skill in self.skills:
                     remaining = max(0, int(next_release_times.get(skill.key, 0) - current_time))
                     countdown_info[skill.key] = remaining
+                    if remaining < min_remaining:
+                        min_remaining = remaining
                 self.countdown_update.emit(countdown_info)
+                
+                # 检查是否可以坐椅子
+                if self.sit_chair_enabled and not self.is_sitting and min_remaining > 5:
+                    self._sit_chair()
                 
                 # 短暂休眠，避免CPU占用过高
                 time.sleep(THREAD_SLEEP_INTERVAL)
@@ -214,6 +263,7 @@ class SkillWorker(QObject):
         仅释放单个技能（只按键，不包含移动逻辑）
         用于批量释放时，在多个技能之间调用
         """
+        self.is_sitting = False  # 释放技能会打破坐椅子状态
         try:
             self.status_update.emit(f"准备释放技能: {skill.key}")
             press_key(skill.key)
@@ -282,6 +332,8 @@ class SkillWorker(QObject):
             self.human_input.move_left()
         else:
             self.human_input.move_right()
+        
+        self.is_sitting = False  # 移动会打破坐椅子状态
         
         time.sleep(move_duration)
         self.human_input.stop_move()

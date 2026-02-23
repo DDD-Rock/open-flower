@@ -31,7 +31,7 @@ class DeadFlowerWorker(QThread):
     error_signal = pyqtSignal(str)
     countdown_update = pyqtSignal(dict)  # buff倒计时更新
 
-    def __init__(self, hwnd: int, buffs: List[BuffConfig], jump_key: str = "alt"):
+    def __init__(self, hwnd: int, buffs: List[BuffConfig], jump_key: str = "alt", sit_chair_enabled: bool = False, chair_key: str = "="):
         super().__init__()
         self.hwnd = hwnd
         self.buffs = [b for b in buffs if b.enabled and b.key]  # 只保留启用的buff
@@ -41,6 +41,11 @@ class DeadFlowerWorker(QThread):
         self.market_detector = MarketButtonDetector(hwnd=hwnd, confidence=0.3)
         self.human = HumanInput()
         self.jump_key = self._resolve_key(jump_key)
+        
+        # 椅子配置
+        self.sit_chair_enabled = sit_chair_enabled
+        self.chair_key = self._resolve_key(chair_key)
+        self.is_sitting = False
         
         # Buff倒计时跟踪 {key: 下次释放时间戳}
         self.buff_next_cast: Dict[str, float] = {}
@@ -345,6 +350,25 @@ class DeadFlowerWorker(QThread):
         self.human.move_left()
         self._interruptible_sleep(move_duration)
         self.human.stop_move()
+        self.is_sitting = False # 移动打断椅子
+        
+    def _sit_chair(self):
+        """空闲时坐下"""
+        if not self.sit_chair_enabled or self.is_sitting or not self.is_running:
+            return
+        
+        self.log_update.emit(f"空闲时间过长，按下椅子键...")
+        try:
+            from automation.human_input import Key
+            key_obj = self.chair_key
+            if len(str(key_obj)) > 1 and hasattr(Key, str(key_obj)):
+                key_obj = getattr(Key, str(key_obj))
+            self.human.keyboard.press(key_obj)
+            self._interruptible_sleep(random.uniform(0.05, 0.15))
+            self.human.keyboard.release(key_obj)
+            self.is_sitting = True
+        except Exception as e:
+            self.log_update.emit(f"坐椅子失败: {str(e)}")
 
     def _jump_before_move(self):
         """移动前短按跳跃键拟人化处理"""
@@ -436,8 +460,12 @@ class DeadFlowerWorker(QThread):
             player_pos = self.monitor.find_player_position()
             
             if not player_pos:
+                self.log_update.emit("未找到玩家位置(可能被遮盖)，向右移动寻找...")
+                if self.human.current_direction != 'right':
+                    self._jump_before_move()
+                self.human.move_right()
+                self._random_sleep(0.2, 0.4)
                 retry_count += 1
-                self._random_sleep(0.1, 0.2)
                 continue
             
             player_x, player_y = player_pos
@@ -614,6 +642,10 @@ class DeadFlowerWorker(QThread):
                 else:
                     # 没有buff需要释放，更新显示并等待
                     wait_time = self._get_time_until_next_cast()
+                    
+                    if wait_time > 5 and self._is_in_market() and self.sit_chair_enabled and not self.is_sitting:
+                        # 只有真的在市场且时间够长且没坐下时才坐下
+                        self._sit_chair()
                     
                     if wait_time > 1:
                         # 每秒更新一次倒计时

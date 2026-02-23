@@ -22,6 +22,8 @@ class SettingsManager:
                       manual_countdown: bool = False,
                       attack_key: str = "Ctrl",
                       jump_key: str = "Alt",
+                      sit_chair_enabled: bool = False,
+                      chair_key: str = "=",
                       random_behavior_enabled: bool = True,
                       random_behavior_value: int = 20,
                       movement_mode: str = "none"):
@@ -33,6 +35,9 @@ class SettingsManager:
             return_to_market: 是否释放后回到市场
             manual_countdown: 是否需要手动打怪倒计时
             attack_key: 攻击键
+            jump_key: 跳跃键
+            sit_chair_enabled: 是否空闲时坐椅子
+            chair_key: 椅子按键
             random_behavior_enabled: 是否启用随机提前释放
             random_behavior_value: 随机提前释放秒数
             movement_mode: 移动模式 - "none"(原地不动), "right"(向右走开buff), "left"(向左走开buff)
@@ -46,6 +51,8 @@ class SettingsManager:
             "manual_countdown": str(manual_countdown),
             "attack_key": attack_key,
             "jump_key": jump_key,
+            "sit_chair_enabled": str(sit_chair_enabled),
+            "chair_key": chair_key,
             "random_behavior_enabled": str(random_behavior_enabled),
             "random_behavior_value": str(random_behavior_value),
             "movement_mode": movement_mode
@@ -89,6 +96,8 @@ class SettingsManager:
                 "manual_countdown": self.config.getboolean("General", "manual_countdown", fallback=False),
                 "attack_key": self.config.get("General", "attack_key", fallback="Ctrl"),
                 "jump_key": self.config.get("General", "jump_key", fallback="Alt"),
+                "sit_chair_enabled": self.config.getboolean("General", "sit_chair_enabled", fallback=False),
+                "chair_key": self.config.get("General", "chair_key", fallback="="),
                 "random_behavior_enabled": self.config.getboolean("General", "random_behavior_enabled", fallback=True),
                 "random_behavior_value": self.config.getint("General", "random_behavior_value", fallback=20),
                 "movement_mode": self.config.get("General", "movement_mode", fallback="none"),

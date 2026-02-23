@@ -115,6 +115,14 @@ class MainWindow(QMainWindow):
         self.selected_jump_key = settings.get("jump_key", "Alt")
         if hasattr(self, 'jump_key_btn'):
             self.jump_key_btn.setText(self.selected_jump_key)
+            
+        # 加载空闲时坐椅子设置
+        self.sit_chair_enabled = settings.get("sit_chair_enabled", False)
+        self.selected_chair_key = settings.get("chair_key", "=")
+        if hasattr(self, 'sit_chair_checkbox'):
+            self.sit_chair_checkbox.setChecked(self.sit_chair_enabled)
+        if hasattr(self, 'chair_key_btn'):
+            self.chair_key_btn.setText(self.selected_chair_key)
         
         # 加载随机行为设置
         self.game_config.random_behavior_enabled = settings.get("random_behavior_enabled", True)
@@ -164,6 +172,14 @@ class MainWindow(QMainWindow):
             self.selected_jump_key = "Alt"
         if hasattr(self, 'jump_key_btn'):
             self.jump_key_btn.setText("Alt")
+            
+        # 默认空闲时坐椅子设置
+        self.sit_chair_enabled = False
+        self.selected_chair_key = "="
+        if hasattr(self, 'sit_chair_checkbox'):
+            self.sit_chair_checkbox.setChecked(False)
+        if hasattr(self, 'chair_key_btn'):
+            self.chair_key_btn.setText("=")
         
         # 默认开启随机行为，值为20
         self.game_config.random_behavior_enabled = True
@@ -184,6 +200,8 @@ class MainWindow(QMainWindow):
             manual_countdown=self.manual_countdown,
             attack_key=self.selected_attack_key,
             jump_key=getattr(self, 'selected_jump_key', 'Alt'),
+            sit_chair_enabled=getattr(self, 'sit_chair_enabled', False),
+            chair_key=getattr(self, 'selected_chair_key', '='),
             random_behavior_enabled=self.random_behavior_checkbox.isChecked(),
             random_behavior_value=random_value,
             movement_mode=self.movement_mode
@@ -407,7 +425,7 @@ class MainWindow(QMainWindow):
         options_layout.addWidget(self.random_behavior_input)
         
         # 跳跃按键
-        jump_label = QLabel("  离开市场跳跃键:")
+        jump_label = QLabel("  跳跃键:")
         options_layout.addWidget(jump_label)
         
         self.selected_jump_key = "Alt"
@@ -474,6 +492,48 @@ class MainWindow(QMainWindow):
         detect_layout.addWidget(self.attack_key_btn)
         detect_layout.addStretch()
         parent_layout.addWidget(self.attack_key_widget)
+        
+        # 新增空闲时坐椅子选项（新的一行，放在识别窗口上方）
+        sit_chair_layout = QHBoxLayout()
+        sit_chair_layout.setContentsMargins(5, 5, 5, 5)
+        
+        self.sit_chair_checkbox = QCheckBox("空闲时坐椅子")
+        self.sit_chair_enabled = False
+        self.sit_chair_checkbox.setChecked(self.sit_chair_enabled)
+        self.sit_chair_checkbox.toggled.connect(self.on_sit_chair_toggled)
+        sit_chair_layout.addWidget(self.sit_chair_checkbox)
+        
+        chair_key_label = QLabel("  快捷键:")
+        sit_chair_layout.addWidget(chair_key_label)
+        
+        self.selected_chair_key = "="
+        self.chair_key_btn = QPushButton(self.selected_chair_key)
+        self.chair_key_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #e3f2fd;
+                border: 1px solid #1976d2;
+                border-radius: 3px;
+                font-size: 11px;
+                font-weight: bold;
+                color: #1976d2;
+                padding: 2px 8px;
+                min-width: 50px;
+                max-height: 22px;
+                outline: none;
+            }
+            QPushButton:hover {
+                background-color: #bbdefb;
+            }
+            QPushButton:focus {
+                outline: none;
+                border: 1px solid #1976d2;
+            }
+        """)
+        self.chair_key_btn.clicked.connect(self.on_select_chair_key)
+        sit_chair_layout.addWidget(self.chair_key_btn)
+        sit_chair_layout.addStretch()
+        
+        parent_layout.addLayout(sit_chair_layout)
         
         # 隐藏的速度阈值输入（保留功能但不显示）
         self.speed_threshold_input = QLineEdit()
@@ -937,7 +997,13 @@ class MainWindow(QMainWindow):
             self.logger.log("启动回市场模式...")
             self.update_log_display()
             
-            self.worker = DeadFlowerWorker(self.game_window_hwnd, self.buffs, getattr(self, 'selected_jump_key', 'Alt'))
+            self.worker = DeadFlowerWorker(
+                self.game_window_hwnd, 
+                self.buffs, 
+                getattr(self, 'selected_jump_key', 'Alt'),
+                getattr(self, 'sit_chair_enabled', False),
+                getattr(self, 'selected_chair_key', '=')
+            )
             self.worker.log_update.connect(self.on_status_update)
             self.worker.finished_signal.connect(self.on_worker_finished)
             self.worker.error_signal.connect(self.on_error)
@@ -978,7 +1044,15 @@ class MainWindow(QMainWindow):
             attack_key = self.selected_attack_key.lower()
             
             # 创建新的worker，传入移动模式
-            self.worker = SkillWorker(skills, self.window_selector, self.game_window_hwnd, attack_key, self.movement_mode)
+            self.worker = SkillWorker(
+                skills, 
+                self.window_selector, 
+                self.game_window_hwnd, 
+                attack_key, 
+                self.movement_mode,
+                getattr(self, 'sit_chair_enabled', False),
+                getattr(self, 'selected_chair_key', '=')
+            )
             self.worker.status_update.connect(self.on_status_update)
             self.worker.skill_pressed.connect(self.on_skill_pressed)
             self.worker.error_occurred.connect(self.on_error)
@@ -1157,6 +1231,22 @@ class MainWindow(QMainWindow):
             self.selected_jump_key = dialog.get_selected_key()
             self.jump_key_btn.setText(self.selected_jump_key)
             self.logger.log(f"跳跃键已设置为: {self.selected_jump_key}")
+            self.update_log_display()
+            
+    def on_sit_chair_toggled(self, checked: bool):
+        """空闲时坐椅子开启/关闭"""
+        self.sit_chair_enabled = checked
+        status = "开启" if checked else "关闭"
+        self.logger.log(f"空闲时坐椅子: {status}")
+        self.update_log_display()
+        
+    def on_select_chair_key(self):
+        """弹出虚拟键盘选择椅子快捷键"""
+        dialog = VirtualKeyboardDialog(self, self.selected_chair_key)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.selected_chair_key = dialog.get_selected_key()
+            self.chair_key_btn.setText(self.selected_chair_key)
+            self.logger.log(f"椅子快捷键已设置为: {self.selected_chair_key}")
             self.update_log_display()
     
     def on_status_update(self, message: str):

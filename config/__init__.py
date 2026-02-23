@@ -4,7 +4,7 @@
 """
 
 # 应用配置
-APP_NAME = "苗圃助手"
+APP_NAME = "枫灵 MapleKeeper"
 APP_VERSION = "1.0.0"
 
 # UI配置

@@ -65,7 +65,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='苗圃助手',
+    name='MapleKeeper',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -87,5 +87,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='苗圃助手',
+    name='MapleKeeper',
 )

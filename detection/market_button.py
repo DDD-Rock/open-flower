@@ -14,16 +14,27 @@ import mss
 from typing import Optional, Tuple
 from PIL import Image, ImageDraw
 
+import sys
+
+
+def _get_base_dir():
+    """获取项目根目录（兼容PyInstaller打包）"""
+    if getattr(sys, 'frozen', False):
+        # PyInstaller 打包后
+        return sys._MEIPASS
+    else:
+        # 源码运行
+        return os.path.dirname(os.path.dirname(__file__))
+
 
 class MarketButtonDetector:
     """市场按钮检测器（在游戏窗口中模板匹配）"""
     
-    # 模板图片路径
-    TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "templates", "market")
+    # 模板图片路径（兼容PyInstaller打包）
+    TEMPLATE_DIR = os.path.join(_get_base_dir(), "templates", "market")
     MARKET_BTN_TEMPLATE = os.path.join(TEMPLATE_DIR, "market_btn.png")
     MARKET_LOGO_TEMPLATE = os.path.join(TEMPLATE_DIR, "market_logo.png")  # 市场Logo模板
-    MARKET_MINIMAP_TEMPLATE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "templates", "minimap", "market_minimap.png")
-    SCREENSHOTS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "screenshots")
+    MARKET_MINIMAP_TEMPLATE = os.path.join(_get_base_dir(), "templates", "minimap", "market_minimap.png")
     
     def __init__(self, hwnd: int = None, confidence: float = 0.4):
         """
@@ -35,10 +46,6 @@ class MarketButtonDetector:
         """
         self.hwnd = hwnd
         self.confidence = confidence
-        
-        # 确保 screenshots 目录存在
-        if not os.path.exists(self.SCREENSHOTS_DIR):
-            os.makedirs(self.SCREENSHOTS_DIR)
     
     def set_window_handle(self, hwnd: int):
         """设置游戏窗口句柄"""

@@ -135,21 +135,21 @@ class MainWindow(QMainWindow):
     
     def _apply_default_settings(self):
         """应用默认设置"""
-        # buff1: 启用，按键"1"，170秒
+        # buff1: 启用，按键"1"，200秒
         self.buffs[0].enabled = True
         self.buffs[0].key = "1"
-        self.buffs[0].duration = 170.0
+        self.buffs[0].duration = 200.0
         self.buff_checkboxes[0].setChecked(True)
         self.buff_key_btns[0].setText("1")
-        self.buff_duration_inputs[0].setText("170")
+        self.buff_duration_inputs[0].setText("200")
         
-        # buff2: 启用，按键"2"，280秒
+        # buff2: 启用，按键"2"，200秒
         self.buffs[1].enabled = True
         self.buffs[1].key = "2"
-        self.buffs[1].duration = 280.0
+        self.buffs[1].duration = 200.0
         self.buff_checkboxes[1].setChecked(True)
         self.buff_key_btns[1].setText("2")
-        self.buff_duration_inputs[1].setText("280")
+        self.buff_duration_inputs[1].setText("200")
         
         # 设置默认速度阈值
         self.speed_threshold_input.setText(str(self.game_config.speed_threshold))

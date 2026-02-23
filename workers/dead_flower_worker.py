@@ -279,6 +279,7 @@ class DeadFlowerWorker(QThread):
             return
         
         self.log_update.emit(f"准备释放 {len(to_cast)} 个技能")
+        self._bring_window_to_front()
         
         for i, buff in enumerate(to_cast):
             if not self.is_running:
@@ -297,6 +298,7 @@ class DeadFlowerWorker(QThread):
         # 拟人化短按 (100-300ms)
         move_duration = random.uniform(0.1, 0.3)
         self.log_update.emit(f"向右微调 {int(move_duration * 1000)}ms...")
+        self._bring_window_to_front()
         
         self.human.move_right()
         self._interruptible_sleep(move_duration)
@@ -310,6 +312,7 @@ class DeadFlowerWorker(QThread):
         # 拟人化短按 (100-300ms)
         move_duration = random.uniform(0.1, 0.3)
         self.log_update.emit(f"向左微调 {int(move_duration * 1000)}ms...")
+        self._bring_window_to_front()
         
         self.human.move_left()
         self._interruptible_sleep(move_duration)
@@ -323,6 +326,7 @@ class DeadFlowerWorker(QThread):
             是否成功回到市场
         """
         self.log_update.emit("正在回到市场...")
+        self._bring_window_to_front()
         
         # 1. 获取自由市场按钮位置（带缓存）
         btn_pos = self._get_market_button_pos()
@@ -370,6 +374,7 @@ class DeadFlowerWorker(QThread):
             是否成功离开市场
         """
         self.log_update.emit("正在离开市场...")
+        self._bring_window_to_front()
         
         # 1. 获取传送门位置（带缓存，首次使用时检测）
         portal_pos = self._get_portal_pos()
@@ -492,6 +497,10 @@ class DeadFlowerWorker(QThread):
                 if buffs_to_cast:
                     # 需要出去放技能
                     self.log_update.emit(f"有 {len(buffs_to_cast)} 个技能需要释放")
+                    
+                    # 先将窗口置于前台，确保截图正确
+                    self._bring_window_to_front()
+                    self._interruptible_sleep(0.3)
                     
                     # 判断当前位置
                     in_market = self._is_in_market()

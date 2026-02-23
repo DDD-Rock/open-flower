@@ -228,7 +228,7 @@ class MainWindow(QMainWindow):
         central_widget.setLayout(main_layout)
         
         # 0. 版本信息（最顶部）
-        version_label = QLabel("Author: 暗中观察  |  Version: 1.0.0")
+        version_label = QLabel("Author: 暗中观察  |  Version: 1.0.1")
         version_label.setStyleSheet("font-size: 10px; color: #666; padding: 2px;")
         version_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         main_layout.addWidget(version_label)

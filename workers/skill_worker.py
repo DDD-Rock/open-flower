@@ -54,7 +54,8 @@ class SkillWorker(QObject):
     countdown_update = pyqtSignal(dict)  # 发送倒计时信息 {skill_key: remaining_seconds}
     
     def __init__(self, skills: List[SkillConfig], window_selector=None, game_window_hwnd=None, 
-                 attack_key: str = "ctrl", movement_mode: str = "none"):
+                 attack_key: str = "ctrl", movement_mode: str = "none",
+                 sit_chair_enabled: bool = False, chair_key: str = "="):
         """
         初始化工作线程
         

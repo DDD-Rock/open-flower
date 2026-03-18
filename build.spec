@@ -85,6 +85,19 @@ exe = EXE(
     icon=None,
 )
 
+import os
+import re
+
+# 动态读取版本号
+version_file = os.path.join('config', '__init__.py')
+app_version = "Unknown"
+if os.path.exists(version_file):
+    with open(version_file, 'r', encoding='utf-8') as f:
+        content = f.read()
+        match = re.search(r'APP_VERSION\s*=\s*[\'"]([^\'"]+)[\'"]', content)
+        if match:
+            app_version = match.group(1)
+
 coll = COLLECT(
     exe,
     a.binaries,
@@ -93,5 +106,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='MapleKeeper',
+    name=f'MapleKeeper_v{app_version}',
 )

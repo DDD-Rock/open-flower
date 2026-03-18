@@ -16,6 +16,7 @@ from typing import List, Dict, Optional
 from PyQt6.QtCore import QThread, pyqtSignal
 from detection.minimap_monitor import MinimapMonitor
 from detection.market_button import MarketButtonDetector
+from detection.dialog_detector import DialogDetector
 from automation.human_input import HumanInput
 from pynput.keyboard import Key
 from models.buff_config import BuffConfig
@@ -31,7 +32,7 @@ class DeadFlowerWorker(QThread):
     error_signal = pyqtSignal(str)
     countdown_update = pyqtSignal(dict)  # buff倒计时更新
 
-    def __init__(self, hwnd: int, buffs: List[BuffConfig], jump_key: str = "alt", sit_chair_enabled: bool = False, chair_key: str = "="):
+    def __init__(self, hwnd: int, buffs: List[BuffConfig], jump_key: str = "alt", sit_chair_enabled: bool = False, chair_key: str = "=", pre_skill_move_mode: str = "right_left", manual_portal_pos: tuple = None):
         super().__init__()
         self.hwnd = hwnd
         self.buffs = [b for b in buffs if b.enabled and b.key]  # 只保留启用的buff
@@ -47,6 +48,12 @@ class DeadFlowerWorker(QThread):
         self.chair_key = self._resolve_key(chair_key)
         self.is_sitting = False
         
+        # 出市场后移动模式: "right_left"(先右再左) 或 "left_only"(只向左)
+        self.pre_skill_move_mode = pre_skill_move_mode
+        
+        # 手动标记的传送门位置（优先于自动检测）
+        self.manual_portal_pos = manual_portal_pos
+        
         # Buff倒计时跟踪 {key: 下次释放时间戳}
         self.buff_next_cast: Dict[str, float] = {}
         
@@ -59,11 +66,20 @@ class DeadFlowerWorker(QThread):
         # 导航参数
         self.TOLERANCE = 3
         self.DETECT_INTERVAL = (50, 100)
+        self.MAX_DIRECTION_CHANGES = 3       # 连续换方向几次后切换微调模式
+        self.TAP_DURATION = (40, 120)        # 微调模式单次按键时长(ms)
+        self.TAP_INTERVAL = (100, 250)       # 微调模式两次按键间隔(ms)
         
         # 时间参数
         self.BATCH_CAST_WINDOW = 10.0  # 10秒内的buff一起放
         self.BLACK_SCREEN_WAIT = 2.5   # 传送黑屏等待时间
         self.SCENE_CHECK_INTERVAL = 3.0  # 场景检测间隔
+        
+        # 弹窗检测
+        self.dialog_detector = DialogDetector(hwnd=hwnd, confidence=0.5)
+        self._dialog_miss_count = 0        # 连续未检测到弹窗次数
+        self._dialog_check_done = False    # 本轮回市场后是否已停止检测
+        self._last_dialog_check = 0.0      # 上次检测时间戳
 
     def _bring_window_to_front(self) -> bool:
         """将游戏窗口设置为前台"""
@@ -227,9 +243,14 @@ class DeadFlowerWorker(QThread):
         """
         获取传送门在小地图中的坐标（带缓存）
         
-        首次使用时检测并缓存，后续直接返回
+        优先使用手动标记的位置，其次试自动检测
         窗口大小改变时缓存会被清空
         """
+        # 手动标记位置优先
+        if self.manual_portal_pos:
+            self.log_update.emit(f"使用手动标记的传送门位置: {self.manual_portal_pos}")
+            return self.manual_portal_pos
+        
         self._check_window_size_changed()
         
         if self._cached_portal_pos:
@@ -454,45 +475,139 @@ class DeadFlowerWorker(QThread):
         portal_x, portal_y = portal_pos
         self.log_update.emit(f"传送门位置: ({portal_x}, {portal_y})")
         
-        # 2. 导航到传送门
+        # 2. 导航到传送门（长按方向键，检测卡住则松手重按）
         retry_count = 0
-        max_retries = 100
-        has_jumped = False  # 整个出市场流程中，防卡跳跃只执行一次
+        max_retries = 300
+        last_player_x = None       # 上一次检测到的X坐标
+        stuck_count = 0            # 连续未移动的检测次数
+        miss_count = 0             # 连续未检测到黄点的次数
+        STUCK_THRESHOLD = 5        # 连续几次未移动判定为卡住
+        is_moving = False          # 当前是否正在按住方向键
+        direction_change_count = 0 # 连续换方向计数
+        use_tap_mode = False       # 是否使用短按微调模式
+        
+        # 先开始向传送门方向移动（传送门一般在左侧）
+        # 根据传送门相对于小地图中心的位置决定初始方向
+        initial_direction = 'left' if portal_x < 80 else 'right'
+        self.log_update.emit(f"开始向{('左' if initial_direction == 'left' else '右')}移动...")
+        if initial_direction == 'left':
+            self.human.move_left()
+        else:
+            self.human.move_right()
+        is_moving = True
         
         while self.is_running and retry_count < max_retries:
             player_pos = self.monitor.find_player_position()
             
             if not player_pos:
+                # 黄点可能被遮挡，不停止移动，继续检测
+                miss_count += 1
+                if miss_count % 20 == 0:
+                    self.log_update.emit(f"连续 {miss_count} 次未检测到黄点，继续移动...")
+                self._random_sleep(0.15, 0.25)
                 retry_count += 1
-                self._random_sleep(0.1, 0.2)
                 continue
             
+            miss_count = 0  # 重置未检测计数
             player_x, player_y = player_pos
             dx = portal_x - player_x
             
+            # 到达传送门
             if abs(dx) <= self.TOLERANCE:
                 self.log_update.emit("到达传送门，准备进入...")
                 self.human.stop_move()
-                self._random_sleep(0.1, 0.2)
+                is_moving = False
+                
+                # 停下后等待稳定，再次确认位置
+                self._random_sleep(0.2, 0.5)
+                verify_pos = self.monitor.find_player_position()
+                if verify_pos:
+                    verify_dx = portal_x - verify_pos[0]
+                    if abs(verify_dx) > self.TOLERANCE:
+                        # 停下后滑出了容差范围，切换微调模式继续调整
+                        self.log_update.emit(f"停下后偏移过大(dx={verify_dx})，切换微调模式...")
+                        use_tap_mode = True
+                        retry_count += 1
+                        continue
+                
                 self.human.use_portal()
                 break
             
-            if dx > self.TOLERANCE:
-                if self.human.current_direction != 'right':
-                    if not has_jumped:
-                        self._jump_before_move()
-                        has_jumped = True
-                self.human.move_right()
-            elif dx < -self.TOLERANCE:
-                if self.human.current_direction != 'left':
-                    if not has_jumped:
-                        self._jump_before_move()
-                        has_jumped = True
-                self.human.move_left()
+            # 检测是否卡住（黄点没动）
+            if last_player_x is not None and abs(player_x - last_player_x) <= 1:
+                stuck_count += 1
+            else:
+                stuck_count = 0
+            last_player_x = player_x
             
-            self._random_sleep(*[x/1000 for x in self.DETECT_INTERVAL])
+            # 卡住了：松手，短暂延迟，重新按
+            if stuck_count >= STUCK_THRESHOLD and is_moving:
+                self.log_update.emit("检测到移动卡住，重新按键...")
+                self.human.stop_move()
+                is_moving = False
+                self._random_sleep(0.1, 0.3)  # 松手后拟人化延迟
+                stuck_count = 0
+            
+            # 判断需要的方向
+            needed_direction = 'right' if dx > self.TOLERANCE else 'left'
+            
+            # === 微调模式：短按方式精确移动 ===
+            if use_tap_mode:
+                # 确保先停下
+                if is_moving:
+                    self.human.stop_move()
+                    is_moving = False
+                
+                # 短按方向键：press → 拟人化时长 → release
+                tap_key = self.human._get_key_object(needed_direction)
+                tap_duration = random.uniform(
+                    self.TAP_DURATION[0] / 1000.0,
+                    self.TAP_DURATION[1] / 1000.0
+                )
+                self.human.keyboard.press(tap_key)
+                time.sleep(tap_duration)
+                self.human.keyboard.release(tap_key)
+                
+                # 两次轻点之间的拟人化间隔
+                tap_interval = random.uniform(
+                    self.TAP_INTERVAL[0] / 1000.0,
+                    self.TAP_INTERVAL[1] / 1000.0
+                )
+                time.sleep(tap_interval)
+                retry_count += 1
+                continue
+            
+            # === 正常模式：持续按住方向键 ===
+            if is_moving and self.human.current_direction != needed_direction:
+                # 走过头了，需要换方向
+                direction_change_count += 1
+                self.log_update.emit(f"走过头了，换方向：{needed_direction}...")
+                self.human.stop_move()
+                is_moving = False
+                self._random_sleep(0.1, 0.2)  # 换向拟人化延迟
+                
+                # 连续换方向超过阈值 → 切换为微调模式
+                if direction_change_count >= self.MAX_DIRECTION_CHANGES:
+                    self.log_update.emit("检测到来回振荡，切换微调模式...")
+                    use_tap_mode = True
+                    continue
+            else:
+                # 没有换方向，重置计数
+                if is_moving:
+                    direction_change_count = 0
+            
+            if not is_moving:
+                if needed_direction == 'right':
+                    self.human.move_right()
+                else:
+                    self.human.move_left()
+                is_moving = True
+            
+            # 持续按住期间的检测间隔
+            self._random_sleep(0.15, 0.25)
             retry_count += 1
         
+        # 确保松开方向键
         self.human.stop_move()
         
         # 3. 等待黑屏
@@ -598,15 +713,16 @@ class DeadFlowerWorker(QThread):
                             self._interruptible_sleep(5)
                             continue
                         
-                        # 1. 释放技能前：先向右微调
-                        self._move_right_before_skill()
-                        
-                        # 停止移动并拟人化等待
-                        self.human.stop_move()
-                        self._random_sleep(0.3, 0.8)
-                        
-                        # 2. 向左微调
-                        self._move_left_wiggle()
+                        # 1. 释放技能前的移动
+                        if self.pre_skill_move_mode == "left_only":
+                            # 只向左微调
+                            self._move_left_wiggle()
+                        else:
+                            # 默认：先向右微调再向左微调
+                            self._move_right_before_skill()
+                            self.human.stop_move()
+                            self._random_sleep(0.3, 0.8)
+                            self._move_left_wiggle()
                         
                         self.human.stop_move()
                         self._random_sleep(0.3, 0.8)
@@ -615,7 +731,11 @@ class DeadFlowerWorker(QThread):
                         self._cast_all_ready_buffs()
                         self._update_countdown_display()  # 释放后立即刷新倒计时
                         
-                        # 4. 释放完毕后直接准备回市场 (不需要再移动)
+                        # 4. 等待技能后摇结束，避免技能释放失败
+                        self.log_update.emit("等待技能后摇结束...")
+                        self._random_sleep(0.5, 0.8)
+                        
+                        # 5. 释放完毕后直接准备回市场 (不需要再移动)
                     else:
                         # 未知状态（可能在加载中）
                         self.log_update.emit("位置状态未知，等待...")
@@ -624,7 +744,7 @@ class DeadFlowerWorker(QThread):
                     
                     # 拟人化：释放完技能后随机等待1-2秒再回市场
                     self.log_update.emit("等待后返回市场...")
-                    self._random_sleep(1.0, 2.0)
+                    self._random_sleep(0.8, 1.0)
                     
                     # 回到市场（循环重试直到成功）
                     return_retry_count = 0
@@ -633,6 +753,10 @@ class DeadFlowerWorker(QThread):
                     while self.is_running and return_retry_count < max_return_retries:
                         if self._return_to_market():
                             self.log_update.emit("技能释放完成，回到市场等待...")
+                            # 重置弹窗检测状态（新一轮回市场）
+                            self._dialog_miss_count = 0
+                            self._dialog_check_done = False
+                            self._last_dialog_check = 0.0
                             break
                         else:
                             return_retry_count += 1
@@ -645,6 +769,22 @@ class DeadFlowerWorker(QThread):
                 else:
                     # 没有buff需要释放，更新显示并等待
                     wait_time = self._get_time_until_next_cast()
+                    
+                    # 在市场空闲时检测弹窗（每5秒一次，连续2次未检测到则停止）
+                    if not self._dialog_check_done:
+                        now = time.time()
+                        if now - self._last_dialog_check >= 5.0:
+                            self._last_dialog_check = now
+                            pos = self.dialog_detector.find_confirm_button()
+                            if pos:
+                                self.log_update.emit("检测到弹窗，自动点击确定...")
+                                self.human.click_at(pos[0], pos[1], offset_range=5)
+                                self._dialog_miss_count = 0
+                            else:
+                                self._dialog_miss_count += 1
+                                if self._dialog_miss_count >= 2:
+                                    self._dialog_check_done = True
+                                    self.log_update.emit("弹窗检测已停止（连续2次未检测到）")
                     
                     if wait_time > 5 and self._is_in_market(log_result=False) and self.sit_chair_enabled and not self.is_sitting:
                         # 只有真的在市场且时间够长且没坐下时才坐下

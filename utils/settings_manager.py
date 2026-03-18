@@ -26,7 +26,8 @@ class SettingsManager:
                       chair_key: str = "=",
                       random_behavior_enabled: bool = True,
                       random_behavior_value: int = 20,
-                      movement_mode: str = "none"):
+                      movement_mode: str = "none",
+                      pre_skill_move_mode: str = "right_left"):
         """
         保存设置到 INI 文件
         
@@ -41,6 +42,7 @@ class SettingsManager:
             random_behavior_enabled: 是否启用随机提前释放
             random_behavior_value: 随机提前释放秒数
             movement_mode: 移动模式 - "none"(原地不动), "right"(向右走开buff), "left"(向左走开buff)
+            pre_skill_move_mode: 死花出市场后移动模式 - "right_left"(先右再左), "left_only"(只向左)
         """
         # 清空旧配置
         self.config.clear()
@@ -55,7 +57,8 @@ class SettingsManager:
             "chair_key": chair_key,
             "random_behavior_enabled": str(random_behavior_enabled),
             "random_behavior_value": str(random_behavior_value),
-            "movement_mode": movement_mode
+            "movement_mode": movement_mode,
+            "pre_skill_move_mode": pre_skill_move_mode
         }
         
         # 保存每个 buff 配置
@@ -101,6 +104,7 @@ class SettingsManager:
                 "random_behavior_enabled": self.config.getboolean("General", "random_behavior_enabled", fallback=True),
                 "random_behavior_value": self.config.getint("General", "random_behavior_value", fallback=20),
                 "movement_mode": self.config.get("General", "movement_mode", fallback="none"),
+                "pre_skill_move_mode": self.config.get("General", "pre_skill_move_mode", fallback="right_left"),
                 "buffs": []
             }
             

@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import pyqtSignal, Qt, QTimer
 
 from ui.virtual_keyboard import VirtualKeyboardDialog
+from ui.portal_marker_dialog import PortalMarkerDialog
 
 from models.skill_config import SkillConfig
 from models.buff_config import BuffConfig
@@ -26,7 +27,7 @@ from utils.screen_utils import get_screen_resolution
 from utils.settings_manager import SettingsManager
 from utils import WindowSelector, WINDOW_SELECTOR_AVAILABLE
 from config import (
-    APP_NAME, WINDOW_WIDTH, WINDOW_HEIGHT, WINDOW_X, WINDOW_Y, INITIAL_WAIT_TIME
+    APP_NAME, APP_VERSION, WINDOW_WIDTH, WINDOW_HEIGHT, WINDOW_X, WINDOW_Y, INITIAL_WAIT_TIME
 )
 
 
@@ -47,6 +48,8 @@ class MainWindow(QMainWindow):
         self.return_to_market = True  # 是否释放后回到市场
         self.manual_countdown = False  # 是否需要手动打怪倒计时
         self.movement_mode = "none"  # 移动模式: "none"(原地不动), "right"(向右走开buff), "left"(向左走开buff)
+        self.pre_skill_move_mode = "right_left"  # 死花出市场后移动: "right_left" 或 "left_only"
+        self.manual_portal_pos = None  # 手动标记的传送门位置 (x, y) 或 None
         
         # 初始化窗口选择器
         if WINDOW_SELECTOR_AVAILABLE:
@@ -134,6 +137,10 @@ class MainWindow(QMainWindow):
         self.movement_mode = settings.get("movement_mode", "none")
         self._set_movement_mode_radio(self.movement_mode)
         
+        # 加载死花出市场后移动模式
+        self.pre_skill_move_mode = settings.get("pre_skill_move_mode", "right_left")
+        self._set_pre_skill_move_mode_radio(self.pre_skill_move_mode)
+        
         # 加载 buff 配置
         buff_configs = settings.get("buffs", [])
         for i, buff_cfg in enumerate(buff_configs):
@@ -204,7 +211,8 @@ class MainWindow(QMainWindow):
             chair_key=getattr(self, 'selected_chair_key', '='),
             random_behavior_enabled=self.random_behavior_checkbox.isChecked(),
             random_behavior_value=random_value,
-            movement_mode=self.movement_mode
+            movement_mode=self.movement_mode,
+            pre_skill_move_mode=self.pre_skill_move_mode
         )
         self.logger.log("设置已保存")
         self.update_log_display()
@@ -228,7 +236,7 @@ class MainWindow(QMainWindow):
         central_widget.setLayout(main_layout)
         
         # 0. 版本信息（最顶部）
-        version_label = QLabel("Author: 暗中观察  |  Version: 1.0.1")
+        version_label = QLabel(f"Author: 暗中观察  |  Version: {APP_VERSION}")
         version_label.setStyleSheet("font-size: 10px; color: #666; padding: 2px;")
         version_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         main_layout.addWidget(version_label)
@@ -331,10 +339,21 @@ class MainWindow(QMainWindow):
         # 连接信号
         self.movement_mode_group.buttonClicked.connect(self.on_movement_mode_changed)
         
-        # 回到市场模式下的提示标签
-        self.movement_auto_label = QLabel("自动移动（离开市场→释放技能→返回市场）")
-        self.movement_auto_label.setStyleSheet("color: #666; font-style: italic;")
-        movement_layout.addWidget(self.movement_auto_label)
+        # 回到市场模式下的移动选项（单选按钮组）
+        self.pre_skill_move_group = QButtonGroup(self)
+        
+        self.pre_skill_right_left_radio = QRadioButton("先右挪再左挪")
+        self.pre_skill_right_left_radio.setToolTip("出市场后先向右小挪一步，再向左小挪一步，然后放技能")
+        self.pre_skill_right_left_radio.setChecked(True)
+        self.pre_skill_move_group.addButton(self.pre_skill_right_left_radio, 0)
+        movement_layout.addWidget(self.pre_skill_right_left_radio)
+        
+        self.pre_skill_left_only_radio = QRadioButton("只向左挪一步(魚窩)")
+        self.pre_skill_left_only_radio.setToolTip("出市场后只向左小挪一步，然后放技能")
+        self.pre_skill_move_group.addButton(self.pre_skill_left_only_radio, 1)
+        movement_layout.addWidget(self.pre_skill_left_only_radio)
+        
+        self.pre_skill_move_group.buttonClicked.connect(self.on_pre_skill_move_mode_changed)
         
         movement_layout.addStretch()
         parent_layout.addLayout(movement_layout)
@@ -550,16 +569,16 @@ class MainWindow(QMainWindow):
             self.identify_btn.setEnabled(False)
         btn_layout.addWidget(self.identify_btn)
         
-        self.start_btn = QPushButton("开始")
-        self.start_btn.setStyleSheet("background-color: #4CAF50; color: white;")
-        self.start_btn.clicked.connect(self.start_worker)
-        btn_layout.addWidget(self.start_btn)
+        self.portal_marker_btn = QPushButton("标记传送门")
+        self.portal_marker_btn.setToolTip("手动标记市场传送门位置（传送门被遮挡时使用）")
+        self.portal_marker_btn.clicked.connect(self.on_mark_portal)
+        btn_layout.addWidget(self.portal_marker_btn)
         
-        self.stop_btn = QPushButton("停止")
-        self.stop_btn.setStyleSheet("background-color: #f44336; color: white;")
-        self.stop_btn.clicked.connect(self.stop_worker)
-        self.stop_btn.setEnabled(False)
-        btn_layout.addWidget(self.stop_btn)
+        self.is_worker_running = False
+        self.toggle_btn = QPushButton("开始")
+        self.toggle_btn.setStyleSheet("background-color: #4CAF50; color: white;")
+        self.toggle_btn.clicked.connect(self.on_toggle_worker)
+        btn_layout.addWidget(self.toggle_btn)
         
         parent_layout.addLayout(btn_layout)
 
@@ -575,6 +594,11 @@ class MainWindow(QMainWindow):
         self.test_return_market_btn.setStyleSheet("background-color: #9C27B0; color: white;")
         self.test_return_market_btn.clicked.connect(self.start_test_return_to_market)
         test_layout.addWidget(self.test_return_market_btn)
+        
+        self.test_dialog_btn = QPushButton("测试关闭弹窗")
+        self.test_dialog_btn.setStyleSheet("background-color: #FF5722; color: white;")
+        self.test_dialog_btn.clicked.connect(self.start_test_dismiss_dialog)
+        test_layout.addWidget(self.test_dialog_btn)
         
         parent_layout.addLayout(test_layout)
 
@@ -798,6 +822,27 @@ class MainWindow(QMainWindow):
         else:
             self.movement_none_radio.setChecked(True)
     
+    def on_pre_skill_move_mode_changed(self, button):
+        """死花出市场后移动模式切换"""
+        if button == self.pre_skill_right_left_radio:
+            self.pre_skill_move_mode = "right_left"
+            mode_text = "先右挪再左挪"
+        elif button == self.pre_skill_left_only_radio:
+            self.pre_skill_move_mode = "left_only"
+            mode_text = "只向左挪一步(魚窩)"
+        else:
+            return
+        
+        self.logger.log(f"出市场移动模式: {mode_text}")
+        self.update_log_display()
+    
+    def _set_pre_skill_move_mode_radio(self, mode: str):
+        """根据模式设置死花出市场移动单选按钮状态"""
+        if mode == "left_only":
+            self.pre_skill_left_only_radio.setChecked(True)
+        else:
+            self.pre_skill_right_left_radio.setChecked(True)
+    
     def _update_manual_countdown_ui(self):
         """更新手动打怪倒计时相关UI和功能"""
         enabled = self.manual_countdown
@@ -910,6 +955,61 @@ class MainWindow(QMainWindow):
             self.update_window_status_display(f"状态: 识别失败\n错误: {str(e)}")
             QMessageBox.warning(self, "错误", error_msg)
     
+    def on_mark_portal(self):
+        """手动标记市场传送门位置"""
+        if not self.game_window_hwnd:
+            QMessageBox.warning(self, "提示", "请先识别游戏窗口")
+            return
+        
+        try:
+            from detection.minimap_monitor import MinimapMonitor
+            
+            monitor = MinimapMonitor()
+            monitor.set_window_handle(self.game_window_hwnd)
+            
+            # 初始化小地图区域
+            result = monitor.auto_detect_dark_region()
+            if result is None:
+                QMessageBox.warning(self, "错误", "无法检测到小地图区域，请确保游戏窗口可见")
+                return
+            
+            # 检查是否在市场内
+            from detection.market_button import MarketButtonDetector
+            market_det = MarketButtonDetector(hwnd=self.game_window_hwnd, confidence=0.3)
+            if not market_det.is_market_logo_visible():
+                QMessageBox.warning(self, "提示", "请在市场内使用此功能")
+                return
+            
+            # 截取小地图
+            minimap = monitor.capture_minimap()
+            if minimap is None:
+                QMessageBox.warning(self, "错误", "截取小地图失败")
+                return
+            
+            # 尝试自动检测传送门
+            auto_pos = monitor.find_blue_portal(find_leftmost=True)
+            
+            # 打开标记对话框
+            dialog = PortalMarkerDialog(
+                self, minimap,
+                auto_portal_pos=auto_pos,
+                current_manual_pos=self.manual_portal_pos
+            )
+            
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                self.manual_portal_pos = dialog.get_marked_position()
+                if self.manual_portal_pos:
+                    self.logger.log(f"已手动标记传送门位置: {self.manual_portal_pos}")
+                else:
+                    self.logger.log("已清除手动标记，恢复自动检测传送门")
+                self.update_log_display()
+                
+        except Exception as e:
+            import traceback
+            self.logger.log(f"标记传送门出错: {str(e)}")
+            traceback.print_exc()
+            self.update_log_display()
+    
     def update_window_status_display(self, status_text: str = None, success: bool = False):
         """更新窗口状态显示"""
         if status_text is None:
@@ -954,6 +1054,13 @@ class MainWindow(QMainWindow):
         # 自动滚动到底部
         scrollbar = self.log_display.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
+    
+    def on_toggle_worker(self):
+        """切换开始/停止"""
+        if self.is_worker_running:
+            self.stop_worker()
+        else:
+            self.start_worker()
     
     def start_worker(self):
         """启动技能释放"""
@@ -1002,7 +1109,9 @@ class MainWindow(QMainWindow):
                 self.buffs, 
                 getattr(self, 'selected_jump_key', 'Alt'),
                 getattr(self, 'sit_chair_enabled', False),
-                getattr(self, 'selected_chair_key', '=')
+                getattr(self, 'selected_chair_key', '='),
+                getattr(self, 'pre_skill_move_mode', 'right_left'),
+                manual_portal_pos=self.manual_portal_pos
             )
             self.worker.log_update.connect(self.on_status_update)
             self.worker.finished_signal.connect(self.on_worker_finished)
@@ -1068,8 +1177,9 @@ class MainWindow(QMainWindow):
         self.update_log_display()
         
         # 更新按钮状态
-        self.start_btn.setEnabled(False)
-        self.stop_btn.setEnabled(True)
+        self.is_worker_running = True
+        self.toggle_btn.setText("停止")
+        self.toggle_btn.setStyleSheet("background-color: #f44336; color: white;")
         
         # 禁用buff设置区域和模式切换
         self._set_buff_settings_enabled(False)
@@ -1108,7 +1218,7 @@ class MainWindow(QMainWindow):
         # 禁用按钮
         self.test_market_btn.setEnabled(False)
         self.test_return_market_btn.setEnabled(False)
-        self.start_btn.setEnabled(False)
+        self.toggle_btn.setEnabled(False)
         
         # 创建并启动worker
         self.market_worker = MarketWorker(self.game_window_hwnd)
@@ -1116,6 +1226,57 @@ class MainWindow(QMainWindow):
         self.market_worker.finished_signal.connect(self.on_test_market_finished)
         self.market_worker.error_signal.connect(self.on_error)
         self.market_worker.start()
+
+    def start_test_dismiss_dialog(self):
+        """测试检测并关闭游戏内弹窗"""
+        if not self.game_window_hwnd:
+            QMessageBox.warning(self, "错误", "请先确保游戏窗口已被识别")
+            return
+        
+        self.test_dialog_btn.setEnabled(False)
+        self.logger.log("正在检测游戏内弹窗...")
+        self.update_log_display()
+        
+        import threading
+        
+        def run_test():
+            try:
+                from detection.dialog_detector import DialogDetector
+                from automation.human_input import HumanInput
+                
+                detector = DialogDetector(hwnd=self.game_window_hwnd, confidence=0.5)
+                pos = detector.find_confirm_button()
+                
+                if pos:
+                    self.logger.log(f"✅ 检测到确定按钮，位置: {pos}，正在点击...")
+                    human = HumanInput()
+                    human.click_at(pos[0], pos[1], offset_range=5)
+                    import time
+                    time.sleep(0.3)
+                    human.release_all()
+                    self.logger.log("已点击确定按钮")
+                else:
+                    self.logger.log("❌ 未检测到弹窗中的确定按钮")
+                    
+            except Exception as e:
+                import traceback
+                self.logger.log(f"测试出错: {str(e)}")
+                traceback.print_exc()
+        
+        def on_finished():
+            self.test_dialog_btn.setEnabled(True)
+            self.update_log_display()
+        
+        thread = threading.Thread(target=run_test, daemon=True)
+        thread.start()
+        
+        from PyQt6.QtCore import QTimer
+        def check_thread():
+            if not thread.is_alive():
+                on_finished()
+            else:
+                QTimer.singleShot(100, check_thread)
+        QTimer.singleShot(100, check_thread)
 
     def on_test_market_finished(self):
         """市场测试完成回调"""
@@ -1125,7 +1286,7 @@ class MainWindow(QMainWindow):
         # 恢复按钮
         self.test_market_btn.setEnabled(True)
         self.test_return_market_btn.setEnabled(True)
-        self.start_btn.setEnabled(True)
+        self.toggle_btn.setEnabled(True)
         self.market_worker = None
 
     def stop_worker(self):
@@ -1138,8 +1299,9 @@ class MainWindow(QMainWindow):
         self.update_log_display()
         
         # 更新按钮状态
-        self.start_btn.setEnabled(True)
-        self.stop_btn.setEnabled(False)
+        self.is_worker_running = False
+        self.toggle_btn.setText("开始")
+        self.toggle_btn.setStyleSheet("background-color: #4CAF50; color: white;")
         
         # 启用buff设置区域和模式切换
         self._set_buff_settings_enabled(True)
@@ -1211,7 +1373,9 @@ class MainWindow(QMainWindow):
         self.movement_none_radio.setVisible(show_radios)
         self.movement_right_radio.setVisible(show_radios)
         self.movement_left_radio.setVisible(show_radios)
-        self.movement_auto_label.setVisible(not show_radios)
+        # 勾选回市场时显示死花出市场移动选项
+        self.pre_skill_right_left_radio.setVisible(not show_radios)
+        self.pre_skill_left_only_radio.setVisible(not show_radios)
     
     def on_select_attack_key(self):
         """弹出虚拟键盘选择攻击键"""

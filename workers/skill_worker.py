@@ -23,8 +23,8 @@ except ImportError:
     KEYBOARD_AVAILABLE = False
 
 # 技能之间的间隔时间范围（毫秒），模拟人按完一个技能后等待再按下一个
-SKILL_GAP_MIN_MS = 1000   # 最小间隔
-SKILL_GAP_MAX_MS = 2000   # 最大间隔
+SKILL_GAP_MIN_MS = 2000   # 最小间隔
+SKILL_GAP_MAX_MS = 3000   # 最大间隔
 
 # 攻击键松开后延迟释放技能的时间范围（毫秒）
 ATTACK_KEY_RELEASE_DELAY_MIN_MS = 200
@@ -226,7 +226,8 @@ class SkillWorker(QObject):
             # === 2. 停止移动后再释放技能，避免按键冲突 ===
             if self.movement_mode != self.MOVEMENT_NONE:
                 self.human_input.stop_move()
-                time.sleep(0.1)  # 等待移动完全停止
+                # 等待0.3到0.5秒的随机数
+                time.sleep(random.uniform(0.3, 0.5))
             
             # === 3. 批量释放所有技能（技能之间有间隔，但不移动） ===
             for i, skill in enumerate(skills_to_release):
@@ -267,7 +268,16 @@ class SkillWorker(QObject):
         self.is_sitting = False  # 释放技能会打破坐椅子状态
         try:
             self.status_update.emit(f"准备释放技能: {skill.key}")
+            
+            # 第一次按键（press_key内部已有50-150ms的随机长按拟人化操作，模拟短按）
             press_key(skill.key)
+            
+            # 两次按键之间的随机间隔：100ms 到 300ms
+            time.sleep(random.uniform(0.1, 0.3))
+            
+            # 第二次按键（防止没有触发成功）
+            press_key(skill.key)
+            
             self.skill_pressed.emit(skill.key)
         except Exception as e:
             error_msg = f"按键错误: {str(e)}"

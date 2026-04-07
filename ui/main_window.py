@@ -9,7 +9,7 @@ from typing import List
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QMessageBox, QGroupBox, QCheckBox,
-    QTextEdit, QGridLayout, QDialog, QRadioButton, QButtonGroup, QFrame
+    QTextEdit, QGridLayout, QDialog, QRadioButton, QButtonGroup, QFrame, QStackedWidget
 )
 from PyQt6.QtCore import pyqtSignal, Qt, QTimer
 
@@ -352,7 +352,6 @@ class MainWindow(QMainWindow):
         self.movement_left_radio = QRadioButton("左走(回右)")
         self.movement_mode_group.addButton(self.movement_left_radio, 2); mv.addWidget(self.movement_left_radio)
         self.movement_mode_group.buttonClicked.connect(self.on_movement_mode_changed); mv.addStretch()
-        ol.addWidget(self.movement_mode_widget)
         self.pre_skill_move_widget = QWidget()
         ps = QHBoxLayout(self.pre_skill_move_widget); ps.setContentsMargins(0,2,0,0); ps.addWidget(QLabel("出市场:"))
         self.pre_skill_move_group = QButtonGroup(self)
@@ -361,7 +360,10 @@ class MainWindow(QMainWindow):
         self.pre_skill_left_only_radio = QRadioButton("只向左(魚窩)")
         self.pre_skill_move_group.addButton(self.pre_skill_left_only_radio, 1); ps.addWidget(self.pre_skill_left_only_radio)
         self.pre_skill_move_group.buttonClicked.connect(self.on_pre_skill_move_mode_changed); ps.addStretch()
-        ol.addWidget(self.pre_skill_move_widget)
+        self.movement_stack = QStackedWidget()
+        self.movement_stack.addWidget(self.movement_mode_widget)   # index 0: 活花
+        self.movement_stack.addWidget(self.pre_skill_move_widget)  # index 1: 死花
+        ol.addWidget(self.movement_stack)
         og.setLayout(ol); parent_layout.addWidget(og)
         self.speed_threshold_input = QLineEdit(); self.speed_threshold_input.setVisible(False)
         self.return_to_market_checkbox = QCheckBox(); self.return_to_market_checkbox.setVisible(False)
@@ -1121,11 +1123,9 @@ class MainWindow(QMainWindow):
     def _update_movement_mode_visibility(self):
         """根据模式切换显示/隐藏移动选项"""
         if self.return_to_market:
-            self.movement_mode_widget.setVisible(False)
-            self.pre_skill_move_widget.setVisible(True)
+            self.movement_stack.setCurrentIndex(1)  # 死花: 出市场选项
         else:
-            self.movement_mode_widget.setVisible(True)
-            self.pre_skill_move_widget.setVisible(False)
+            self.movement_stack.setCurrentIndex(0)  # 活花: 移动模式选项
     
     def update_window_status_display(self, status_text: str = None, success: bool = False):
         """更新窗口状态显示"""
@@ -1464,16 +1464,7 @@ class MainWindow(QMainWindow):
         self.random_behavior_checkbox.setEnabled(enabled)
         self.random_behavior_input.setEnabled(enabled)
     
-    def _update_movement_mode_visibility(self):
-        """根据 return_to_market 状态显示/隐藏移动模式选项"""
-        show_radios = not self.return_to_market
-        self.movement_none_radio.setVisible(show_radios)
-        self.movement_right_radio.setVisible(show_radios)
-        self.movement_left_radio.setVisible(show_radios)
-        # 勾选回市场时显示死花出市场移动选项
-        self.pre_skill_right_left_radio.setVisible(not show_radios)
-        self.pre_skill_left_only_radio.setVisible(not show_radios)
-    
+
 
     def on_select_jump_key(self):
         """弹出虚拟键盘选择跳跃键"""

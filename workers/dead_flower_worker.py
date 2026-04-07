@@ -66,6 +66,7 @@ class DeadFlowerWorker(QThread):
         # 导航参数
         self.TOLERANCE = 3
         self.DETECT_INTERVAL = (50, 100)
+        self.SLOWDOWN_THRESHOLD = 10         # 接近传送门自动减速的距离阈值(像素)
         self.MAX_DIRECTION_CHANGES = 3       # 连续换方向几次后切换微调模式
         self.TAP_DURATION = (40, 120)        # 微调模式单次按键时长(ms)
         self.TAP_INTERVAL = (100, 250)       # 微调模式两次按键间隔(ms)
@@ -551,6 +552,16 @@ class DeadFlowerWorker(QThread):
             # 判断需要的方向
             needed_direction = 'right' if dx > self.TOLERANCE else 'left'
             
+            # === 接近传送门时自动减速：松开方向键，自然过渡到轻点微调 ===
+            if not use_tap_mode and abs(dx) <= self.SLOWDOWN_THRESHOLD:
+                self.log_update.emit(f"接近传送门(dx={dx})，松手减速...")
+                if is_moving:
+                    self.human.stop_move()
+                    is_moving = False
+                    # 松开方向键后自然过渡，模拟玩家看到快到了松手的反应时间
+                    self._random_sleep(0.05, 0.15)
+                use_tap_mode = True
+            
             # === 微调模式：短按方式精确移动 ===
             if use_tap_mode:
                 # 确保先停下
@@ -558,11 +569,20 @@ class DeadFlowerWorker(QThread):
                     self.human.stop_move()
                     is_moving = False
                 
+                # 根据距离动态调整tap时长：越近按越短，拟人手感
+                distance = abs(dx)
+                if distance <= 4:
+                    tap_range = (25, 50)     # 很近：极短轻点
+                elif distance <= 7:
+                    tap_range = (30, 70)     # 较近：短轻点
+                else:
+                    tap_range = self.TAP_DURATION  # 较远：正常轻点 (40-120ms)
+                
                 # 短按方向键：press → 拟人化时长 → release
                 tap_key = self.human._get_key_object(needed_direction)
                 tap_duration = random.uniform(
-                    self.TAP_DURATION[0] / 1000.0,
-                    self.TAP_DURATION[1] / 1000.0
+                    tap_range[0] / 1000.0,
+                    tap_range[1] / 1000.0
                 )
                 self.human.keyboard.press(tap_key)
                 time.sleep(tap_duration)
@@ -586,15 +606,11 @@ class DeadFlowerWorker(QThread):
                 is_moving = False
                 self._random_sleep(0.1, 0.2)  # 换向拟人化延迟
                 
-                # 连续换方向超过阈值 → 切换为微调模式
+                # 连续换方向超过阈值 → 切换为微调模式（安全网）
                 if direction_change_count >= self.MAX_DIRECTION_CHANGES:
                     self.log_update.emit("检测到来回振荡，切换微调模式...")
                     use_tap_mode = True
                     continue
-            else:
-                # 没有换方向，重置计数
-                if is_moving:
-                    direction_change_count = 0
             
             if not is_moving:
                 if needed_direction == 'right':

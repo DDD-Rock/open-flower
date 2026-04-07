@@ -529,8 +529,8 @@ class MainWindow(QMainWindow):
     def create_log_section(self, parent_layout):
         h = QHBoxLayout()
         ll = QLabel("📋 日志"); ll.setStyleSheet("font-size: 11px; font-weight: bold; color: #e94560;"); h.addWidget(ll); h.addStretch()
-        cb = QPushButton("清空"); cb.setMaximumHeight(20); cb.setMaximumWidth(40)
-        cb.setStyleSheet("QPushButton{background-color:transparent;color:#555;border:1px solid #333;border-radius:3px;font-size:10px;}QPushButton:hover{color:#999;border-color:#555;}")
+        cb = QPushButton("清空"); cb.setFixedHeight(16); cb.setMaximumWidth(50)
+        cb.setStyleSheet("QPushButton{background-color:transparent;color:#555;border:1px solid #333;border-radius:3px;font-size:10px;min-height:0;padding:1px 4px;}QPushButton:hover{color:#999;border-color:#555;}")
         cb.clicked.connect(self.clear_logs); h.addWidget(cb)
         parent_layout.addLayout(h)
         self.log_display = QTextEdit(); self.log_display.setReadOnly(True); self.log_display.setMinimumHeight(80)

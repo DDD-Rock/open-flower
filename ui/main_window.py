@@ -9,7 +9,7 @@ from typing import List
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QMessageBox, QGroupBox, QCheckBox,
-    QTextEdit, QGridLayout, QDialog, QRadioButton, QButtonGroup
+    QTextEdit, QGridLayout, QDialog, QRadioButton, QButtonGroup, QFrame
 )
 from PyQt6.QtCore import pyqtSignal, Qt, QTimer
 
@@ -46,7 +46,6 @@ class MainWindow(QMainWindow):
         self.game_window_hwnd = None  # 游戏窗口句柄
         self.is_window_identified = False  # 是否已识别窗口
         self.return_to_market = True  # 是否释放后回到市场
-        self.manual_countdown = False  # 是否需要手动打怪倒计时
         self.movement_mode = "none"  # 移动模式: "none"(原地不动), "right"(向右走开buff), "left"(向左走开buff)
         self.pre_skill_move_mode = "right_left"  # 死花出市场后移动: "right_left" 或 "left_only"
         self.manual_portal_pos = None  # 手动标记的传送门位置 (x, y) 或 None
@@ -58,10 +57,6 @@ class MainWindow(QMainWindow):
             except ImportError:
                 self.logger.log("警告: 未安装pywin32，无法使用窗口识别功能")
         
-        # 5分钟检测相关
-        self.last_detect_key_time = None  # 上次按检测键的时间
-        self.countdown_seconds = 270  # 4分30秒 = 270秒
-        self.keyboard_hook = None  # 键盘钩子
         
         # 设置管理器
         self.settings_manager = SettingsManager()
@@ -71,16 +66,8 @@ class MainWindow(QMainWindow):
         # 程序启动后自动查找一次窗口
         self.auto_identify_on_startup()
         
-        # 初始化倒计时定时器（根据 manual_countdown 设置决定是否启动）
-        self.countdown_timer = QTimer()
-        self.countdown_timer.timeout.connect(self.update_countdown_display)
-        # 默认不启动，等待 load_default_config 后根据设置启动
         
-        # 初始化键盘监听（根据 manual_countdown 设置决定是否启动）
-        self.setup_keyboard_listener()
         
-        # 根据默认设置初始化UI可见性
-        self._update_manual_countdown_ui()
     
     def load_default_config(self):
         """加载配置（优先加载保存的设置，否则使用默认值）"""
@@ -106,13 +93,7 @@ class MainWindow(QMainWindow):
         """应用保存的设置"""
         # 加载模式设置
         self.return_to_market = settings.get("return_to_market", False)
-        self.manual_countdown = settings.get("manual_countdown", False)
-        self.return_to_market_checkbox.setChecked(self.return_to_market)
-        self.manual_countdown_checkbox.setChecked(self.manual_countdown)
-        
-        # 加载攻击键
-        self.selected_attack_key = settings.get("attack_key", "Ctrl")
-        self.attack_key_btn.setText(self.selected_attack_key)
+        self._update_mode_tab_style()
         
         # 加载跳跃键
         self.selected_jump_key = settings.get("jump_key", "Alt")
@@ -204,8 +185,6 @@ class MainWindow(QMainWindow):
         self.settings_manager.save_settings(
             buffs=self.buffs,
             return_to_market=self.return_to_market,
-            manual_countdown=self.manual_countdown,
-            attack_key=self.selected_attack_key,
             jump_key=getattr(self, 'selected_jump_key', 'Alt'),
             sit_chair_enabled=getattr(self, 'sit_chair_enabled', False),
             chair_key=getattr(self, 'selected_chair_key', '='),
@@ -218,390 +197,214 @@ class MainWindow(QMainWindow):
         self.update_log_display()
     
     def init_ui(self):
-        """初始化UI界面 - 瘦长垂直布局"""
+        """初始化UI界面 - 暗色主题现代设计"""
         self.setWindowTitle(APP_NAME)
-        self.setGeometry(WINDOW_X, WINDOW_Y, WINDOW_WIDTH, 550)
-        self.setFixedWidth(WINDOW_WIDTH)  # 固定宽度，防止切换模式时窗口大小变化
-        # 去掉最大化按钮
+        self.setGeometry(WINDOW_X, WINDOW_Y, 480, 640)
+        self.setFixedWidth(480)
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowMaximizeButtonHint)
-        
-        # 创建中央部件
+        self._apply_dark_theme()
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
-        
-        # 主布局 - 垂直布局
         main_layout = QVBoxLayout()
-        main_layout.setSpacing(5)
-        main_layout.setContentsMargins(5, 5, 5, 5)
+        main_layout.setSpacing(8)
+        main_layout.setContentsMargins(10, 10, 10, 10)
         central_widget.setLayout(main_layout)
-        
-        # 0. 版本信息（最顶部）
-        version_label = QLabel(f"Author: 暗中观察  |  Version: {APP_VERSION}")
-        version_label.setStyleSheet("font-size: 10px; color: #666; padding: 2px;")
-        version_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        main_layout.addWidget(version_label)
-        
-        # 1. 窗口识别状态（顶部）
-        self.create_status_section(main_layout)
-        
-        # 2. 设置区域
+        self._create_header(main_layout)
+        self._create_mode_tabs(main_layout)
         self.create_settings_section(main_layout)
-        
-        # 3. 控制按钮
         self.create_control_section(main_layout)
-        
-        # 4. 日志区域（底部）
         self.create_log_section(main_layout)
     
-    def create_status_section(self, parent_layout):
-        """创建窗口识别状态区域（顶部）"""
-        status_group = QGroupBox("窗口识别状态")
-        status_layout = QVBoxLayout()
-        status_layout.setContentsMargins(3, 3, 3, 3)
-        status_layout.setSpacing(2)
-        
-        self.window_status_label = QLabel("状态: 未识别")
-        self.window_status_label.setWordWrap(True)
-        self.window_status_label.setStyleSheet("padding: 3px; background-color: #f0f0f0; border-radius: 3px; font-size: 10px;")
-        status_layout.addWidget(self.window_status_label)
-        
-        # 5分钟检测倒计时显示（醒目）
-        self.countdown_label = QLabel("手动打怪倒计时: --:--")
-        self.countdown_label.setStyleSheet("""
-            font-size: 14px; 
-            font-weight: bold; 
-            color: #ff6600; 
-            padding: 5px; 
-            background-color: #fff3e0; 
-            border-radius: 3px;
-            border: 1px solid #ff6600;
+    def _apply_dark_theme(self):
+        """应用暗色主题"""
+        self.setStyleSheet("""
+            QMainWindow { background-color: #1a1a2e; }
+            QWidget { color: #e0e0e0; font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif; }
+            QGroupBox { background-color: #16213e; border: 1px solid #2a2a4a; border-radius: 8px;
+                margin-top: 14px; padding: 12px 8px 8px 8px; font-weight: bold; color: #e94560; }
+            QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; color: #e94560; }
+            QPushButton { background-color: #0f3460; color: #e0e0e0; border: 1px solid #1a4a7a;
+                border-radius: 6px; padding: 5px 12px; font-weight: bold; min-height: 22px; }
+            QPushButton:hover { background-color: #1a4a7a; border-color: #2a6aaa; }
+            QPushButton:pressed { background-color: #0a2540; }
+            QPushButton:disabled { background-color: #1a1a2e; color: #444; border-color: #2a2a3a; }
+            QLineEdit { background-color: #0d1b2a; color: #e0e0e0; border: 1px solid #2a2a4a;
+                border-radius: 4px; padding: 3px 6px; selection-background-color: #0f3460; }
+            QLineEdit:focus { border-color: #e94560; }
+            QCheckBox { color: #c0c0d0; spacing: 6px; }
+            QCheckBox::indicator { width: 15px; height: 15px; border-radius: 3px;
+                border: 1px solid #3a3a5a; background-color: #0d1b2a; }
+            QCheckBox::indicator:checked { background-color: #e94560; border-color: #e94560; }
+            QRadioButton { color: #c0c0d0; spacing: 5px; }
+            QRadioButton::indicator { width: 14px; height: 14px; border-radius: 7px;
+                border: 1px solid #3a3a5a; background-color: #0d1b2a; }
+            QRadioButton::indicator:checked { background-color: #e94560; border-color: #e94560; }
+            QTextEdit { background-color: #0d1b2a; color: #b0b0c0; border: 1px solid #2a2a4a;
+                border-radius: 6px; padding: 6px; font-family: "Consolas", monospace; font-size: 9pt; }
+            QLabel { color: #c0c0d0; }
+            QScrollBar:vertical { background-color: #0d1b2a; width: 8px; border-radius: 4px; }
+            QScrollBar::handle:vertical { background-color: #2a2a4a; border-radius: 4px; min-height: 20px; }
+            QScrollBar::handle:vertical:hover { background-color: #3a3a6a; }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: none; }
         """)
-        self.countdown_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        status_layout.addWidget(self.countdown_label)
-        
-        status_group.setLayout(status_layout)
-        parent_layout.addWidget(status_group)
+    
+    def _create_header(self, parent_layout):
+        """标题栏 + 窗口状态"""
+        header = QFrame()
+        header.setStyleSheet("QFrame { background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #16213e, stop:1 #0f3460); border-radius: 8px; }")
+        h_layout = QVBoxLayout(header)
+        h_layout.setContentsMargins(14, 10, 14, 8)
+        h_layout.setSpacing(4)
+        title_row = QHBoxLayout()
+        title = QLabel(f"🍁 {APP_NAME}")
+        title.setStyleSheet("font-size: 16px; font-weight: bold; color: #ffffff;")
+        title_row.addWidget(title)
+        title_row.addStretch()
+        ver = QLabel(f"v{APP_VERSION}")
+        ver.setStyleSheet("font-size: 11px; color: #7a7aaa;")
+        title_row.addWidget(ver)
+        author = QLabel("by 暗中观察")
+        author.setStyleSheet("font-size: 10px; color: #5a5a7a;")
+        title_row.addWidget(author)
+        h_layout.addLayout(title_row)
+        self.window_status_label = QLabel("● 未识别 — 点击「识别窗口」")
+        self.window_status_label.setWordWrap(True)
+        self.window_status_label.setStyleSheet("font-size: 11px; color: #ff6b6b;")
+        h_layout.addWidget(self.window_status_label)
+        parent_layout.addWidget(header)
+    
+    def _create_mode_tabs(self, parent_layout):
+        """模式切换Tab"""
+        tab_layout = QHBoxLayout()
+        tab_layout.setSpacing(0)
+        self.dead_flower_tab = QPushButton("🌺 死花模式")
+        self.live_flower_tab = QPushButton("🌻 活花模式")
+        self.dead_flower_tab.clicked.connect(lambda: self._switch_mode_tab(True))
+        self.live_flower_tab.clicked.connect(lambda: self._switch_mode_tab(False))
+        tab_layout.addWidget(self.dead_flower_tab)
+        tab_layout.addWidget(self.live_flower_tab)
+        parent_layout.addLayout(tab_layout)
+        self._update_mode_tab_style()
+    
+    def _switch_mode_tab(self, return_to_market: bool):
+        """切换死花/活花模式"""
+        self.return_to_market = return_to_market
+        self._update_mode_tab_style()
+        self._update_movement_mode_visibility()
+        self.logger.log(f"切换到: {'死花模式' if return_to_market else '活花模式'}")
+        self.update_log_display()
+    
+    def _update_mode_tab_style(self):
+        """更新Tab样式"""
+        a = "QPushButton { background-color: #e94560; color: white; border: 1px solid #e94560; padding: 8px 16px; font-weight: bold; font-size: 12px; border-radius: %s; } QPushButton:hover { background-color: #ff5577; }"
+        b = "QPushButton { background-color: #16213e; color: #666; border: 1px solid #2a2a4a; padding: 8px 16px; font-weight: bold; font-size: 12px; border-radius: %s; } QPushButton:hover { background-color: #1a2a4e; color: #999; }"
+        if self.return_to_market:
+            self.dead_flower_tab.setStyleSheet(a % "6px 0px 0px 6px")
+            self.live_flower_tab.setStyleSheet(b % "0px 6px 6px 0px")
+        else:
+            self.dead_flower_tab.setStyleSheet(b % "6px 0px 0px 6px")
+            self.live_flower_tab.setStyleSheet(a % "0px 6px 6px 0px")
     
     def create_settings_section(self, parent_layout):
-        """创建设置区域"""
-        # 运行模式选项区域
-        mode_layout = QHBoxLayout()
-        mode_layout.setContentsMargins(5, 0, 5, 5)
-        
-        mode_label = QLabel("运行模式:")
-        mode_label.setStyleSheet("font-weight: bold;")
-        mode_layout.addWidget(mode_label)
-        
-        # 是否释放后回到市场
-        self.return_to_market_checkbox = QCheckBox("释放后回到市场")
-        self.return_to_market_checkbox.setChecked(True)
-        self.return_to_market_checkbox.setToolTip("勾选后，释放技能后自动返回市场等待下次CD")
-        self.return_to_market_checkbox.toggled.connect(self.on_return_to_market_changed)
-        mode_layout.addWidget(self.return_to_market_checkbox)
-        
-        # 是否需要手动打怪倒计时
-        self.manual_countdown_checkbox = QCheckBox("需要手动打怪倒计时")
-        self.manual_countdown_checkbox.setChecked(False)
-        self.manual_countdown_checkbox.setToolTip("勾选后，监听攻击键并显示5分钟手动打怪倒计时")
-        self.manual_countdown_checkbox.toggled.connect(self.on_manual_countdown_changed)
-        mode_layout.addWidget(self.manual_countdown_checkbox)
-        
-        mode_layout.addStretch()
-        parent_layout.addLayout(mode_layout)
-        
-        # 移动模式选项区域（单选按钮组）
-        movement_layout = QHBoxLayout()
-        movement_layout.setContentsMargins(5, 0, 5, 5)
-        
-        movement_label = QLabel("移动模式:")
-        movement_label.setStyleSheet("font-weight: bold;")
-        movement_layout.addWidget(movement_label)
-        
-        # 创建单选按钮组
-        self.movement_mode_group = QButtonGroup(self)
-        
-        self.movement_none_radio = QRadioButton("原地不动(慎选)")
-        self.movement_none_radio.setToolTip("释放技能时不移动")
-        self.movement_none_radio.setChecked(True)  # 默认选中
-        self.movement_mode_group.addButton(self.movement_none_radio, 0)
-        movement_layout.addWidget(self.movement_none_radio)
-        
-        self.movement_right_radio = QRadioButton("向右走再释放(回左)")
-        self.movement_right_radio.setToolTip("向右移动后释放技能，然后向左回到边缘")
-        self.movement_mode_group.addButton(self.movement_right_radio, 1)
-        movement_layout.addWidget(self.movement_right_radio)
-        
-        self.movement_left_radio = QRadioButton("向左走再释放(回右)")
-        self.movement_left_radio.setToolTip("向左移动后释放技能，然后向右回到边缘")
-        self.movement_mode_group.addButton(self.movement_left_radio, 2)
-        movement_layout.addWidget(self.movement_left_radio)
-        
-        # 连接信号
-        self.movement_mode_group.buttonClicked.connect(self.on_movement_mode_changed)
-        
-        # 回到市场模式下的移动选项（单选按钮组）
-        self.pre_skill_move_group = QButtonGroup(self)
-        
-        self.pre_skill_right_left_radio = QRadioButton("先右挪再左挪")
-        self.pre_skill_right_left_radio.setToolTip("出市场后先向右小挪一步，再向左小挪一步，然后放技能")
-        self.pre_skill_right_left_radio.setChecked(True)
-        self.pre_skill_move_group.addButton(self.pre_skill_right_left_radio, 0)
-        movement_layout.addWidget(self.pre_skill_right_left_radio)
-        
-        self.pre_skill_left_only_radio = QRadioButton("只向左挪一步(魚窩)")
-        self.pre_skill_left_only_radio.setToolTip("出市场后只向左小挪一步，然后放技能")
-        self.pre_skill_move_group.addButton(self.pre_skill_left_only_radio, 1)
-        movement_layout.addWidget(self.pre_skill_left_only_radio)
-        
-        self.pre_skill_move_group.buttonClicked.connect(self.on_pre_skill_move_mode_changed)
-        
-        movement_layout.addStretch()
-        parent_layout.addLayout(movement_layout)
-        
-        # 根据默认的 return_to_market 状态设置移动模式显示
-        self._update_movement_mode_visibility()
-        
-        # Buff配置区域
-        buff_group = QGroupBox("Buff/Skill配置")
-        buff_layout = QGridLayout()
-        buff_layout.setSpacing(3)
-        buff_layout.setContentsMargins(5, 5, 5, 5)
-        
-        self.buff_checkboxes = []
-        self.buff_key_btns = []  # 改为按钮
-        self.buff_duration_inputs = []
-        self.buff_countdown_labels = []  # 倒计时标签
-        
+        """设置区域"""
+        KS = "QPushButton { background-color: #0d1b2a; border: 1px solid #e94560; border-radius: 4px; font-size: 11px; font-weight: bold; color: #e94560; padding: 2px 8px; } QPushButton:hover { background-color: #1a2a3e; }"
+        buff_group = QGroupBox("⚔ 技能配置")
+        bl = QGridLayout(); bl.setSpacing(4); bl.setContentsMargins(8,8,8,8)
+        self.buff_checkboxes = []; self.buff_key_btns = []; self.buff_duration_inputs = []; self.buff_countdown_labels = []
         for i in range(6):
-            checkbox = QCheckBox(f"buff{i+1}")
-            self.buff_checkboxes.append(checkbox)
-            buff_layout.addWidget(checkbox, i, 0)
-            
-            # 按键选择按钮（点击弹出虚拟键盘）
-            key_btn = QPushButton("选择按键")
-            key_btn.setMaximumHeight(22)
-            key_btn.setFixedWidth(70)
-            key_btn.setStyleSheet("""
-                QPushButton {
-                    background-color: #e3f2fd;
-                    border: 1px solid #1976d2;
-                    border-radius: 3px;
-                    font-size: 11px;
-                    font-weight: bold;
-                    color: #1976d2;
-                    padding: 2px 8px;
-                    outline: none;
-                }
-                QPushButton:hover {
-                    background-color: #bbdefb;
-                }
-                QPushButton:focus {
-                    outline: none;
-                    border: 1px solid #1976d2;
-                }
-            """)
-            key_btn.clicked.connect(lambda checked, idx=i: self.on_buff_key_btn_clicked(idx))
-            self.buff_key_btns.append(key_btn)
-            buff_layout.addWidget(key_btn, i, 1)
-            
-            # 秒数输入框（固定宽度，能写4位数）
-            duration_input = QLineEdit()
-            duration_input.setMaximumHeight(22)
-            duration_input.setFixedWidth(45)
-            duration_input.setPlaceholderText("秒")
-            self.buff_duration_inputs.append(duration_input)
-            buff_layout.addWidget(duration_input, i, 2)
-            
-            # 倒计时显示标签
-            countdown_label = QLabel("--:--")
-            countdown_label.setFixedWidth(50)
-            countdown_label.setStyleSheet("""
-                font-size: 10px;
-                padding: 2px;
-                background-color: #e8e8e8;
-                border-radius: 2px;
-                color: #666;
-            """)
-            countdown_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.buff_countdown_labels.append(countdown_label)
-            buff_layout.addWidget(countdown_label, i, 3)
-            
-            checkbox.toggled.connect(lambda checked, idx=i: self.on_buff_toggled(idx, checked))
-            duration_input.textChanged.connect(lambda text, idx=i: self.on_buff_duration_changed(idx, text))
-        
-        buff_group.setLayout(buff_layout)
-        parent_layout.addWidget(buff_group)
-        
-        # 其他设置（一行布局）
-        options_layout = QHBoxLayout()
-        
-        # 随机提前释放
-        self.random_behavior_checkbox = QCheckBox("随机提前释放（秒）")
-        self.random_behavior_input = QLineEdit()
-        self.random_behavior_input.setMaximumWidth(40)
-        self.random_behavior_input.setMaximumHeight(22)
-        options_layout.addWidget(self.random_behavior_checkbox)
-        options_layout.addWidget(self.random_behavior_input)
-        
-        # 跳跃按键
-        jump_label = QLabel("  跳跃键:")
-        options_layout.addWidget(jump_label)
-        
-        self.selected_jump_key = "Alt"
-        self.jump_key_btn = QPushButton(self.selected_jump_key)
-        self.jump_key_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #e3f2fd;
-                border: 1px solid #1976d2;
-                border-radius: 3px;
-                font-size: 11px;
-                font-weight: bold;
-                color: #1976d2;
-                padding: 2px 8px;
-                min-width: 50px;
-                max-height: 22px;
-                outline: none;
-            }
-            QPushButton:hover {
-                background-color: #bbdefb;
-            }
-            QPushButton:focus {
-                outline: none;
-                border: 1px solid #1976d2;
-            }
-        """)
-        self.jump_key_btn.clicked.connect(self.on_select_jump_key)
-        options_layout.addWidget(self.jump_key_btn)
-        
-        options_layout.addStretch()
-        
-        parent_layout.addLayout(options_layout)
-        
-        # 设置攻击按键（点击按钮弹出虚拟键盘）- 可隐藏，死花模式不需要
-        self.attack_key_widget = QWidget()
-        detect_layout = QHBoxLayout(self.attack_key_widget)
-        detect_layout.setContentsMargins(0, 0, 0, 0)
-        detect_label = QLabel("监听攻击按键:")
-        detect_layout.addWidget(detect_label)
-        
-        self.selected_attack_key = "Ctrl"  # 默认攻击键
-        self.attack_key_btn = QPushButton(self.selected_attack_key)
-        self.attack_key_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #e3f2fd;
-                border: 1px solid #1976d2;
-                border-radius: 3px;
-                font-size: 11px;
-                font-weight: bold;
-                color: #1976d2;
-                padding: 2px 8px;
-                min-width: 50px;
-                max-height: 22px;
-                outline: none;
-            }
-            QPushButton:hover {
-                background-color: #bbdefb;
-            }
-            QPushButton:focus {
-                outline: none;
-                border: 1px solid #1976d2;
-            }
-        """)
-        self.attack_key_btn.clicked.connect(self.on_select_attack_key)
-        detect_layout.addWidget(self.attack_key_btn)
-        detect_layout.addStretch()
-        parent_layout.addWidget(self.attack_key_widget)
-        
-        # 新增空闲时坐椅子选项（新的一行，放在识别窗口上方）
-        sit_chair_layout = QHBoxLayout()
-        sit_chair_layout.setContentsMargins(5, 5, 5, 5)
-        
-        self.sit_chair_checkbox = QCheckBox("空闲时坐椅子")
-        self.sit_chair_enabled = False
-        self.sit_chair_checkbox.setChecked(self.sit_chair_enabled)
-        self.sit_chair_checkbox.toggled.connect(self.on_sit_chair_toggled)
-        sit_chair_layout.addWidget(self.sit_chair_checkbox)
-        
-        chair_key_label = QLabel("  快捷键:")
-        sit_chair_layout.addWidget(chair_key_label)
-        
-        self.selected_chair_key = "="
-        self.chair_key_btn = QPushButton(self.selected_chair_key)
-        self.chair_key_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #e3f2fd;
-                border: 1px solid #1976d2;
-                border-radius: 3px;
-                font-size: 11px;
-                font-weight: bold;
-                color: #1976d2;
-                padding: 2px 8px;
-                min-width: 50px;
-                max-height: 22px;
-                outline: none;
-            }
-            QPushButton:hover {
-                background-color: #bbdefb;
-            }
-            QPushButton:focus {
-                outline: none;
-                border: 1px solid #1976d2;
-            }
-        """)
-        self.chair_key_btn.clicked.connect(self.on_select_chair_key)
-        sit_chair_layout.addWidget(self.chair_key_btn)
-        sit_chair_layout.addStretch()
-        
-        parent_layout.addLayout(sit_chair_layout)
-        
-        # 隐藏的速度阈值输入（保留功能但不显示）
-        self.speed_threshold_input = QLineEdit()
-        self.speed_threshold_input.setVisible(False)
+            cb = QCheckBox(f"buff{i+1}"); self.buff_checkboxes.append(cb); bl.addWidget(cb, i, 0)
+            kb = QPushButton("选择按键"); kb.setMaximumHeight(24); kb.setFixedWidth(70); kb.setStyleSheet(KS)
+            kb.clicked.connect(lambda c, idx=i: self.on_buff_key_btn_clicked(idx))
+            self.buff_key_btns.append(kb); bl.addWidget(kb, i, 1)
+            di = QLineEdit(); di.setMaximumHeight(24); di.setFixedWidth(50); di.setPlaceholderText("秒")
+            di.setAlignment(Qt.AlignmentFlag.AlignCenter); self.buff_duration_inputs.append(di); bl.addWidget(di, i, 2)
+            cl = QLabel("--:--"); cl.setFixedWidth(50)
+            cl.setStyleSheet("font-size:10px;padding:2px;background-color:#0d1b2a;border-radius:3px;color:#555;")
+            cl.setAlignment(Qt.AlignmentFlag.AlignCenter); self.buff_countdown_labels.append(cl); bl.addWidget(cl, i, 3)
+            cb.toggled.connect(lambda c, idx=i: self.on_buff_toggled(idx, c))
+            di.textChanged.connect(lambda t, idx=i: self.on_buff_duration_changed(idx, t))
+        buff_group.setLayout(bl); parent_layout.addWidget(buff_group)
+        og = QGroupBox("⚙ 高级设置"); ol = QVBoxLayout(); ol.setContentsMargins(8,8,8,8); ol.setSpacing(6)
+        g = QGridLayout(); g.setSpacing(6)
+        self.random_behavior_checkbox = QCheckBox("随机提前(秒)"); g.addWidget(self.random_behavior_checkbox, 0, 0)
+        self.random_behavior_input = QLineEdit(); self.random_behavior_input.setFixedWidth(40); self.random_behavior_input.setMaximumHeight(24)
+        self.random_behavior_input.setAlignment(Qt.AlignmentFlag.AlignCenter); g.addWidget(self.random_behavior_input, 0, 1)
+        jl = QLabel("跳跃键:"); jl.setAlignment(Qt.AlignmentFlag.AlignRight|Qt.AlignmentFlag.AlignVCenter); g.addWidget(jl, 0, 2)
+        self.selected_jump_key = "Alt"; self.jump_key_btn = QPushButton("Alt")
+        self.jump_key_btn.setFixedWidth(55); self.jump_key_btn.setMaximumHeight(24); self.jump_key_btn.setStyleSheet(KS)
+        self.jump_key_btn.clicked.connect(self.on_select_jump_key); g.addWidget(self.jump_key_btn, 0, 3)
+        self.sit_chair_checkbox = QCheckBox("空闲坐椅子"); self.sit_chair_enabled = False
+        self.sit_chair_checkbox.toggled.connect(self.on_sit_chair_toggled); g.addWidget(self.sit_chair_checkbox, 1, 0)
+        g.addWidget(QLabel(""), 1, 1)
+        chl = QLabel("椅子键:"); chl.setAlignment(Qt.AlignmentFlag.AlignRight|Qt.AlignmentFlag.AlignVCenter); g.addWidget(chl, 1, 2)
+        self.selected_chair_key = "="; self.chair_key_btn = QPushButton("=")
+        self.chair_key_btn.setFixedWidth(55); self.chair_key_btn.setMaximumHeight(24); self.chair_key_btn.setStyleSheet(KS)
+        self.chair_key_btn.clicked.connect(self.on_select_chair_key); g.addWidget(self.chair_key_btn, 1, 3)
+        ol.addLayout(g)
+        self.movement_mode_widget = QWidget()
+        mv = QHBoxLayout(self.movement_mode_widget); mv.setContentsMargins(0,2,0,0); mv.addWidget(QLabel("移动:"))
+        self.movement_mode_group = QButtonGroup(self)
+        self.movement_none_radio = QRadioButton("原地不动"); self.movement_none_radio.setChecked(True)
+        self.movement_mode_group.addButton(self.movement_none_radio, 0); mv.addWidget(self.movement_none_radio)
+        self.movement_right_radio = QRadioButton("右走(回左)")
+        self.movement_mode_group.addButton(self.movement_right_radio, 1); mv.addWidget(self.movement_right_radio)
+        self.movement_left_radio = QRadioButton("左走(回右)")
+        self.movement_mode_group.addButton(self.movement_left_radio, 2); mv.addWidget(self.movement_left_radio)
+        self.movement_mode_group.buttonClicked.connect(self.on_movement_mode_changed); mv.addStretch()
+        ol.addWidget(self.movement_mode_widget)
+        self.pre_skill_move_widget = QWidget()
+        ps = QHBoxLayout(self.pre_skill_move_widget); ps.setContentsMargins(0,2,0,0); ps.addWidget(QLabel("出市场:"))
+        self.pre_skill_move_group = QButtonGroup(self)
+        self.pre_skill_right_left_radio = QRadioButton("先右再左"); self.pre_skill_right_left_radio.setChecked(True)
+        self.pre_skill_move_group.addButton(self.pre_skill_right_left_radio, 0); ps.addWidget(self.pre_skill_right_left_radio)
+        self.pre_skill_left_only_radio = QRadioButton("只向左(魚窩)")
+        self.pre_skill_move_group.addButton(self.pre_skill_left_only_radio, 1); ps.addWidget(self.pre_skill_left_only_radio)
+        self.pre_skill_move_group.buttonClicked.connect(self.on_pre_skill_move_mode_changed); ps.addStretch()
+        ol.addWidget(self.pre_skill_move_widget)
+        og.setLayout(ol); parent_layout.addWidget(og)
+        self.speed_threshold_input = QLineEdit(); self.speed_threshold_input.setVisible(False)
+        self.return_to_market_checkbox = QCheckBox(); self.return_to_market_checkbox.setVisible(False)
+        self._update_movement_mode_visibility()
     
     def create_control_section(self, parent_layout):
-        """创建控制按钮区域"""
-        btn_layout = QHBoxLayout()
-        btn_layout.setSpacing(5)
-        
-        self.identify_btn = QPushButton("识别窗口")
+        """控制按钮和调试区域"""
+        bl = QHBoxLayout(); bl.setSpacing(6)
+        self.identify_btn = QPushButton("🔍 识别窗口")
         self.identify_btn.clicked.connect(self.on_identify_window)
-        if not WINDOW_SELECTOR_AVAILABLE:
-            self.identify_btn.setEnabled(False)
-        btn_layout.addWidget(self.identify_btn)
-        
-        self.portal_marker_btn = QPushButton("标记传送门")
-        self.portal_marker_btn.setToolTip("手动标记市场传送门位置（传送门被遮挡时使用）")
-        self.portal_marker_btn.clicked.connect(self.on_mark_portal)
-        btn_layout.addWidget(self.portal_marker_btn)
-        
+        if not WINDOW_SELECTOR_AVAILABLE: self.identify_btn.setEnabled(False)
+        bl.addWidget(self.identify_btn)
+        self.portal_marker_btn = QPushButton("📍 标记传送门")
+        self.portal_marker_btn.setToolTip("手动标记市场传送门位置")
+        self.portal_marker_btn.clicked.connect(self.on_mark_portal); bl.addWidget(self.portal_marker_btn)
         self.is_worker_running = False
-        self.toggle_btn = QPushButton("开始")
-        self.toggle_btn.setStyleSheet("background-color: #4CAF50; color: white;")
-        self.toggle_btn.clicked.connect(self.on_toggle_worker)
-        btn_layout.addWidget(self.toggle_btn)
-        
-        parent_layout.addLayout(btn_layout)
-
-        # 测试按钮
-        test_layout = QHBoxLayout()
-        test_layout.setContentsMargins(5, 5, 5, 5)
+        self.toggle_btn = QPushButton("▶ 开始")
+        self.toggle_btn.setStyleSheet("QPushButton { background-color: #2ecc71; color: white; font-size: 13px; font-weight: bold; border: none; border-radius: 6px; padding: 6px 20px; } QPushButton:hover { background-color: #27ae60; } QPushButton:pressed { background-color: #1e8449; }")
+        self.toggle_btn.clicked.connect(self.on_toggle_worker); bl.addWidget(self.toggle_btn)
+        parent_layout.addLayout(bl)
+        self.debug_toggle_btn = QPushButton("▶ 调试工具")
+        self.debug_toggle_btn.setStyleSheet("QPushButton { background-color: transparent; color: #555; border: none; font-size: 10px; text-align: left; padding: 2px 4px; } QPushButton:hover { color: #888; }")
+        self.debug_toggle_btn.clicked.connect(self._toggle_debug_section); parent_layout.addWidget(self.debug_toggle_btn)
+        self.debug_widget = QWidget(); self.debug_widget.setVisible(False)
+        dl = QHBoxLayout(self.debug_widget); dl.setContentsMargins(0,0,0,0); dl.setSpacing(4)
+        ds = "QPushButton { font-size: 10px; padding: 4px 8px; border-radius: 4px; %s } QPushButton:hover { %s }"
         self.test_market_btn = QPushButton("测试离开市场")
-        self.test_market_btn.setStyleSheet("background-color: #2196F3; color: white;")
-        self.test_market_btn.clicked.connect(self.start_test_market_nav)
-        test_layout.addWidget(self.test_market_btn)
-        
+        self.test_market_btn.setStyleSheet(ds % ("background-color:#1565C0;color:white;","background-color:#1976D2;"))
+        self.test_market_btn.clicked.connect(self.start_test_market_nav); dl.addWidget(self.test_market_btn)
         self.test_return_market_btn = QPushButton("测试回到市场")
-        self.test_return_market_btn.setStyleSheet("background-color: #9C27B0; color: white;")
-        self.test_return_market_btn.clicked.connect(self.start_test_return_to_market)
-        test_layout.addWidget(self.test_return_market_btn)
-        
+        self.test_return_market_btn.setStyleSheet(ds % ("background-color:#7B1FA2;color:white;","background-color:#8E24AA;"))
+        self.test_return_market_btn.clicked.connect(self.start_test_return_to_market); dl.addWidget(self.test_return_market_btn)
         self.test_dialog_btn = QPushButton("测试关闭弹窗")
-        self.test_dialog_btn.setStyleSheet("background-color: #FF5722; color: white;")
-        self.test_dialog_btn.clicked.connect(self.start_test_dismiss_dialog)
-        test_layout.addWidget(self.test_dialog_btn)
-        
-        parent_layout.addLayout(test_layout)
-
+        self.test_dialog_btn.setStyleSheet(ds % ("background-color:#E64A19;color:white;","background-color:#F4511E;"))
+        self.test_dialog_btn.clicked.connect(self.start_test_dismiss_dialog); dl.addWidget(self.test_dialog_btn)
+        parent_layout.addWidget(self.debug_widget)
+    
+    def _toggle_debug_section(self):
+        """切换调试区域"""
+        v = not self.debug_widget.isVisible()
+        self.debug_widget.setVisible(v)
+        self.debug_toggle_btn.setText("▼ 调试工具" if v else "▶ 调试工具")
+    
     def start_test_return_to_market(self):
         """测试回到市场功能（点击自由市场按钮）"""
         if not self.game_window_hwnd:
@@ -722,29 +525,13 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(100, check_thread)
 
     def create_log_section(self, parent_layout):
-        log_header = QHBoxLayout()
-        log_label = QLabel("日志")
-        log_label.setStyleSheet("font-size: 11px; font-weight: bold;")
-        log_header.addWidget(log_label)
-        log_header.addStretch()
-        
-        clear_btn = QPushButton("清空")
-        clear_btn.setMaximumHeight(20)
-        clear_btn.setMaximumWidth(40)
-        clear_btn.setStyleSheet("font-size: 10px; padding: 2px;")
-        clear_btn.clicked.connect(self.clear_logs)
-        log_header.addWidget(clear_btn)
-        
-        parent_layout.addLayout(log_header)
-        
-        # 日志显示区域（可伸缩，随窗口高度变化）
-        self.log_display = QTextEdit()
-        self.log_display.setReadOnly(True)
-        font = QApplication.font()
-        font.setPointSize(9)
-        self.log_display.setFont(font)
-        self.log_display.setMinimumHeight(85)  # 最小高度约5条日志
-        # 让日志区域可以伸展
+        h = QHBoxLayout()
+        ll = QLabel("📋 日志"); ll.setStyleSheet("font-size: 11px; font-weight: bold; color: #e94560;"); h.addWidget(ll); h.addStretch()
+        cb = QPushButton("清空"); cb.setMaximumHeight(20); cb.setMaximumWidth(40)
+        cb.setStyleSheet("QPushButton{background-color:transparent;color:#555;border:1px solid #333;border-radius:3px;font-size:10px;}QPushButton:hover{color:#999;border-color:#555;}")
+        cb.clicked.connect(self.clear_logs); h.addWidget(cb)
+        parent_layout.addLayout(h)
+        self.log_display = QTextEdit(); self.log_display.setReadOnly(True); self.log_display.setMinimumHeight(80)
         parent_layout.addWidget(self.log_display, stretch=1)
     
     def on_buff_toggled(self, index: int, checked: bool):
@@ -774,25 +561,6 @@ class MainWindow(QMainWindow):
             self.buffs[index].duration = duration
         except ValueError:
             pass
-    
-    def on_return_to_market_changed(self, checked: bool):
-        """释放后回到市场选项切换"""
-        self.return_to_market = checked
-        status = "开启" if checked else "关闭"
-        self.logger.log(f"释放后回到市场: {status}")
-        self.update_log_display()
-        
-        # 更新移动模式显示
-        self._update_movement_mode_visibility()
-    
-    def on_manual_countdown_changed(self, checked: bool):
-        """手动打怪倒计时选项切换"""
-        self.manual_countdown = checked
-        self._update_manual_countdown_ui()
-        
-        status = "开启" if checked else "关闭"
-        self.logger.log(f"手动打怪倒计时: {status}")
-        self.update_log_display()
     
     def on_movement_mode_changed(self, button):
         """移动模式选项切换"""
@@ -842,23 +610,6 @@ class MainWindow(QMainWindow):
             self.pre_skill_left_only_radio.setChecked(True)
         else:
             self.pre_skill_right_left_radio.setChecked(True)
-    
-    def _update_manual_countdown_ui(self):
-        """更新手动打怪倒计时相关UI和功能"""
-        enabled = self.manual_countdown
-        
-        # 显示/隐藏攻击键设置和倒计时显示
-        self.attack_key_widget.setVisible(enabled)
-        self.countdown_label.setVisible(enabled)
-        
-        # 启动/停止倒计时定时器
-        if enabled:
-            if not self.countdown_timer.isActive():
-                self.countdown_timer.start(1000)
-        else:
-            self.countdown_timer.stop()
-            # 重置倒计时状态
-            self.last_detect_key_time = None
     
     def auto_identify_on_startup(self):
         """程序启动时自动识别窗口"""
@@ -1150,7 +901,359 @@ class MainWindow(QMainWindow):
                     self.logger.log(f"将窗口置于前台失败: {str(e)}")
             
             # 获取攻击键配置
-            attack_key = self.selected_attack_key.lower()
+            attack_key = "ctrl"
+            
+            # 创建新的worker，传入移动模式
+            self.worker = SkillWorker(
+                skills, 
+                self.window_selector, 
+                self.game_window_hwnd, 
+                attack_key, 
+                self.movement_mode,
+                getattr(self, 'sit_chair_enabled', False),
+                getattr(self, 'selected_chair_key', '=')
+            )
+            self.worker.status_update.connect(self.on_status_update)
+            self.worker.skill_pressed.connect(self.on_skill_pressed)
+            self.worker.error_occurred.connect(self.on_error)
+            self.worker.countdown_update.connect(self.on_countdown_update)
+            
+            # 保存当前启用的buff信息，用于显示倒计时
+            self.active_buff_keys = [buff.key for buff in enabled_buffs]
+            
+            # 启动worker
+            self.worker.start()
+            self.logger.log("原地挂机模式已启动")
+        
+        self.update_log_display()
+        
+        # 更新按钮状态
+        self.is_worker_running = True
+        self.toggle_btn.setText("停止")
+        self.toggle_btn.setStyleSheet("background-color: #f44336; color: white;")
+        
+        # 禁用buff设置区域和模式切换
+        self._set_buff_settings_enabled(False)
+        self.dead_flower_tab.setEnabled(False)
+        self.live_flower_tab.setEnabled(False)
+        self._update_movement_mode_visibility()
+        
+        # 显示buff倒计时区域
+        self._show_buff_countdown(True)
+    
+    def on_worker_finished(self):
+        """Worker完成回调（用于死花模式）"""
+        self.logger.log("Worker已停止")
+        self.update_log_display()
+        self.stop_worker()
+    
+    def start_test_market_nav(self):
+        """开始市场移动测试"""
+        if not self.game_window_hwnd:
+             QMessageBox.warning(self, "错误", "请先确保游戏窗口已被识别")
+             return
+        
+        # 先检测当前位置
+        from detection.market_button import MarketButtonDetector
+        detector = MarketButtonDetector(hwnd=self.game_window_hwnd, confidence=0.3)
+        has_logo = detector.is_market_logo_visible()
+        has_btn = detector.find_market_button_in_game() is not None
+        
+        if not (has_logo and has_btn):
+            QMessageBox.information(self, "提示", "当前不在市场中，无法离开市场")
+            return
+             
+        self.logger.log("正在初始化市场导航模块...")
+        self.update_log_display()
+        
+        # 禁用按钮
+        self.test_market_btn.setEnabled(False)
+        self.test_return_market_btn.setEnabled(False)
+        self.toggle_btn.setEnabled(False)
+        
+        # 创建并启动worker
+        self.market_worker = MarketWorker(self.game_window_hwnd)
+        self.market_worker.log_update.connect(self.on_status_update)
+        self.market_worker.finished_signal.connect(self.on_test_market_finished)
+        self.market_worker.error_signal.connect(self.on_error)
+        self.market_worker.start()
+
+    def start_test_dismiss_dialog(self):
+        """测试检测并关闭游戏内弹窗"""
+        if not self.game_window_hwnd:
+            QMessageBox.warning(self, "错误", "请先确保游戏窗口已被识别")
+            return
+        
+        self.test_dialog_btn.setEnabled(False)
+        self.logger.log("正在检测游戏内弹窗...")
+        self.update_log_display()
+        
+        import threading
+        
+        def run_test():
+            try:
+                from detection.dialog_detector import DialogDetector
+                from automation.human_input import HumanInput
+                
+                detector = DialogDetector(hwnd=self.game_window_hwnd, confidence=0.5)
+                pos = detector.find_confirm_button()
+                
+                if pos:
+                    self.logger.log(f"✅ 检测到确定按钮，位置: {pos}，正在点击...")
+                    human = HumanInput()
+                    human.click_at(pos[0], pos[1], offset_range=5)
+                    import time
+                    time.sleep(0.3)
+                    human.release_all()
+                    self.logger.log("已点击确定按钮")
+                else:
+                    self.logger.log("❌ 未检测到弹窗中的确定按钮")
+                    
+            except Exception as e:
+                import traceback
+                self.logger.log(f"测试出错: {str(e)}")
+                traceback.print_exc()
+        
+        def on_finished():
+            self.test_dialog_btn.setEnabled(True)
+            self.update_log_display()
+        
+        thread = threading.Thread(target=run_test, daemon=True)
+        thread.start()
+        
+        from PyQt6.QtCore import QTimer
+        def check_thread():
+            if not thread.is_alive():
+                on_finished()
+            else:
+                QTimer.singleShot(100, check_thread)
+        QTimer.singleShot(100, check_thread)
+
+    def on_test_market_finished(self):
+        """市场测试完成回调"""
+        self.logger.log("市场导航测试结束")
+        self.update_log_display()
+        
+        # 恢复按钮
+        self.test_market_btn.setEnabled(True)
+        self.test_return_market_btn.setEnabled(True)
+        self.toggle_btn.setEnabled(True)
+        self.market_worker = None
+
+    def stop_worker(self):
+        """停止技能释放"""
+        if self.worker:
+            self.worker.stop()
+            self.worker = None
+        
+        self.logger.log("已停止运行")
+        self.update_log_display()
+        
+        # 更新按钮状态
+        self.is_worker_running = False
+        self.toggle_btn.setText("开始")
+        self.toggle_btn.setStyleSheet("QPushButton{background-color:#2ecc71;color:white;font-size:13px;font-weight:bold;border:none;border-radius:6px;padding:6px 20px;}QPushButton:hover{background-color:#27ae60;}")
+        
+        # 启用buff设置区域和模式切换
+        self._set_buff_settings_enabled(True)
+        self.dead_flower_tab.setEnabled(True)
+        self.live_flower_tab.setEnabled(True)
+        self._update_movement_mode_visibility()
+        
+        # 隐藏buff倒计时区域
+        self._show_buff_countdown(False)
+    
+    def _show_buff_countdown(self, show: bool):
+        """显示/隐藏buff倒计时"""
+        if show:
+            # 初始化倒计时显示
+            for i, label in enumerate(self.buff_countdown_labels):
+                if i < len(self.buffs) and self.buffs[i].enabled:
+                    label.setText("--:--")
+                else:
+                    label.setText("--:--")
+    
+    def on_countdown_update(self, countdown_info: dict):
+        """倒计时更新回调"""
+        for i, buff in enumerate(self.buffs):
+            if i < len(self.buff_countdown_labels):
+                if buff.enabled and buff.key in countdown_info:
+                    remaining = countdown_info[buff.key]
+                    mins = remaining // 60
+                    secs = remaining % 60
+                    self.buff_countdown_labels[i].setText(f"{mins:02d}:{secs:02d}")
+                    
+                    # 根据剩余时间设置颜色
+                    if remaining <= 10:
+                        self.buff_countdown_labels[i].setStyleSheet("""
+                            font-size: 10px; padding: 2px;
+                            background-color: #ffcdd2; border-radius: 2px;
+                            color: #c62828; font-weight: bold;
+                        """)
+                    elif remaining <= 30:
+                        self.buff_countdown_labels[i].setStyleSheet("""
+                            font-size: 10px; padding: 2px;
+                            background-color: #ffe0b2; border-radius: 2px;
+                            color: #e65100;
+                        """)
+                    else:
+                        self.buff_countdown_labels[i].setStyleSheet("""
+                            font-size: 10px; padding: 2px;
+                            background-color: #c8e6c9; border-radius: 2px;
+                            color: #2e7d32;
+                        """)
+    
+    def _set_buff_settings_enabled(self, enabled: bool):
+        """设置buff设置区域的启用/禁用状态"""
+        # 禁用/启用buff配置控件
+        for checkbox in self.buff_checkboxes:
+            checkbox.setEnabled(enabled)
+        for key_btn in self.buff_key_btns:
+            key_btn.setEnabled(enabled)
+        for duration_input in self.buff_duration_inputs:
+            duration_input.setEnabled(enabled)
+        
+        # 禁用/启用其他设置
+        self.random_behavior_checkbox.setEnabled(enabled)
+        self.random_behavior_input.setEnabled(enabled)
+
+    
+    def _update_movement_mode_visibility(self):
+        """根据模式切换显示/隐藏移动选项"""
+        if self.return_to_market:
+            self.movement_mode_widget.setVisible(False)
+            self.pre_skill_move_widget.setVisible(True)
+        else:
+            self.movement_mode_widget.setVisible(True)
+            self.pre_skill_move_widget.setVisible(False)
+    
+    def update_window_status_display(self, status_text: str = None, success: bool = False):
+        """更新窗口状态显示"""
+        if status_text is None:
+            if self.is_window_identified and self.game_window_hwnd:
+                if self.window_selector:
+                    wi = self.window_selector.get_window_info(self.game_window_hwnd)
+                    if wi:
+                        status_text = f"● {wi['title']} | {wi['size'][0]}x{wi['size'][1]}"
+                        success = True
+                    else:
+                        status_text = "● 窗口已关闭"; success = False
+                else:
+                    status_text = "● 已识别"; success = True
+            else:
+                status_text = "● 未识别 — 点击「识别窗口」"; success = False
+        self.window_status_label.setText(status_text)
+        self.window_status_label.setStyleSheet(f"font-size: 11px; color: {'#2ecc71' if success else '#ff6b6b'};")
+    
+    def clear_logs(self):
+        """清空日志"""
+        self.logger.clear()
+        self.update_log_display()
+    
+    def update_log_display(self):
+        """更新日志显示"""
+        logs_text = self.logger.get_logs_text()
+        self.log_display.setPlainText(logs_text)
+        # 自动滚动到底部
+        scrollbar = self.log_display.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+    
+    def on_toggle_worker(self):
+        """切换开始/停止"""
+        if self.is_worker_running:
+            self.stop_worker()
+        else:
+            self.start_worker()
+    
+    def start_worker(self):
+        """启动技能释放"""
+        # 如果之前没有识别到窗口，再次尝试自动识别
+        if not self.is_window_identified:
+            self.logger.log("未识别窗口，尝试自动识别...")
+            self.update_log_display()
+            self.auto_identify_on_startup()
+        
+        # 再次检查是否识别成功
+        if not self.is_window_identified:
+            QMessageBox.warning(self, "警告", "未找到游戏窗口，请确保游戏已启动！")
+            return
+        
+        # 检查窗口是否仍然有效
+        if self.window_selector and self.game_window_hwnd:
+            if not self.window_selector.is_window_valid(self.game_window_hwnd):
+                self.logger.log("窗口已关闭，尝试重新识别...")
+                self.update_log_display()
+                self.is_window_identified = False
+                self.game_window_hwnd = None
+                self.auto_identify_on_startup()
+                
+                if not self.is_window_identified:
+                    QMessageBox.warning(self, "警告", "游戏窗口已关闭，请重新启动游戏！")
+                    return
+        
+        # 收集启用的buff
+        enabled_buffs = [buff for buff in self.buffs if buff.enabled and buff.key]
+        if not enabled_buffs:
+            QMessageBox.warning(self, "警告", "请至少启用一个buff并设置按键！")
+            return
+        
+        # 停止之前的worker（如果存在）
+        if self.worker:
+            self.worker.stop()
+        
+        # 根据是否需要回到市场启动不同的worker
+        if self.return_to_market:
+            # 需要回到市场模式（原死花模式逻辑）
+            self.logger.log("启动回市场模式...")
+            self.update_log_display()
+            
+            self.worker = DeadFlowerWorker(
+                self.game_window_hwnd, 
+                self.buffs, 
+                getattr(self, 'selected_jump_key', 'Alt'),
+                getattr(self, 'sit_chair_enabled', False),
+                getattr(self, 'selected_chair_key', '='),
+                getattr(self, 'pre_skill_move_mode', 'right_left'),
+                manual_portal_pos=self.manual_portal_pos
+            )
+            self.worker.log_update.connect(self.on_status_update)
+            self.worker.finished_signal.connect(self.on_worker_finished)
+            self.worker.error_signal.connect(self.on_error)
+            self.worker.countdown_update.connect(self.on_countdown_update)
+            
+            self.worker.start()
+            self.logger.log("回市场模式已启动")
+        else:
+            # 活花模式（原有逻辑）
+            # 将buff转换为技能配置
+            skills = []
+            for buff in enabled_buffs:
+                skill = SkillConfig(
+                    key=buff.key,
+                    interval=buff.duration if buff.duration > 0 else 5.0,
+                    random_delay=2.0
+                )
+                skills.append(skill)
+            
+            if not skills:
+                QMessageBox.warning(self, "警告", "没有可用的技能！")
+                return
+            
+            # 将游戏窗口置于前台
+            if self.window_selector and self.game_window_hwnd:
+                try:
+                    import time
+                    success = self.window_selector.bring_window_to_front(self.game_window_hwnd)
+                    if success:
+                        self.logger.log(f"成功将游戏窗口置于前台")
+                        time.sleep(0.3)
+                    else:
+                        self.logger.log("警告: 设置游戏窗口焦点失败，请手动点击游戏窗口")
+                except Exception as e:
+                    self.logger.log(f"将窗口置于前台失败: {str(e)}")
+            
+            # 获取攻击键配置
+            attack_key = "ctrl"
             
             # 创建新的worker，传入移动模式
             self.worker = SkillWorker(
@@ -1184,7 +1287,6 @@ class MainWindow(QMainWindow):
         # 禁用buff设置区域和模式切换
         self._set_buff_settings_enabled(False)
         self.return_to_market_checkbox.setEnabled(False)
-        self.manual_countdown_checkbox.setEnabled(False)
         self._update_movement_mode_visibility()
         
         # 显示buff倒计时区域
@@ -1306,7 +1408,6 @@ class MainWindow(QMainWindow):
         # 启用buff设置区域和模式切换
         self._set_buff_settings_enabled(True)
         self.return_to_market_checkbox.setEnabled(True)
-        self.manual_countdown_checkbox.setEnabled(True)
         self._update_movement_mode_visibility()
         
         # 隐藏buff倒计时区域
@@ -1354,18 +1455,14 @@ class MainWindow(QMainWindow):
     
     def _set_buff_settings_enabled(self, enabled: bool):
         """设置buff设置区域的启用/禁用状态"""
-        # 禁用/启用buff配置控件
         for checkbox in self.buff_checkboxes:
             checkbox.setEnabled(enabled)
         for key_btn in self.buff_key_btns:
             key_btn.setEnabled(enabled)
         for duration_input in self.buff_duration_inputs:
             duration_input.setEnabled(enabled)
-        
-        # 禁用/启用其他设置
         self.random_behavior_checkbox.setEnabled(enabled)
         self.random_behavior_input.setEnabled(enabled)
-        self.attack_key_btn.setEnabled(enabled)
     
     def _update_movement_mode_visibility(self):
         """根据 return_to_market 状态显示/隐藏移动模式选项"""
@@ -1377,17 +1474,7 @@ class MainWindow(QMainWindow):
         self.pre_skill_right_left_radio.setVisible(not show_radios)
         self.pre_skill_left_only_radio.setVisible(not show_radios)
     
-    def on_select_attack_key(self):
-        """弹出虚拟键盘选择攻击键"""
-        dialog = VirtualKeyboardDialog(self, self.selected_attack_key)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            self.selected_attack_key = dialog.get_selected_key()
-            self.attack_key_btn.setText(self.selected_attack_key)
-            self.logger.log(f"攻击键已设置为: {self.selected_attack_key}")
-            self.update_log_display()
-            # 更新键盘钩子
-            self.update_keyboard_hook()
-            
+
     def on_select_jump_key(self):
         """弹出虚拟键盘选择跳跃键"""
         dialog = VirtualKeyboardDialog(self, self.selected_jump_key)
@@ -1441,128 +1528,10 @@ class MainWindow(QMainWindow):
     
     def closeEvent(self, event):
         """窗口关闭事件"""
-        # 保存设置
         self.save_settings()
-        
-        # 停止键盘监听
-        self.stop_keyboard_listener()
-        
-        # 停止倒计时定时器
-        if self.countdown_timer:
-            self.countdown_timer.stop()
-        
-        # 停止worker（非阻塞）
         if self.worker:
             if hasattr(self.worker, 'is_running'):
                 self.worker.is_running = False
             if hasattr(self.worker, 'stop'):
                 self.worker.stop()
-        
         event.accept()
-    
-    def setup_keyboard_listener(self):
-        """设置键盘监听"""
-        try:
-            import keyboard
-            # 监听检测键
-            self.update_keyboard_hook()
-        except ImportError:
-            self.logger.log("警告: 未安装keyboard库，5分钟检测功能不可用")
-            self.update_log_display()
-    
-    def update_keyboard_hook(self):
-        """更新键盘钩子"""
-        try:
-            import keyboard
-            import time
-            
-            # 移除旧的钩子
-            if self.keyboard_hook:
-                try:
-                    keyboard.unhook(self.keyboard_hook)
-                except:
-                    pass
-            
-            # 获取攻击键
-            detect_key = self.selected_attack_key.lower() if hasattr(self, 'selected_attack_key') else "ctrl"
-            
-            def on_key_release(e):
-                # 检测按键松开时才开始计时
-                if e.name.lower() == detect_key.lower() or \
-                   (detect_key == "ctrl" and e.name in ["ctrl", "left ctrl", "right ctrl"]):
-                    self.last_detect_key_time = time.time()
-            
-            self.keyboard_hook = keyboard.on_release(on_key_release)
-        except Exception as e:
-            pass
-    
-    def stop_keyboard_listener(self):
-        """停止键盘监听"""
-        try:
-            import keyboard
-            if self.keyboard_hook:
-                keyboard.unhook(self.keyboard_hook)
-                self.keyboard_hook = None
-        except:
-            pass
-    
-    def update_countdown_display(self):
-        """更新倒计时显示"""
-        import time
-        
-        # 如果还没有按过检测键
-        if self.last_detect_key_time is None:
-            self.countdown_label.setText("手动打怪倒计时: 等待按键...")
-            self.countdown_label.setStyleSheet("""
-                font-size: 14px; 
-                color: #666; 
-                padding: 5px; 
-                background-color: #e0e0e0; 
-                border-radius: 5px;
-            """)
-            return
-        
-        # 计算剩余时间
-        elapsed = time.time() - self.last_detect_key_time
-        remaining = self.countdown_seconds - elapsed
-        
-        if remaining <= 0:
-            # 时间到了，显示警告
-            self.countdown_label.setText("⚠️ 请立即手动打怪！⚠️")
-            self.countdown_label.setStyleSheet("""
-                font-size: 18px; 
-                font-weight: bold; 
-                color: white; 
-                padding: 10px; 
-                background-color: #f44336; 
-                border-radius: 5px;
-                border: 3px solid #d32f2f;
-            """)
-        elif remaining <= 60:
-            # 剩余不到1分钟，显示警告色
-            mins = int(remaining // 60)
-            secs = int(remaining % 60)
-            self.countdown_label.setText(f"手动打怪倒计时: {mins:02d}:{secs:02d}")
-            self.countdown_label.setStyleSheet("""
-                font-size: 16px; 
-                font-weight: bold; 
-                color: white; 
-                padding: 8px; 
-                background-color: #ff5722; 
-                border-radius: 5px;
-                border: 2px solid #e64a19;
-            """)
-        else:
-            # 正常显示
-            mins = int(remaining // 60)
-            secs = int(remaining % 60)
-            self.countdown_label.setText(f"手动打怪倒计时: {mins:02d}:{secs:02d}")
-            self.countdown_label.setStyleSheet("""
-                font-size: 16px; 
-                font-weight: bold; 
-                color: #ff6600; 
-                padding: 8px; 
-                background-color: #fff3e0; 
-                border-radius: 5px;
-                border: 2px solid #ff6600;
-            """)

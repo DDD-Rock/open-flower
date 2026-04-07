@@ -5,7 +5,7 @@
 
 # 应用配置
 APP_NAME = "枫灵 MapleKeeper"
-APP_VERSION = "1.0.6"
+APP_VERSION = "1.0.7"
 
 # UI配置
 WINDOW_WIDTH = 450  # 窗口宽度

@@ -195,6 +195,10 @@ class MarketButtonDetector:
         """
         检测小地图左上角是否有市场Logo
         
+        活动期间屏幕顶部会出现滚动公告条，覆盖在画面之上，
+        会挡住market_logo的上半部分，导致完整模板匹配失败。
+        解决方案：先用完整模板匹配，失败后裁剪模板下半部分再尝试。
+        
         Args:
             confidence: 匹配置信度阈值
             
@@ -217,9 +221,37 @@ class MarketButtonDetector:
             print(f"❌ 无法加载市场Logo模板")
             return False
         
-        # 多尺度匹配（应对分辨率变化）
+        # 第一次搜索：使用完整模板
+        best_val = self._match_logo_multiscale(minimap, template)
+        
+        if best_val >= confidence:
+            print(f"市场Logo匹配: confidence={best_val:.3f} (阈值={confidence})")
+            return True
+        
+        # 第二次搜索：使用模板的下半部分（应对活动公告条遮挡Logo上半部分）
+        h_orig = template.shape[0]
+        crop_top = int(h_orig * 0.4)  # 裁掉上方40%，保留下方60%
+        template_bottom = template[crop_top:, :]
+        
+        best_val_bottom = self._match_logo_multiscale(minimap, template_bottom)
+        final_val = max(best_val, best_val_bottom)
+        
+        print(f"市场Logo匹配: confidence={final_val:.3f} (含局部匹配, 阈值={confidence})")
+        return final_val >= confidence
+    
+    def _match_logo_multiscale(self, region: np.ndarray, template: np.ndarray) -> float:
+        """
+        多尺度模板匹配（提取公共逻辑）
+        
+        Args:
+            region: 搜索区域图像
+            template: 模板图片（完整或裁剪后的）
+            
+        Returns:
+            最佳匹配置信度
+        """
         scales = [0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3]
-        best_val = 0
+        best_val = 0.0
         
         h_orig, w_orig = template.shape[:2]
         
@@ -229,18 +261,17 @@ class MarketButtonDetector:
             
             if new_w < 10 or new_h < 10:
                 continue
-            if new_w > minimap.shape[1] or new_h > minimap.shape[0]:
+            if new_w > region.shape[1] or new_h > region.shape[0]:
                 continue
             
             scaled_template = cv2.resize(template, (new_w, new_h))
-            result = cv2.matchTemplate(minimap, scaled_template, cv2.TM_CCOEFF_NORMED)
+            result = cv2.matchTemplate(region, scaled_template, cv2.TM_CCOEFF_NORMED)
             _, max_val, _, _ = cv2.minMaxLoc(result)
             
             if max_val > best_val:
                 best_val = max_val
         
-        print(f"市场Logo匹配: confidence={best_val:.3f} (阈值={confidence})")
-        return best_val >= confidence
+        return best_val
     
     def is_in_market_by_minimap(self, confidence: float = 0.5) -> bool:
         """

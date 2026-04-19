@@ -31,14 +31,14 @@ echo.
 REM 启动GUI程序
 echo 正在启动程序...
 echo.
-start "" pythonw main.py
+start "" pyw main.py
 
 REM 检查是否启动成功
 if errorlevel 1 (
     echo.
-    echo ❌ pythonw启动失败，尝试使用python...
+    echo ❌ pyw启动失败，尝试使用py...
     echo.
-    python main.py
+    py main.py
     pause
 ) else (
     echo ✅ 程序已启动！

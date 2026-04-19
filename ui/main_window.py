@@ -264,7 +264,7 @@ class MainWindow(QMainWindow):
         ver = QLabel(f"v{APP_VERSION}")
         ver.setStyleSheet("font-size: 11px; color: #7a7aaa;")
         title_row.addWidget(ver)
-        author = QLabel("by 暗中观察")
+        author = QLabel("by 小新")
         author.setStyleSheet("font-size: 10px; color: #5a5a7a;")
         title_row.addWidget(author)
         h_layout.addLayout(title_row)

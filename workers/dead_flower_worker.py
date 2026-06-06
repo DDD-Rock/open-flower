@@ -64,12 +64,8 @@ class DeadFlowerWorker(QThread):
         self._cached_portal_pos: Optional[tuple] = None            # 小地图内坐标
         
         # 导航参数
-        self.TOLERANCE = 3
+        self.TOLERANCE = 5                   # 到达传送门的容差(像素)
         self.DETECT_INTERVAL = (50, 100)
-        self.SLOWDOWN_THRESHOLD = 10         # 接近传送门自动减速的距离阈值(像素)
-        self.MAX_DIRECTION_CHANGES = 3       # 连续换方向几次后切换微调模式
-        self.TAP_DURATION = (40, 120)        # 微调模式单次按键时长(ms)
-        self.TAP_INTERVAL = (100, 250)       # 微调模式两次按键间隔(ms)
         
         # 时间参数
         self.BATCH_CAST_WINDOW = 10.0  # 10秒内的buff一起放
@@ -491,10 +487,7 @@ class DeadFlowerWorker(QThread):
         stuck_count = 0            # 连续未移动的检测次数
         miss_count = 0             # 连续未检测到黄点的次数
         STUCK_THRESHOLD = 5        # 连续几次未移动判定为卡住
-        MISS_THRESHOLD = 30        # 连续未检测到黄点触发备用方案的阈值
         is_moving = False          # 当前是否正在按住方向键
-        direction_change_count = 0 # 连续换方向计数
-        use_tap_mode = False       # 是否使用短按微调模式
         
         # 先开始向传送门方向移动（传送门一般在左侧）
         # 根据传送门相对于小地图中心的位置决定初始方向
@@ -515,34 +508,11 @@ class DeadFlowerWorker(QThread):
                 if miss_count % 20 == 0:
                     self.log_update.emit(f"连续 {miss_count} 次未检测到黄点，继续移动...")
                 
-                # === 备用方案：连续丢失黄点超过阈值，可能被门口NPC挡住 ===
-                if miss_count >= MISS_THRESHOLD:
-                    self.log_update.emit(f"⚠️ 连续 {miss_count} 次未检测到黄点，启用备用导航方案...")
-                    self.human.stop_move()
-                    is_moving = False
-                    
-                    fallback_result = self._fallback_navigate_to_portal(portal_x, portal_y)
-                    if fallback_result:
-                        # 备用方案已完成传送门进入
-                        break
-                    else:
-                        # 备用方案失败，重置计数继续尝试
-                        self.log_update.emit("备用方案未成功，恢复常规导航...")
-                        miss_count = 0
-                        retry_count += 1
-                        # 重新开始移动
-                        if initial_direction == 'left':
-                            self.human.move_left()
-                        else:
-                            self.human.move_right()
-                        is_moving = True
-                        continue
-                
                 self._random_sleep(0.15, 0.25)
                 retry_count += 1
                 continue
             
-            miss_count = 0  # 重置未检测计数
+            miss_count = 0
             player_x, player_y = player_pos
             dx = portal_x - player_x
             
@@ -551,19 +521,7 @@ class DeadFlowerWorker(QThread):
                 self.log_update.emit("到达传送门，准备进入...")
                 self.human.stop_move()
                 is_moving = False
-                
-                # 停下后等待稳定，再次确认位置
-                self._random_sleep(0.2, 0.5)
-                verify_pos = self.monitor.find_player_position()
-                if verify_pos:
-                    verify_dx = portal_x - verify_pos[0]
-                    if abs(verify_dx) > self.TOLERANCE:
-                        # 停下后滑出了容差范围，切换微调模式继续调整
-                        self.log_update.emit(f"停下后偏移过大(dx={verify_dx})，切换微调模式...")
-                        use_tap_mode = True
-                        retry_count += 1
-                        continue
-                
+                self._random_sleep(0.1, 0.3)
                 self.human.use_portal()
                 break
             
@@ -585,65 +543,12 @@ class DeadFlowerWorker(QThread):
             # 判断需要的方向
             needed_direction = 'right' if dx > self.TOLERANCE else 'left'
             
-            # === 接近传送门时自动减速：松开方向键，自然过渡到轻点微调 ===
-            if not use_tap_mode and abs(dx) <= self.SLOWDOWN_THRESHOLD:
-                self.log_update.emit(f"接近传送门(dx={dx})，松手减速...")
-                if is_moving:
-                    self.human.stop_move()
-                    is_moving = False
-                    # 松开方向键后自然过渡，模拟玩家看到快到了松手的反应时间
-                    self._random_sleep(0.05, 0.15)
-                use_tap_mode = True
-            
-            # === 微调模式：短按方式精确移动 ===
-            if use_tap_mode:
-                # 确保先停下
-                if is_moving:
-                    self.human.stop_move()
-                    is_moving = False
-                
-                # 根据距离动态调整tap时长：越近按越短，拟人手感
-                distance = abs(dx)
-                if distance <= 4:
-                    tap_range = (25, 50)     # 很近：极短轻点
-                elif distance <= 7:
-                    tap_range = (30, 70)     # 较近：短轻点
-                else:
-                    tap_range = self.TAP_DURATION  # 较远：正常轻点 (40-120ms)
-                
-                # 短按方向键：press → 拟人化时长 → release
-                tap_key = self.human._get_key_object(needed_direction)
-                tap_duration = random.uniform(
-                    tap_range[0] / 1000.0,
-                    tap_range[1] / 1000.0
-                )
-                self.human.keyboard.press(tap_key)
-                time.sleep(tap_duration)
-                self.human.keyboard.release(tap_key)
-                
-                # 两次轻点之间的拟人化间隔
-                tap_interval = random.uniform(
-                    self.TAP_INTERVAL[0] / 1000.0,
-                    self.TAP_INTERVAL[1] / 1000.0
-                )
-                time.sleep(tap_interval)
-                retry_count += 1
-                continue
-            
-            # === 正常模式：持续按住方向键 ===
+            # 走过头了，需要换方向
             if is_moving and self.human.current_direction != needed_direction:
-                # 走过头了，需要换方向
-                direction_change_count += 1
                 self.log_update.emit(f"走过头了，换方向：{needed_direction}...")
                 self.human.stop_move()
                 is_moving = False
-                self._random_sleep(0.1, 0.2)  # 换向拟人化延迟
-                
-                # 连续换方向超过阈值 → 切换为微调模式（安全网）
-                if direction_change_count >= self.MAX_DIRECTION_CHANGES:
-                    self.log_update.emit("检测到来回振荡，切换微调模式...")
-                    use_tap_mode = True
-                    continue
+                self._random_sleep(0.1, 0.2)
             
             if not is_moving:
                 if needed_direction == 'right':
@@ -677,178 +582,6 @@ class DeadFlowerWorker(QThread):
         self.log_update.emit("⚠️ 离开市场超时")
         return False
 
-    def _fallback_navigate_to_portal(self, portal_x: int, portal_y: int) -> bool:
-        """
-        备用导航方案：当黄点被门口NPC挡住无法检测时使用
-        
-        策略：
-        1. 先向右走一段距离，远离门口NPC密集区域
-        2. 向左走，一边走一边检测黄点计算步行速度
-        3. 根据速度推算到达传送门的时间，定时触发传送
-        
-        Args:
-            portal_x: 传送门在小地图中的X坐标
-            portal_y: 传送门在小地图中的Y坐标
-            
-        Returns:
-            是否成功进入传送门
-        """
-        self.log_update.emit("🔄 备用方案：先向右远离门口...")
-        
-        # ============================================================
-        # 第一步：向右走一段距离，远离门口NPC，让黄点重新可见
-        # ============================================================
-        ESCAPE_RIGHT_DURATION = random.uniform(1.5, 2.5)  # 向右走1.5-2.5秒
-        self.human.move_right()
-        self._interruptible_sleep(ESCAPE_RIGHT_DURATION)
-        self.human.stop_move()
-        
-        if not self.is_running:
-            return False
-        
-        # 等待角色停稳
-        self._random_sleep(0.3, 0.6)
-        
-        # 尝试重新检测黄点位置
-        escape_pos = self.monitor.find_player_position()
-        if not escape_pos:
-            self.log_update.emit("向右远离后仍未检测到黄点，再多走一点...")
-            # 再向右走一段
-            self.human.move_right()
-            self._interruptible_sleep(random.uniform(1.0, 1.5))
-            self.human.stop_move()
-            self._random_sleep(0.3, 0.5)
-            escape_pos = self.monitor.find_player_position()
-        
-        if not escape_pos:
-            self.log_update.emit("❌ 备用方案：向右远离后仍无法检测到黄点")
-            return False
-        
-        escape_x, escape_y = escape_pos
-        self.log_update.emit(f"✅ 重新检测到黄点: ({escape_x}, {escape_y}), 距门: {portal_x - escape_x}px")
-        
-        # ============================================================
-        # 第二步：向左走，采样计算步行速度
-        # ============================================================
-        self.log_update.emit("🔄 备用方案：开始向左走并测量速度...")
-        
-        # 采样参数
-        SPEED_SAMPLE_COUNT = 5         # 至少采样5次有效位移
-        SAMPLE_INTERVAL = 0.3          # 每次采样间隔（秒）
-        
-        speed_samples = []             # 存储速度采样 (pixels_per_second)
-        last_sample_x = escape_x
-        last_sample_time = time.time()
-        valid_samples = 0
-        sample_attempts = 0
-        max_sample_attempts = 30       # 最多尝试30次采样
-        
-        self.human.move_left()
-        
-        while self.is_running and valid_samples < SPEED_SAMPLE_COUNT and sample_attempts < max_sample_attempts:
-            self._interruptible_sleep(SAMPLE_INTERVAL)
-            sample_attempts += 1
-            
-            current_pos = self.monitor.find_player_position()
-            if not current_pos:
-                # 黄点又丢失了，说明接近门口了，可以开始推算
-                self.log_update.emit(f"采样中黄点丢失（已采集 {valid_samples} 个样本），准备推算...")
-                break
-            
-            current_x, _ = current_pos
-            current_time = time.time()
-            
-            dt = current_time - last_sample_time
-            dx = last_sample_x - current_x  # 向左走dx为正
-            
-            if dt > 0 and dx > 0:
-                speed = dx / dt  # pixels per second (向左)
-                speed_samples.append(speed)
-                valid_samples += 1
-                self.log_update.emit(f"  速度采样 #{valid_samples}: {speed:.1f} px/s (当前x={current_x})")
-            
-            last_sample_x = current_x
-            last_sample_time = current_time
-        
-        # 如果没有足够的速度采样，使用默认速度估计
-        if not speed_samples:
-            self.log_update.emit("⚠️ 无有效速度采样，使用默认估计值")
-            avg_speed = 15.0  # 默认估计速度 (pixels/second)
-        else:
-            # 去掉最大和最小值（如果样本够多），取平均
-            if len(speed_samples) >= 3:
-                speed_samples.sort()
-                trimmed = speed_samples[1:-1]
-                avg_speed = sum(trimmed) / len(trimmed)
-            else:
-                avg_speed = sum(speed_samples) / len(speed_samples)
-        
-        self.log_update.emit(f"📊 测量平均速度: {avg_speed:.1f} px/s")
-        
-        # ============================================================
-        # 第三步：根据最后已知位置和速度推算到达传送门的时间
-        # ============================================================
-        
-        # 获取当前位置（可能还能检测到）
-        current_pos = self.monitor.find_player_position()
-        if current_pos:
-            current_x = current_pos[0]
-            self.log_update.emit(f"当前位置: x={current_x}")
-        else:
-            # 用最后采样位置 + 已经过的时间推算
-            elapsed_since_last = time.time() - last_sample_time
-            current_x = last_sample_x - avg_speed * elapsed_since_last
-            self.log_update.emit(f"黄点不可见，推算当前位置: x≈{current_x:.0f}")
-        
-        remaining_distance = current_x - portal_x  # 还需要向左走的距离
-        
-        if remaining_distance <= 0:
-            # 已经到达或超过传送门位置
-            self.log_update.emit("推算已到达传送门位置，直接进入...")
-            self.human.stop_move()
-            self._random_sleep(0.1, 0.3)
-            self.human.use_portal()
-            return True
-        
-        # 计算预计到达时间（加上小余量补偿延迟）
-        estimated_time = remaining_distance / avg_speed
-        # 加一点余量，宁可走过一点（传送门有一定宽度范围）
-        buffer_time = random.uniform(0.1, 0.3)
-        total_wait = estimated_time + buffer_time
-        
-        self.log_update.emit(
-            f"📐 剩余距离: {remaining_distance:.0f}px, "
-            f"预计 {estimated_time:.1f}s 到达, "
-            f"总等待: {total_wait:.1f}s"
-        )
-        
-        # 确保在向左移动
-        if self.human.current_direction != 'left':
-            self.human.move_left()
-        
-        # 等待预计到达时间（期间持续检测，如果黄点重新出现则切回精准模式）
-        wait_start = time.time()
-        while self.is_running and (time.time() - wait_start) < total_wait:
-            # 小间隔检测，如果黄点重新可见就精确判断
-            self._interruptible_sleep(0.1)
-            
-            check_pos = self.monitor.find_player_position()
-            if check_pos:
-                check_x = check_pos[0]
-                dx_to_portal = check_x - portal_x
-                if abs(dx_to_portal) <= self.TOLERANCE:
-                    self.log_update.emit(f"✅ 备用方案：等待期间重新检测到黄点，已到达传送门(dx={dx_to_portal})")
-                    self.human.stop_move()
-                    self._random_sleep(0.1, 0.2)
-                    self.human.use_portal()
-                    return True
-        
-        # 时间到，停止移动并进入传送门
-        self.log_update.emit("⏱️ 备用方案：预计时间到达，尝试进入传送门...")
-        self.human.stop_move()
-        self._random_sleep(0.1, 0.3)
-        self.human.use_portal()
-        return True
 
     def _update_countdown_display(self):
         """更新UI倒计时显示"""

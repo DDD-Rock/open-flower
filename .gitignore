@@ -36,6 +36,11 @@ env/
 # Screenshots (generated files)
 screenshots/
 
+# PNG files — ignore loose captures, but keep template matching assets in git
+*.png
+!templates/
+!templates/**
+
 # Logs
 *.log
 

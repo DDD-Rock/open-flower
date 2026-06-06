@@ -19,8 +19,6 @@ class SettingsManager:
     def save_settings(self, 
                       buffs: list,
                       return_to_market: bool = False,
-                      manual_countdown: bool = False,
-                      attack_key: str = "Ctrl",
                       jump_key: str = "Alt",
                       sit_chair_enabled: bool = False,
                       chair_key: str = "=",
@@ -34,8 +32,6 @@ class SettingsManager:
         Args:
             buffs: BuffConfig 列表，包含 enabled, key, duration 属性
             return_to_market: 是否释放后回到市场
-            manual_countdown: 是否需要手动打怪倒计时
-            attack_key: 攻击键
             jump_key: 跳跃键
             sit_chair_enabled: 是否空闲时坐椅子
             chair_key: 椅子按键
@@ -50,8 +46,6 @@ class SettingsManager:
         # 保存通用设置
         self.config["General"] = {
             "return_to_market": str(return_to_market),
-            "manual_countdown": str(manual_countdown),
-            "attack_key": attack_key,
             "jump_key": jump_key,
             "sit_chair_enabled": str(sit_chair_enabled),
             "chair_key": chair_key,
@@ -96,8 +90,6 @@ class SettingsManager:
             
             settings = {
                 "return_to_market": self.config.getboolean("General", "return_to_market", fallback=False),
-                "manual_countdown": self.config.getboolean("General", "manual_countdown", fallback=False),
-                "attack_key": self.config.get("General", "attack_key", fallback="Ctrl"),
                 "jump_key": self.config.get("General", "jump_key", fallback="Alt"),
                 "sit_chair_enabled": self.config.getboolean("General", "sit_chair_enabled", fallback=False),
                 "chair_key": self.config.get("General", "chair_key", fallback="="),

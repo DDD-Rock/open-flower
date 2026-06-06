@@ -808,6 +808,27 @@ class MainWindow(QMainWindow):
         scrollbar = self.log_display.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
     
+    def _get_live_flower_random_delay(self) -> float:
+        """获取活花模式的随机提前释放秒数（未启用时返回 0）"""
+        if not self.random_behavior_checkbox.isChecked():
+            return 0.0
+        try:
+            return float(self.random_behavior_input.text())
+        except ValueError:
+            return float(self.game_config.random_behavior_value)
+
+    def _build_live_flower_skills(self, enabled_buffs: List[BuffConfig]) -> List[SkillConfig]:
+        """将启用的 Buff 转为活花模式 SkillConfig，应用随机提前释放设置"""
+        random_delay = self._get_live_flower_random_delay()
+        skills = []
+        for buff in enabled_buffs:
+            skills.append(SkillConfig(
+                key=buff.key,
+                interval=buff.duration if buff.duration > 0 else 5.0,
+                random_delay=random_delay
+            ))
+        return skills
+
     def on_toggle_worker(self):
         """切换开始/停止"""
         if self.is_worker_running:
@@ -874,16 +895,8 @@ class MainWindow(QMainWindow):
             self.worker.start()
             self.logger.log("回市场模式已启动")
         else:
-            # 活花模式（原有逻辑）
-            # 将buff转换为技能配置
-            skills = []
-            for buff in enabled_buffs:
-                skill = SkillConfig(
-                    key=buff.key,
-                    interval=buff.duration if buff.duration > 0 else 5.0,
-                    random_delay=2.0
-                )
-                skills.append(skill)
+            # 活花模式
+            skills = self._build_live_flower_skills(enabled_buffs)
             
             if not skills:
                 QMessageBox.warning(self, "警告", "没有可用的技能！")
@@ -902,18 +915,14 @@ class MainWindow(QMainWindow):
                 except Exception as e:
                     self.logger.log(f"将窗口置于前台失败: {str(e)}")
             
-            # 获取攻击键配置
-            attack_key = "ctrl"
-            
-            # 创建新的worker，传入移动模式
+            # 活花模式
             self.worker = SkillWorker(
-                skills, 
-                self.window_selector, 
-                self.game_window_hwnd, 
-                attack_key, 
-                self.movement_mode,
-                getattr(self, 'sit_chair_enabled', False),
-                getattr(self, 'selected_chair_key', '=')
+                skills,
+                self.window_selector,
+                self.game_window_hwnd,
+                movement_mode=self.movement_mode,
+                sit_chair_enabled=getattr(self, 'sit_chair_enabled', False),
+                chair_key=getattr(self, 'selected_chair_key', '=')
             )
             self.worker.status_update.connect(self.on_status_update)
             self.worker.skill_pressed.connect(self.on_skill_pressed)
@@ -1126,345 +1135,6 @@ class MainWindow(QMainWindow):
             self.movement_stack.setCurrentIndex(1)  # 死花: 出市场选项
         else:
             self.movement_stack.setCurrentIndex(0)  # 活花: 移动模式选项
-    
-    def update_window_status_display(self, status_text: str = None, success: bool = False):
-        """更新窗口状态显示"""
-        if status_text is None:
-            if self.is_window_identified and self.game_window_hwnd:
-                if self.window_selector:
-                    wi = self.window_selector.get_window_info(self.game_window_hwnd)
-                    if wi:
-                        status_text = f"● {wi['title']} | {wi['size'][0]}x{wi['size'][1]}"
-                        success = True
-                    else:
-                        status_text = "● 窗口已关闭"; success = False
-                else:
-                    status_text = "● 已识别"; success = True
-            else:
-                status_text = "● 未识别 — 点击「识别窗口」"; success = False
-        self.window_status_label.setText(status_text)
-        self.window_status_label.setStyleSheet(f"font-size: 11px; color: {'#2ecc71' if success else '#ff6b6b'};")
-    
-    def clear_logs(self):
-        """清空日志"""
-        self.logger.clear()
-        self.update_log_display()
-    
-    def update_log_display(self):
-        """更新日志显示"""
-        logs_text = self.logger.get_logs_text()
-        self.log_display.setPlainText(logs_text)
-        # 自动滚动到底部
-        scrollbar = self.log_display.verticalScrollBar()
-        scrollbar.setValue(scrollbar.maximum())
-    
-    def on_toggle_worker(self):
-        """切换开始/停止"""
-        if self.is_worker_running:
-            self.stop_worker()
-        else:
-            self.start_worker()
-    
-    def start_worker(self):
-        """启动技能释放"""
-        # 如果之前没有识别到窗口，再次尝试自动识别
-        if not self.is_window_identified:
-            self.logger.log("未识别窗口，尝试自动识别...")
-            self.update_log_display()
-            self.auto_identify_on_startup()
-        
-        # 再次检查是否识别成功
-        if not self.is_window_identified:
-            QMessageBox.warning(self, "警告", "未找到游戏窗口，请确保游戏已启动！")
-            return
-        
-        # 检查窗口是否仍然有效
-        if self.window_selector and self.game_window_hwnd:
-            if not self.window_selector.is_window_valid(self.game_window_hwnd):
-                self.logger.log("窗口已关闭，尝试重新识别...")
-                self.update_log_display()
-                self.is_window_identified = False
-                self.game_window_hwnd = None
-                self.auto_identify_on_startup()
-                
-                if not self.is_window_identified:
-                    QMessageBox.warning(self, "警告", "游戏窗口已关闭，请重新启动游戏！")
-                    return
-        
-        # 收集启用的buff
-        enabled_buffs = [buff for buff in self.buffs if buff.enabled and buff.key]
-        if not enabled_buffs:
-            QMessageBox.warning(self, "警告", "请至少启用一个buff并设置按键！")
-            return
-        
-        # 停止之前的worker（如果存在）
-        if self.worker:
-            self.worker.stop()
-        
-        # 根据是否需要回到市场启动不同的worker
-        if self.return_to_market:
-            # 需要回到市场模式（原死花模式逻辑）
-            self.logger.log("启动回市场模式...")
-            self.update_log_display()
-            
-            self.worker = DeadFlowerWorker(
-                self.game_window_hwnd, 
-                self.buffs, 
-                getattr(self, 'selected_jump_key', 'Alt'),
-                getattr(self, 'sit_chair_enabled', False),
-                getattr(self, 'selected_chair_key', '='),
-                getattr(self, 'pre_skill_move_mode', 'right_left'),
-                manual_portal_pos=self.manual_portal_pos
-            )
-            self.worker.log_update.connect(self.on_status_update)
-            self.worker.finished_signal.connect(self.on_worker_finished)
-            self.worker.error_signal.connect(self.on_error)
-            self.worker.countdown_update.connect(self.on_countdown_update)
-            
-            self.worker.start()
-            self.logger.log("回市场模式已启动")
-        else:
-            # 活花模式（原有逻辑）
-            # 将buff转换为技能配置
-            skills = []
-            for buff in enabled_buffs:
-                skill = SkillConfig(
-                    key=buff.key,
-                    interval=buff.duration if buff.duration > 0 else 5.0,
-                    random_delay=2.0
-                )
-                skills.append(skill)
-            
-            if not skills:
-                QMessageBox.warning(self, "警告", "没有可用的技能！")
-                return
-            
-            # 将游戏窗口置于前台
-            if self.window_selector and self.game_window_hwnd:
-                try:
-                    import time
-                    success = self.window_selector.bring_window_to_front(self.game_window_hwnd)
-                    if success:
-                        self.logger.log(f"成功将游戏窗口置于前台")
-                        time.sleep(0.3)
-                    else:
-                        self.logger.log("警告: 设置游戏窗口焦点失败，请手动点击游戏窗口")
-                except Exception as e:
-                    self.logger.log(f"将窗口置于前台失败: {str(e)}")
-            
-            # 获取攻击键配置
-            attack_key = "ctrl"
-            
-            # 创建新的worker，传入移动模式
-            self.worker = SkillWorker(
-                skills, 
-                self.window_selector, 
-                self.game_window_hwnd, 
-                attack_key, 
-                self.movement_mode,
-                getattr(self, 'sit_chair_enabled', False),
-                getattr(self, 'selected_chair_key', '=')
-            )
-            self.worker.status_update.connect(self.on_status_update)
-            self.worker.skill_pressed.connect(self.on_skill_pressed)
-            self.worker.error_occurred.connect(self.on_error)
-            self.worker.countdown_update.connect(self.on_countdown_update)
-            
-            # 保存当前启用的buff信息，用于显示倒计时
-            self.active_buff_keys = [buff.key for buff in enabled_buffs]
-            
-            # 启动worker
-            self.worker.start()
-            self.logger.log("原地挂机模式已启动")
-        
-        self.update_log_display()
-        
-        # 更新按钮状态
-        self.is_worker_running = True
-        self.toggle_btn.setText("停止")
-        self.toggle_btn.setStyleSheet("background-color: #f44336; color: white;")
-        
-        # 禁用buff设置区域和模式切换
-        self._set_buff_settings_enabled(False)
-        self.return_to_market_checkbox.setEnabled(False)
-        self._update_movement_mode_visibility()
-        
-        # 显示buff倒计时区域
-        self._show_buff_countdown(True)
-    
-    def on_worker_finished(self):
-        """Worker完成回调（用于死花模式）"""
-        self.logger.log("Worker已停止")
-        self.update_log_display()
-        self.stop_worker()
-    
-    def start_test_market_nav(self):
-        """开始市场移动测试"""
-        if not self.game_window_hwnd:
-             QMessageBox.warning(self, "错误", "请先确保游戏窗口已被识别")
-             return
-        
-        # 先检测当前位置
-        from detection.market_button import MarketButtonDetector
-        detector = MarketButtonDetector(hwnd=self.game_window_hwnd, confidence=0.3)
-        has_logo = detector.is_market_logo_visible()
-        has_btn = detector.find_market_button_in_game() is not None
-        
-        if not (has_logo and has_btn):
-            QMessageBox.information(self, "提示", "当前不在市场中，无法离开市场")
-            return
-             
-        self.logger.log("正在初始化市场导航模块...")
-        self.update_log_display()
-        
-        # 禁用按钮
-        self.test_market_btn.setEnabled(False)
-        self.test_return_market_btn.setEnabled(False)
-        self.toggle_btn.setEnabled(False)
-        
-        # 创建并启动worker
-        self.market_worker = MarketWorker(self.game_window_hwnd)
-        self.market_worker.log_update.connect(self.on_status_update)
-        self.market_worker.finished_signal.connect(self.on_test_market_finished)
-        self.market_worker.error_signal.connect(self.on_error)
-        self.market_worker.start()
-
-    def start_test_dismiss_dialog(self):
-        """测试检测并关闭游戏内弹窗"""
-        if not self.game_window_hwnd:
-            QMessageBox.warning(self, "错误", "请先确保游戏窗口已被识别")
-            return
-        
-        self.test_dialog_btn.setEnabled(False)
-        self.logger.log("正在检测游戏内弹窗...")
-        self.update_log_display()
-        
-        import threading
-        
-        def run_test():
-            try:
-                from detection.dialog_detector import DialogDetector
-                from automation.human_input import HumanInput
-                
-                detector = DialogDetector(hwnd=self.game_window_hwnd, confidence=0.5)
-                pos = detector.find_confirm_button()
-                
-                if pos:
-                    self.logger.log(f"✅ 检测到确定按钮，位置: {pos}，正在点击...")
-                    human = HumanInput()
-                    human.click_at(pos[0], pos[1], offset_range=5)
-                    import time
-                    time.sleep(0.3)
-                    human.release_all()
-                    self.logger.log("已点击确定按钮")
-                else:
-                    self.logger.log("❌ 未检测到弹窗中的确定按钮")
-                    
-            except Exception as e:
-                import traceback
-                self.logger.log(f"测试出错: {str(e)}")
-                traceback.print_exc()
-        
-        def on_finished():
-            self.test_dialog_btn.setEnabled(True)
-            self.update_log_display()
-        
-        thread = threading.Thread(target=run_test, daemon=True)
-        thread.start()
-        
-        from PyQt6.QtCore import QTimer
-        def check_thread():
-            if not thread.is_alive():
-                on_finished()
-            else:
-                QTimer.singleShot(100, check_thread)
-        QTimer.singleShot(100, check_thread)
-
-    def on_test_market_finished(self):
-        """市场测试完成回调"""
-        self.logger.log("市场导航测试结束")
-        self.update_log_display()
-        
-        # 恢复按钮
-        self.test_market_btn.setEnabled(True)
-        self.test_return_market_btn.setEnabled(True)
-        self.toggle_btn.setEnabled(True)
-        self.market_worker = None
-
-    def stop_worker(self):
-        """停止技能释放"""
-        if self.worker:
-            self.worker.stop()
-            self.worker = None
-        
-        self.logger.log("已停止运行")
-        self.update_log_display()
-        
-        # 更新按钮状态
-        self.is_worker_running = False
-        self.toggle_btn.setText("开始")
-        self.toggle_btn.setStyleSheet("background-color: #4CAF50; color: white;")
-        
-        # 启用buff设置区域和模式切换
-        self._set_buff_settings_enabled(True)
-        self.return_to_market_checkbox.setEnabled(True)
-        self._update_movement_mode_visibility()
-        
-        # 隐藏buff倒计时区域
-        self._show_buff_countdown(False)
-    
-    def _show_buff_countdown(self, show: bool):
-        """显示/隐藏buff倒计时"""
-        if show:
-            # 初始化倒计时显示
-            for i, label in enumerate(self.buff_countdown_labels):
-                if i < len(self.buffs) and self.buffs[i].enabled:
-                    label.setText("--:--")
-                else:
-                    label.setText("--:--")
-    
-    def on_countdown_update(self, countdown_info: dict):
-        """倒计时更新回调"""
-        for i, buff in enumerate(self.buffs):
-            if i < len(self.buff_countdown_labels):
-                if buff.enabled and buff.key in countdown_info:
-                    remaining = countdown_info[buff.key]
-                    mins = remaining // 60
-                    secs = remaining % 60
-                    self.buff_countdown_labels[i].setText(f"{mins:02d}:{secs:02d}")
-                    
-                    # 根据剩余时间设置颜色
-                    if remaining <= 10:
-                        self.buff_countdown_labels[i].setStyleSheet("""
-                            font-size: 10px; padding: 2px;
-                            background-color: #ffcdd2; border-radius: 2px;
-                            color: #c62828; font-weight: bold;
-                        """)
-                    elif remaining <= 30:
-                        self.buff_countdown_labels[i].setStyleSheet("""
-                            font-size: 10px; padding: 2px;
-                            background-color: #ffe0b2; border-radius: 2px;
-                            color: #e65100;
-                        """)
-                    else:
-                        self.buff_countdown_labels[i].setStyleSheet("""
-                            font-size: 10px; padding: 2px;
-                            background-color: #c8e6c9; border-radius: 2px;
-                            color: #2e7d32;
-                        """)
-    
-    def _set_buff_settings_enabled(self, enabled: bool):
-        """设置buff设置区域的启用/禁用状态"""
-        for checkbox in self.buff_checkboxes:
-            checkbox.setEnabled(enabled)
-        for key_btn in self.buff_key_btns:
-            key_btn.setEnabled(enabled)
-        for duration_input in self.buff_duration_inputs:
-            duration_input.setEnabled(enabled)
-        self.random_behavior_checkbox.setEnabled(enabled)
-        self.random_behavior_input.setEnabled(enabled)
-    
-
 
     def on_select_jump_key(self):
         """弹出虚拟键盘选择跳跃键"""

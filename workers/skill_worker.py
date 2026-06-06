@@ -15,20 +15,9 @@ from utils.keyboard_utils import press_key
 from config import THREAD_SLEEP_INTERVAL, CYCLE_PAUSE_TIME, INITIAL_WAIT_TIME
 from automation.human_input import HumanInput
 
-# 尝试导入keyboard库
-try:
-    import keyboard
-    KEYBOARD_AVAILABLE = True
-except ImportError:
-    KEYBOARD_AVAILABLE = False
-
 # 技能之间的间隔时间范围（毫秒），模拟人按完一个技能后等待再按下一个
 SKILL_GAP_MIN_MS = 2000   # 最小间隔
 SKILL_GAP_MAX_MS = 3000   # 最大间隔
-
-# 攻击键松开后延迟释放技能的时间范围（毫秒）
-ATTACK_KEY_RELEASE_DELAY_MIN_MS = 200
-ATTACK_KEY_RELEASE_DELAY_MAX_MS = 500
 
 # 释放技能前向右移动的时间范围（毫秒）- 防止掉落
 PRE_SKILL_MOVE_RIGHT_MIN_MS = 500   # 最小0.5秒
@@ -53,8 +42,8 @@ class SkillWorker(QObject):
     error_occurred = pyqtSignal(str)
     countdown_update = pyqtSignal(dict)  # 发送倒计时信息 {skill_key: remaining_seconds}
     
-    def __init__(self, skills: List[SkillConfig], window_selector=None, game_window_hwnd=None, 
-                 attack_key: str = "ctrl", movement_mode: str = "none",
+    def __init__(self, skills: List[SkillConfig], window_selector=None, game_window_hwnd=None,
+                 movement_mode: str = "none",
                  sit_chair_enabled: bool = False, chair_key: str = "="):
         """
         初始化工作线程
@@ -63,7 +52,6 @@ class SkillWorker(QObject):
             skills: 技能配置列表
             window_selector: 窗口选择器实例
             game_window_hwnd: 游戏窗口句柄
-            attack_key: 攻击键，用于检测玩家是否正在攻击
             movement_mode: 移动模式 - "none"(原地不动), "right"(向右走开buff), "left"(向左走开buff)
             sit_chair_enabled: 是否空闲时坐椅子
             chair_key: 椅子按键
@@ -72,7 +60,6 @@ class SkillWorker(QObject):
         self.skills = skills
         self.window_selector = window_selector
         self.game_window_hwnd = game_window_hwnd
-        self.attack_key = attack_key.lower() if attack_key else "ctrl"
         self.movement_mode = movement_mode  # 移动模式
         self.is_running = False
         self.thread = None
@@ -214,9 +201,6 @@ class SkillWorker(QObject):
             return
         
         try:
-            # 检测攻击键是否被按住，如果是则等待松开后再释放
-            self._wait_for_attack_key_release()
-            
             # 确保游戏窗口获得焦点
             self._ensure_game_window_focus()
             
@@ -348,60 +332,6 @@ class SkillWorker(QObject):
         
         time.sleep(move_duration)
         self.human_input.stop_move()
-    
-    def _wait_for_attack_key_release(self):
-        """等待攻击键松开后再继续"""
-        if not KEYBOARD_AVAILABLE:
-            return
-        
-        try:
-            # 检查攻击键是否被按住
-            attack_key = self.attack_key
-            
-            # 检测是否按住攻击键
-            def is_attack_key_pressed():
-                if attack_key == "ctrl":
-                    return keyboard.is_pressed("ctrl") or keyboard.is_pressed("left ctrl") or keyboard.is_pressed("right ctrl")
-                else:
-                    return keyboard.is_pressed(attack_key)
-            
-            # 如果攻击键被按住，等待它被松开
-            if is_attack_key_pressed():
-                self.status_update.emit(f"检测到攻击键({attack_key})被按住，等待松开...")
-                
-                # 循环等待：松开后延迟，如果延迟期间又按下则重新等待
-                while self.is_running:
-                    # 等待攻击键松开
-                    while is_attack_key_pressed() and self.is_running:
-                        time.sleep(0.05)  # 50ms检测一次
-                    
-                    if not self.is_running:
-                        return
-                    
-                    # 攻击键松开后，随机延迟200-500ms再释放技能
-                    delay_ms = random.randint(ATTACK_KEY_RELEASE_DELAY_MIN_MS, ATTACK_KEY_RELEASE_DELAY_MAX_MS)
-                    delay_seconds = delay_ms / 1000.0
-                    self.status_update.emit(f"攻击键已松开，延迟 {delay_ms}ms 后释放技能")
-                    
-                    # 分段等待，每10ms检测一次攻击键是否又被按下
-                    elapsed = 0
-                    check_interval = 0.01  # 10ms
-                    while elapsed < delay_seconds and self.is_running:
-                        time.sleep(check_interval)
-                        elapsed += check_interval
-                        
-                        # 如果在延迟期间攻击键又被按下，重新等待
-                        if is_attack_key_pressed():
-                            self.status_update.emit(f"延迟期间检测到攻击键再次按下，重新等待...")
-                            break
-                    
-                    # 如果延迟期间没有按下攻击键，则完成等待
-                    if elapsed >= delay_seconds:
-                        break
-                
-        except Exception as e:
-            # 如果检测失败，不影响技能释放
-            pass
     
     def _ensure_game_window_focus(self):
         """确保游戏窗口获得焦点"""

@@ -12,6 +12,7 @@ from PyQt6.QtCore import QObject, pyqtSignal
 
 from models.skill_config import SkillConfig
 from utils.keyboard_utils import press_key
+from utils.key_names import normalize_key_name
 from config import THREAD_SLEEP_INTERVAL, CYCLE_PAUSE_TIME, INITIAL_WAIT_TIME
 from automation.human_input import HumanInput
 
@@ -73,6 +74,7 @@ class SkillWorker(QObject):
 
     def _resolve_key(self, key_str: str):
         """将按键字符串转换为可识别的按键"""
+        normalized_key = normalize_key_name(key_str)
         mapping = {
             'shift': 'shift', 'ctrl': 'ctrl', 'control': 'ctrl', 'alt': 'alt',
             'tab': 'tab', 'space': 'space', 'enter': 'enter', 'backspace': 'backspace',
@@ -82,7 +84,7 @@ class SkillWorker(QObject):
             'f7': 'f7', 'f8': 'f8', 'f9': 'f9', 'f10': 'f10', 'f11': 'f11', 'f12': 'f12',
             '=': '='
         }
-        return mapping.get(key_str.lower(), key_str)
+        return mapping.get(normalized_key.lower(), normalized_key)
         
     def _sit_chair(self):
         """空闲时坐下"""
@@ -341,4 +343,3 @@ class SkillWorker(QObject):
             except Exception:
                 pass  # 静默处理错误，不影响技能释放
     
-

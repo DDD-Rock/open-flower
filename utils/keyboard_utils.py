@@ -7,6 +7,8 @@ import keyboard
 import time
 import random
 
+from utils.key_names import normalize_key_name
+
 
 # 按键按住时间范围（毫秒）
 KEY_HOLD_MIN_MS = 50   # 最小按住时间
@@ -24,15 +26,17 @@ def press_key(key: str):
         Exception: 当按键操作失败时抛出异常
     """
     try:
+        normalized_key = normalize_key_name(key)
+
         # 按下键
-        keyboard.press(key)
+        keyboard.press(normalized_key)
         
         # 随机按住时间（模拟人类操作）
         hold_time = random.randint(KEY_HOLD_MIN_MS, KEY_HOLD_MAX_MS) / 1000.0
         time.sleep(hold_time)
         
         # 松开键
-        keyboard.release(key)
+        keyboard.release(normalized_key)
     except Exception as e:
         raise Exception(f"按键 '{key}' 操作失败: {str(e)}")
 
@@ -48,7 +52,6 @@ def is_key_pressed(key: str) -> bool:
         bool: 如果按键被按下返回True，否则返回False
     """
     try:
-        return keyboard.is_pressed(key)
+        return keyboard.is_pressed(normalize_key_name(key))
     except Exception:
         return False
-

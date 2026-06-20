@@ -20,6 +20,7 @@ from detection.dialog_detector import DialogDetector
 from automation.human_input import HumanInput
 from pynput.keyboard import Key
 from models.buff_config import BuffConfig
+from utils.key_names import normalize_key_name
 from workers.skill_worker import (
     PRE_SKILL_MOVE_RIGHT_MIN_MS, PRE_SKILL_MOVE_RIGHT_MAX_MS,
     POST_SKILL_MOVE_LEFT_MIN_MS, POST_SKILL_MOVE_LEFT_MAX_MS
@@ -306,7 +307,8 @@ class DeadFlowerWorker(QThread):
 
     def _resolve_key(self, key_str: str):
         """将按键字符串转换为pynput可识别的按键"""
-        return self.SPECIAL_KEY_MAP.get(key_str.lower(), key_str)
+        normalized_key = normalize_key_name(key_str)
+        return self.SPECIAL_KEY_MAP.get(normalized_key.lower(), normalized_key)
 
     def _cast_buff(self, buff: BuffConfig):
         """释放单个buff"""

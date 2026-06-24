@@ -55,8 +55,7 @@ class MainWindow(LegacyMainWindow):
 
         self.setWindowTitle(APP_NAME)
         self.setGeometry(WINDOW_X, WINDOW_Y, WINDOW_WIDTH, WINDOW_HEIGHT)
-        self.setMinimumSize(500, 560)
-        self.resize(WINDOW_WIDTH, WINDOW_HEIGHT)
+        self.setFixedSize(WINDOW_WIDTH, WINDOW_HEIGHT)
         self.setWindowFlags(
             self.windowFlags() & ~Qt.WindowType.WindowMaximizeButtonHint
         )

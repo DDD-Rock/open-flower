@@ -6,12 +6,17 @@
 try:
     import win32gui
     import win32con
+    import win32api
+    import win32process
     WIN32_AVAILABLE = True
 except ImportError:
     WIN32_AVAILABLE = False
     win32gui = None
     win32con = None
+    win32api = None
+    win32process = None
 
+import time
 from typing import List, Dict, Optional, Tuple
 
 
@@ -158,6 +163,8 @@ class WindowSelector:
             是否成功
         """
         try:
+            if not win32gui.IsWindow(hwnd):
+                return False
             # 如果窗体被最小化，先还原
             if win32gui.IsIconic(hwnd):
                 win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
@@ -165,17 +172,52 @@ class WindowSelector:
             # 先显示窗口（确保窗口可见）
             win32gui.ShowWindow(hwnd, win32con.SW_SHOW)
             
-            # 将窗体置于前台
-            win32gui.SetForegroundWindow(hwnd)
-            win32gui.BringWindowToTop(hwnd)
-            
-            # 再次尝试设置前台（有时需要多次调用）
-            win32gui.SetForegroundWindow(hwnd)
-            
-            return True
+            foreground = win32gui.GetForegroundWindow()
+            current_thread = win32api.GetCurrentThreadId()
+            target_thread, _ = win32process.GetWindowThreadProcessId(hwnd)
+            foreground_thread = 0
+            if foreground:
+                foreground_thread, _ = win32process.GetWindowThreadProcessId(foreground)
+
+            attached = set()
+            try:
+                for thread_id in (target_thread, foreground_thread):
+                    if thread_id and thread_id != current_thread:
+                        win32process.AttachThreadInput(current_thread, thread_id, True)
+                        attached.add(thread_id)
+                win32gui.BringWindowToTop(hwnd)
+                win32gui.SetForegroundWindow(hwnd)
+                win32gui.SetFocus(hwnd)
+            finally:
+                for thread_id in attached:
+                    try:
+                        win32process.AttachThreadInput(current_thread, thread_id, False)
+                    except Exception:
+                        pass
+
+            return win32gui.GetForegroundWindow() == hwnd
             
         except Exception:
             return False
+
+    def is_window_foreground(self, hwnd: int) -> bool:
+        try:
+            return win32gui.IsWindow(hwnd) and win32gui.GetForegroundWindow() == hwnd
+        except Exception:
+            return False
+
+    def ensure_window_focus(
+        self,
+        hwnd: int,
+        attempts: int = 8,
+        delay: float = 0.15,
+    ) -> bool:
+        for _ in range(attempts):
+            if self.is_window_foreground(hwnd):
+                return True
+            self.bring_window_to_front(hwnd)
+            time.sleep(delay)
+        return self.is_window_foreground(hwnd)
     
     def is_window_valid(self, hwnd: int) -> bool:
         """
@@ -219,4 +261,3 @@ class WindowSelector:
             }
         except Exception:
             return None
-

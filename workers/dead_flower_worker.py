@@ -21,6 +21,12 @@ from automation.human_input import HumanInput
 from pynput.keyboard import Key
 from models.buff_config import BuffConfig
 from utils.key_names import normalize_key_name
+from utils.window_selector import WindowSelector
+from utils.countdown import (
+    format_release_time,
+    next_release_time,
+    remaining_seconds,
+)
 from workers.skill_worker import (
     PRE_SKILL_MOVE_RIGHT_MIN_MS, PRE_SKILL_MOVE_RIGHT_MAX_MS,
     POST_SKILL_MOVE_LEFT_MIN_MS, POST_SKILL_MOVE_LEFT_MAX_MS
@@ -49,8 +55,9 @@ class DeadFlowerWorker(QThread):
         self.chair_key = self._resolve_key(chair_key)
         self.is_sitting = False
         
-        # 出市场后移动模式: "right_left"(先右再左) 或 "left_only"(只向左)
+        # 出市场后移动模式
         self.pre_skill_move_mode = pre_skill_move_mode
+        self.window_selector = WindowSelector()
         
         # 手动标记的传送门位置（优先于自动检测）
         self.manual_portal_pos = manual_portal_pos
@@ -81,16 +88,23 @@ class DeadFlowerWorker(QThread):
 
     def _bring_window_to_front(self) -> bool:
         """将游戏窗口设置为前台"""
-        try:
-            if win32gui.IsIconic(self.hwnd):
-                win32gui.ShowWindow(self.hwnd, 9)
-            win32gui.ShowWindow(self.hwnd, 5)
-            win32gui.SetForegroundWindow(self.hwnd)
-            win32gui.BringWindowToTop(self.hwnd)
+        if self.window_selector.ensure_window_focus(self.hwnd):
             return True
-        except Exception as e:
-            self.log_update.emit(f"设置窗口焦点失败: {e}")
-            return False
+        self.log_update.emit("设置窗口焦点失败")
+        return False
+
+    def _ensure_game_focus(self, reason: str) -> bool:
+        if self.window_selector.is_window_foreground(self.hwnd):
+            return True
+        if self.window_selector.ensure_window_focus(self.hwnd, attempts=12, delay=0.15):
+            self.log_update.emit(f"✅ {reason}：游戏窗口焦点已恢复")
+            return True
+        foreground = win32gui.GetForegroundWindow()
+        foreground_title = win32gui.GetWindowText(foreground) if foreground else "未知"
+        self.log_update.emit(
+            f"❌ {reason}：无法恢复游戏窗口焦点，当前前台窗口为 {foreground_title}"
+        )
+        return False
 
     def _interruptible_sleep(self, seconds: float):
         """
@@ -320,11 +334,22 @@ class DeadFlowerWorker(QThread):
         # 拟人化按键
         duration = random.uniform(0.05, 0.15)
         self.human.keyboard.press(key)
+        pressed_at = time.time()
         time.sleep(duration)
         self.human.keyboard.release(key)
         
-        # 更新下次释放时间
-        self.buff_next_cast[buff.key] = time.time() + buff.duration
+        # 最后一次技能 key-down 后立即启动并发布该 Buff 的倒计时。
+        release_at = next_release_time(
+            pressed_at=pressed_at,
+            interval=buff.duration,
+        )
+        self.buff_next_cast[buff.key] = release_at
+        self._update_countdown_display(now=pressed_at)
+        self.log_update.emit(
+            f"技能 {buff.key} 倒计时 "
+            f"{remaining_seconds(release_at, pressed_at)} 秒，"
+            f"下次释放 {format_release_time(release_at)}"
+        )
 
     def _cast_all_ready_buffs(self):
         """释放所有准备好的buff（包括10秒内即将到期的）"""
@@ -463,7 +488,8 @@ class DeadFlowerWorker(QThread):
             是否成功离开市场
         """
         self.log_update.emit("正在离开市场...")
-        self._bring_window_to_front()
+        if not self._ensure_game_focus("离开市场"):
+            return False
         
         # 确保小地图已初始化（在怪物地图启动时可能未成功，现在在市场内重试）
         if self.monitor.minimap_region is None:
@@ -481,50 +507,93 @@ class DeadFlowerWorker(QThread):
         
         portal_x, portal_y = portal_pos
         self.log_update.emit(f"传送门位置: ({portal_x}, {portal_y})")
-        
-        # 2. 导航到传送门（长按方向键，检测卡住则松手重按）
+
+        self._jump_before_move()
+
+        # 2. 导航到传送门
         retry_count = 0
         max_retries = 300
-        last_player_x = None       # 上一次检测到的X坐标
-        stuck_count = 0            # 连续未移动的检测次数
-        miss_count = 0             # 连续未检测到黄点的次数
-        STUCK_THRESHOLD = 5        # 连续几次未移动判定为卡住
-        is_moving = False          # 当前是否正在按住方向键
-        
-        # 先开始向传送门方向移动（传送门一般在左侧）
-        # 根据传送门相对于小地图中心的位置决定初始方向
-        initial_direction = 'left' if portal_x < 80 else 'right'
-        self.log_update.emit(f"开始向{('左' if initial_direction == 'left' else '右')}移动...")
-        if initial_direction == 'left':
-            self.human.move_left()
+        last_player_x = None
+        stuck_count = 0
+        miss_count = 0
+        current_direction = None
+        entered_portal = False
+
+        initial_player = None
+        for _ in range(10):
+            if not self.is_running:
+                return False
+            initial_player = self.monitor.find_player_position()
+            if initial_player:
+                break
+            self._interruptible_sleep(0.2)
+        if not initial_player:
+            self.log_update.emit("❌ 导航前无法定位玩家黄点")
+            return False
+
+        initial_dx = portal_x - initial_player[0]
+        self.log_update.emit(
+            f"导航坐标: 玩家X={initial_player[0]:.1f}，"
+            f"传送门X={portal_x:.1f}，距离={initial_dx:.1f}"
+        )
+        if abs(initial_dx) <= self.TOLERANCE:
+            if not self._ensure_game_focus("进入传送门"):
+                return False
+            self.human.use_portal()
+            entered_portal = True
         else:
-            self.human.move_right()
-        is_moving = True
+            current_direction = "right" if initial_dx > 0 else "left"
+            if current_direction == "right":
+                self.human.move_right()
+            else:
+                self.human.move_left()
         
-        while self.is_running and retry_count < max_retries:
+        while self.is_running and retry_count < max_retries and not entered_portal:
+            if not self.window_selector.is_window_foreground(self.hwnd):
+                current_direction = None
+                last_player_x = None
+                stuck_count = 0
+                self.log_update.emit("⚠️ 检测到游戏窗口失去焦点，正在恢复")
+                if not self._ensure_game_focus("导航恢复"):
+                    break
+                # 确保 key-up 发送给游戏窗口，再根据当前位置重新按方向键。
+                self.human.release_all()
+
             player_pos = self.monitor.find_player_position()
             
             if not player_pos:
-                # 黄点可能被遮挡，不停止移动，继续检测
                 miss_count += 1
-                if miss_count % 20 == 0:
-                    self.log_update.emit(f"连续 {miss_count} 次未检测到黄点，继续移动...")
-                
+                if current_direction is not None:
+                    self.human.stop_move()
+                    current_direction = None
+                if miss_count == 1 or miss_count % 5 == 0:
+                    self.log_update.emit(f"⚠️ 丢失玩家黄点 {miss_count} 次，已停止移动")
+                if miss_count >= 15:
+                    self.log_update.emit("❌ 连续无法定位玩家，终止本次导航")
+                    break
                 self._random_sleep(0.15, 0.25)
                 retry_count += 1
                 continue
             
+            if miss_count:
+                self.log_update.emit(f"已重新定位玩家: X={player_pos[0]:.1f}")
             miss_count = 0
-            player_x, player_y = player_pos
+            player_x, _ = player_pos
             dx = portal_x - player_x
+            if retry_count % 10 == 0:
+                self.log_update.emit(
+                    f"导航中: 玩家X={player_x:.1f}，目标X={portal_x:.1f}，距离={dx:.1f}"
+                )
             
-            # 到达传送门
             if abs(dx) <= self.TOLERANCE:
                 self.log_update.emit("到达传送门，准备进入...")
                 self.human.stop_move()
-                is_moving = False
+                current_direction = None
                 self._random_sleep(0.1, 0.3)
+                if not self._ensure_game_focus("进入传送门"):
+                    break
                 self.human.use_portal()
+                entered_portal = True
                 break
             
             # 检测是否卡住（黄点没动）
@@ -534,37 +603,34 @@ class DeadFlowerWorker(QThread):
                 stuck_count = 0
             last_player_x = player_x
             
-            # 卡住了：松手，短暂延迟，重新按
-            if stuck_count >= STUCK_THRESHOLD and is_moving:
-                self.log_update.emit("检测到移动卡住，重新按键...")
+            if stuck_count >= 5:
+                self.log_update.emit("检测到移动停滞（游戏焦点正常），重新按方向键")
                 self.human.stop_move()
-                is_moving = False
-                self._random_sleep(0.1, 0.3)  # 松手后拟人化延迟
+                current_direction = None
+                self._random_sleep(0.1, 0.3)
                 stuck_count = 0
             
-            # 判断需要的方向
             needed_direction = 'right' if dx > self.TOLERANCE else 'left'
-            
-            # 走过头了，需要换方向
-            if is_moving and self.human.current_direction != needed_direction:
-                self.log_update.emit(f"走过头了，换方向：{needed_direction}...")
-                self.human.stop_move()
-                is_moving = False
-                self._random_sleep(0.1, 0.2)
-            
-            if not is_moving:
+            if current_direction != needed_direction:
+                if current_direction is not None:
+                    self.log_update.emit("已越过目标，切换移动方向")
+                    self.human.stop_move()
+                    self._random_sleep(0.1, 0.2)
+                if not self._ensure_game_focus("方向移动"):
+                    break
                 if needed_direction == 'right':
                     self.human.move_right()
                 else:
                     self.human.move_left()
-                is_moving = True
+                current_direction = needed_direction
             
-            # 持续按住期间的检测间隔
             self._random_sleep(0.15, 0.25)
             retry_count += 1
         
-        # 确保松开方向键
         self.human.stop_move()
+        if not entered_portal:
+            self.log_update.emit("⚠️ 未能到达传送门")
+            return False
         
         # 3. 等待黑屏
         self.log_update.emit("等待传送...")
@@ -585,15 +651,18 @@ class DeadFlowerWorker(QThread):
         return False
 
 
-    def _update_countdown_display(self):
+    def _update_countdown_display(self, now: float = None):
         """更新UI倒计时显示"""
-        now = time.time()
+        current_time = time.time() if now is None else now
         countdown_info = {}
         
         for buff in self.buffs:
-            next_cast = self.buff_next_cast.get(buff.key, 0)
-            remaining = max(0, int(next_cast - now))
-            countdown_info[buff.key] = remaining
+            if buff.key not in self.buff_next_cast:
+                continue
+            countdown_info[buff.key] = remaining_seconds(
+                self.buff_next_cast[buff.key],
+                current_time,
+            )
         
         self.countdown_update.emit(countdown_info)
 
@@ -629,10 +698,9 @@ class DeadFlowerWorker(QThread):
             if not success:
                 self.log_update.emit("⚠️ 小地图检测未成功（可能不在市场），将在进入市场后重试")
             
-            # 初始化所有buff为立即释放
-            now = time.time()
-            for buff in self.buffs:
-                self.buff_next_cast[buff.key] = now
+            # 没有时间戳的 Buff 会被视为立即释放；在真正按下技能前
+            # UI 保持 --:--，不会提前开始倒计时。
+            self.buff_next_cast.clear()
             
             # 主循环
             while self.is_running:
@@ -670,10 +738,10 @@ class DeadFlowerWorker(QThread):
                         
                         # 1. 释放技能前的移动
                         if self.pre_skill_move_mode == "left_only":
-                            # 只向左微调
                             self._move_left_wiggle()
+                        elif self.pre_skill_move_mode == "right_only":
+                            self._move_right_before_skill()
                         else:
-                            # 默认：先向右微调再向左微调
                             self._move_right_before_skill()
                             self.human.stop_move()
                             self._random_sleep(0.3, 0.8)

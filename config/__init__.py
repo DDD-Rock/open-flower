@@ -4,14 +4,16 @@
 """
 
 # 应用配置
-APP_NAME = "枫灵 MapleKeeper"
-APP_VERSION = "1.0.9"
+APP_NAME = "YzY - Auto Buff"
+APP_VERSION = "0.2.0"
 
 # UI配置
-WINDOW_WIDTH = 450  # 窗口宽度
-WINDOW_HEIGHT = 700  # 窗口高度（瘦长布局）
+WINDOW_WIDTH = 520
+WINDOW_HEIGHT = 620
 WINDOW_X = 100
 WINDOW_Y = 100
+DEFAULT_BUFF_SLOT_COUNT = 3
+MAX_BUFF_SLOT_COUNT = 8
 
 # 技能释放配置
 DEFAULT_INTERVAL = 5.0  # 默认释放间隔（秒）
@@ -31,6 +33,8 @@ __all__ = [
     'WINDOW_HEIGHT',
     'WINDOW_X',
     'WINDOW_Y',
+    'DEFAULT_BUFF_SLOT_COUNT',
+    'MAX_BUFF_SLOT_COUNT',
     'DEFAULT_INTERVAL',
     'DEFAULT_RANDOM_DELAY',
     'MIN_INTERVAL',
@@ -39,4 +43,3 @@ __all__ = [
     'CYCLE_PAUSE_TIME',
     'INITIAL_WAIT_TIME',
 ]
-

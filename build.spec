@@ -14,6 +14,7 @@ a = Analysis(
     datas=[
         ('templates', 'templates'),
         ('settings.ini', '.'),
+        ('resources/app_icon.ico', 'resources'),
     ] + numpy_datas + cv2_datas,
     hiddenimports=[
         'pynput.keyboard._win32',
@@ -82,7 +83,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,
+    icon='resources/app_icon.ico',
 )
 
 import os

@@ -21,6 +21,9 @@ def press_key(key: str):
     
     参数:
         key: 按键名称（如 '1', '2', 'F1', 'space' 等）
+
+    返回:
+        float: 此次按键的 key-down 时间戳
     
     异常:
         Exception: 当按键操作失败时抛出异常
@@ -28,8 +31,9 @@ def press_key(key: str):
     try:
         normalized_key = normalize_key_name(key)
 
-        # 按下键
+        # 按下键，并返回真正的 key-down 时间供倒计时使用
         keyboard.press(normalized_key)
+        pressed_at = time.time()
         
         # 随机按住时间（模拟人类操作）
         hold_time = random.randint(KEY_HOLD_MIN_MS, KEY_HOLD_MAX_MS) / 1000.0
@@ -37,6 +41,7 @@ def press_key(key: str):
         
         # 松开键
         keyboard.release(normalized_key)
+        return pressed_at
     except Exception as e:
         raise Exception(f"按键 '{key}' 操作失败: {str(e)}")
 

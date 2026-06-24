@@ -22,9 +22,16 @@ if sys.platform == 'win32':
 
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QIcon
 
 from ui.main_window import MainWindow
 from config import APP_NAME
+
+
+def resource_path(relative_path: str) -> str:
+    """返回开发环境或 PyInstaller 打包环境中的资源路径。"""
+    base_path = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base_path, relative_path)
 
 
 def main():
@@ -36,8 +43,14 @@ def main():
     
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
-    
+
+    app_icon = QIcon(resource_path(os.path.join("resources", "app_icon.ico")))
+    if not app_icon.isNull():
+        app.setWindowIcon(app_icon)
+
     window = MainWindow()
+    if not app_icon.isNull():
+        window.setWindowIcon(app_icon)
     window.show()
     
     sys.exit(app.exec())
@@ -45,4 +58,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

@@ -13,6 +13,11 @@ from PyQt6.QtCore import QObject, pyqtSignal
 from models.skill_config import SkillConfig
 from utils.keyboard_utils import press_key
 from utils.key_names import normalize_key_name
+from utils.countdown import (
+    format_release_time,
+    next_release_time,
+    remaining_seconds,
+)
 from config import THREAD_SLEEP_INTERVAL, CYCLE_PAUSE_TIME, INITIAL_WAIT_TIME
 from automation.human_input import HumanInput
 
@@ -64,6 +69,8 @@ class SkillWorker(QObject):
         self.movement_mode = movement_mode  # 移动模式
         self.is_running = False
         self.thread = None
+        self.countdown_thread = None
+        self.next_release_times = {}
         # 初始化拟人化输入控制器（用于移动）
         self.human_input = HumanInput()
         
@@ -115,6 +122,12 @@ class SkillWorker(QObject):
             return
         
         self.is_running = True
+        self.next_release_times = {}
+        self.countdown_thread = threading.Thread(
+            target=self._countdown_loop,
+            daemon=True,
+        )
+        self.countdown_thread.start()
         self.thread = threading.Thread(target=self._run_loop, daemon=True)
         self.thread.start()
         self.status_update.emit("运行中...")
@@ -143,12 +156,8 @@ class SkillWorker(QObject):
             
             self.status_update.emit("开始释放技能...")
             
-            # 记录每个技能的下次释放时间
-            current_time = time.time()
-            next_release_times = {}
-            
             # 初始化：立即批量释放所有技能（只移动一次）
-            self._release_skills_batch(self.skills, next_release_times)
+            self._release_skills_batch(self.skills, self.next_release_times)
             
             # 主循环：检查每个技能是否到了释放时间
             last_log_time = time.time()
@@ -159,22 +168,27 @@ class SkillWorker(QObject):
                 # 收集所有需要释放的技能
                 skills_to_release = []
                 for skill in self.skills:
-                    if current_time >= next_release_times.get(skill.key, 0):
+                    if current_time >= self.next_release_times.get(skill.key, 0):
                         skills_to_release.append(skill)
                 
                 # 批量释放需要释放的技能（只移动一次）
                 if skills_to_release:
-                    self._release_skills_batch(skills_to_release, next_release_times)
+                    self._release_skills_batch(skills_to_release, self.next_release_times)
                 
-                # 每秒发送一次倒计时更新（通过UI显示）
-                countdown_info = {}
-                min_remaining = 3600
+                # 倒计时由独立线程持续发布，这里只计算椅子逻辑。
+                chair_check_time = time.time()
+                min_remaining = 0
+                scheduled_remaining = []
                 for skill in self.skills:
-                    remaining = max(0, int(next_release_times.get(skill.key, 0) - current_time))
-                    countdown_info[skill.key] = remaining
-                    if remaining < min_remaining:
-                        min_remaining = remaining
-                self.countdown_update.emit(countdown_info)
+                    if skill.key in self.next_release_times:
+                        scheduled_remaining.append(
+                            remaining_seconds(
+                                self.next_release_times[skill.key],
+                                chair_check_time,
+                            )
+                        )
+                if scheduled_remaining:
+                    min_remaining = min(scheduled_remaining)
                 
                 # 检查是否可以坐椅子
                 if self.sit_chair_enabled and not self.is_sitting and min_remaining > 5:
@@ -204,7 +218,8 @@ class SkillWorker(QObject):
         
         try:
             # 确保游戏窗口获得焦点
-            self._ensure_game_window_focus()
+            if not self._ensure_game_window_focus("释放技能"):
+                return
             
             # === 1. 释放技能前移动（根据模式） ===
             self._move_before_skill()
@@ -221,14 +236,25 @@ class SkillWorker(QObject):
                     break
                 
                 # 释放单个技能（只按键，不移动）
-                self._release_single_skill_only(skill)
+                pressed_at = self._release_single_skill_only(skill)
+                if pressed_at is None:
+                    continue
                 
                 # 计算下次释放时间（随机提前释放）
                 random_delay = random.uniform(0, skill.random_delay)
-                wait_time = skill.interval - random_delay
-                next_release_times[skill.key] = time.time() + wait_time
+                release_at = next_release_time(
+                    pressed_at=pressed_at,
+                    interval=skill.interval,
+                    early_by=random_delay,
+                )
+                next_release_times[skill.key] = release_at
+                self._emit_countdown(next_release_times, now=pressed_at)
                 
-                self.status_update.emit(f"技能 {skill.key} 将在 {int(wait_time)} 秒后再次释放")
+                self.status_update.emit(
+                    f"技能 {skill.key} 倒计时 "
+                    f"{remaining_seconds(release_at, pressed_at)} 秒，"
+                    f"下次释放 {format_release_time(release_at)}"
+                )
                 
                 # 只有当还有下一个技能要释放时，才需要间隔
                 if i < len(skills_to_release) - 1:
@@ -252,23 +278,43 @@ class SkillWorker(QObject):
         用于批量释放时，在多个技能之间调用
         """
         self.is_sitting = False  # 释放技能会打破坐椅子状态
+        last_pressed_at = None
         try:
             self.status_update.emit(f"准备释放技能: {skill.key}")
             
             # 第一次按键（press_key内部已有50-150ms的随机长按拟人化操作，模拟短按）
-            press_key(skill.key)
+            last_pressed_at = press_key(skill.key)
             
             # 两次按键之间的随机间隔：100ms 到 300ms
             time.sleep(random.uniform(0.1, 0.3))
             
             # 第二次按键（防止没有触发成功）
-            press_key(skill.key)
+            last_pressed_at = press_key(skill.key)
             
             self.skill_pressed.emit(skill.key)
         except Exception as e:
             error_msg = f"按键错误: {str(e)}"
             self.error_occurred.emit(error_msg)
             self.status_update.emit(error_msg)
+        return last_pressed_at
+
+    def _countdown_loop(self):
+        """技能流程阻塞时仍持续刷新倒计时。"""
+        while self.is_running:
+            self._emit_countdown(self.next_release_times)
+            time.sleep(0.25)
+
+    def _emit_countdown(self, next_release_times: dict, now: float = None):
+        current_time = time.time() if now is None else now
+        countdown_info = {
+            skill.key: remaining_seconds(
+                next_release_times[skill.key],
+                current_time,
+            )
+            for skill in self.skills
+            if skill.key in next_release_times
+        }
+        self.countdown_update.emit(countdown_info)
     
     def _release_skill(self, skill: SkillConfig):
         """
@@ -276,8 +322,7 @@ class SkillWorker(QObject):
         用于单独释放一个技能时（非批量场景）
         """
         # 使用批量方法处理，传入单个技能的列表
-        dummy_next_times = {}
-        self._release_skills_batch([skill], dummy_next_times)
+        self._release_skills_batch([skill], self.next_release_times)
     
     def _move_before_skill(self):
         """释放技能前移动（根据movement_mode决定方向）"""
@@ -325,21 +370,51 @@ class SkillWorker(QObject):
         direction_cn = "向左" if direction == "left" else "向右"
         self.status_update.emit(f"{direction_cn}移动 {int(move_duration * 1000)}ms...")
         
-        if direction == "left":
-            self.human_input.move_left()
-        else:
-            self.human_input.move_right()
-        
-        self.is_sitting = False  # 移动会打破坐椅子状态
-        
-        time.sleep(move_duration)
+        if not self._ensure_game_window_focus("角色移动"):
+            return
+
+        def press_direction():
+            if direction == "left":
+                self.human_input.move_left()
+            else:
+                self.human_input.move_right()
+
+        press_direction()
+        self.is_sitting = False
+
+        elapsed = 0.0
+        while self.is_running and elapsed < move_duration:
+            sleep_time = min(0.1, move_duration - elapsed)
+            time.sleep(sleep_time)
+            elapsed += sleep_time
+            if (
+                self.window_selector
+                and self.game_window_hwnd
+                and not self.window_selector.is_window_foreground(self.game_window_hwnd)
+            ):
+                # 先清空本地状态，恢复焦点后再把 key-up 发给游戏。
+                self.human_input.current_direction = None
+                self.status_update.emit("⚠️ 检测到游戏窗口失去焦点，正在恢复")
+                if not self._ensure_game_window_focus("移动恢复"):
+                    break
+                self.human_input.release_all()
+                press_direction()
+
         self.human_input.stop_move()
     
-    def _ensure_game_window_focus(self):
+    def _ensure_game_window_focus(self, reason: str = "操作"):
         """确保游戏窗口获得焦点"""
         if self.window_selector and self.game_window_hwnd:
             try:
-                self.window_selector.bring_window_to_front(self.game_window_hwnd)
-            except Exception:
-                pass  # 静默处理错误，不影响技能释放
+                if self.window_selector.is_window_foreground(self.game_window_hwnd):
+                    return True
+                if self.window_selector.ensure_window_focus(self.game_window_hwnd):
+                    self.status_update.emit(f"✅ {reason}：游戏窗口焦点已恢复")
+                    return True
+                self.status_update.emit(f"❌ {reason}：无法让游戏窗口获得焦点")
+                return False
+            except Exception as exc:
+                self.status_update.emit(f"❌ {reason}：恢复游戏焦点失败：{exc}")
+                return False
+        return True
     

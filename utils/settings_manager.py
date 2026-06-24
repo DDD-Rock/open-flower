@@ -5,7 +5,8 @@
 import os
 import configparser
 import re
-from typing import Optional
+import sys
+from typing import Optional, Tuple
 
 from config import DEFAULT_BUFF_SLOT_COUNT, MAX_BUFF_SLOT_COUNT
 
@@ -15,8 +16,22 @@ class SettingsManager:
     
     DEFAULT_CONFIG_PATH = "settings.ini"
     
-    def __init__(self, config_path: str = None):
-        self.config_path = config_path or self.DEFAULT_CONFIG_PATH
+    def __init__(self, config_path: Optional[str] = None):
+        default_path = self.DEFAULT_CONFIG_PATH
+        if os.name == "nt":
+            app_data = os.environ.get("APPDATA") or os.path.expanduser("~")
+            settings_dir = os.path.join(app_data, "YzY-Auto-Buff")
+            os.makedirs(settings_dir, exist_ok=True)
+            default_path = os.path.join(settings_dir, self.DEFAULT_CONFIG_PATH)
+        self.config_path = (
+            config_path
+            or os.environ.get("AUTOBUFF_SETTINGS_PATH")
+            or default_path
+        )
+        self.legacy_config_path = os.path.join(
+            os.path.dirname(os.path.abspath(sys.argv[0])),
+            self.DEFAULT_CONFIG_PATH,
+        )
         self.config = configparser.ConfigParser()
     
     def save_settings(self, 
@@ -29,7 +44,7 @@ class SettingsManager:
                       random_behavior_value: int = 20,
                       movement_mode: str = "none",
                       pre_skill_move_mode: str = "right_only",
-                      manual_portal_pos: tuple = None):
+                      manual_portal_pos: Optional[Tuple[int, int]] = None):
         """
         保存设置到 INI 文件
         
@@ -73,6 +88,8 @@ class SettingsManager:
         
         # 写入文件
         try:
+            parent = os.path.dirname(os.path.abspath(self.config_path))
+            os.makedirs(parent, exist_ok=True)
             with open(self.config_path, 'w', encoding='utf-8') as f:
                 self.config.write(f)
             print(f"✅ 设置已保存到 {self.config_path}")
@@ -88,12 +105,19 @@ class SettingsManager:
         Returns:
             设置字典，如果文件不存在或读取失败返回 None
         """
-        if not os.path.exists(self.config_path):
+        load_path = self.config_path
+        if (
+            not os.path.exists(load_path)
+            and os.name == "nt"
+            and os.path.exists(self.legacy_config_path)
+        ):
+            load_path = self.legacy_config_path
+        if not os.path.exists(load_path):
             print(f"配置文件不存在: {self.config_path}")
             return None
         
         try:
-            self.config.read(self.config_path, encoding='utf-8')
+            self.config.read(load_path, encoding='utf-8')
             
             settings = {
                 "return_to_market": self.config.getboolean("General", "return_to_market", fallback=True),
@@ -139,7 +163,7 @@ class SettingsManager:
                 else:
                     settings["buffs"].append({"enabled": False, "key": "", "duration": 0})
             
-            print(f"✅ 设置已从 {self.config_path} 加载")
+            print(f"✅ 设置已从 {load_path} 加载")
             return settings
             
         except Exception as e:

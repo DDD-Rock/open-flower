@@ -39,7 +39,7 @@ class DeadFlowerWorker(QThread):
     error_signal = pyqtSignal(str)
     countdown_update = pyqtSignal(dict)  # buff倒计时更新
 
-    def __init__(self, hwnd: int, buffs: List[BuffConfig], jump_key: str = "alt", sit_chair_enabled: bool = False, chair_key: str = "=", pre_skill_move_mode: str = "right_left", manual_portal_pos: tuple = None):
+    def __init__(self, hwnd: int, buffs: List[BuffConfig], jump_key: str = "alt", sit_chair_enabled: bool = False, chair_key: str = "=", pre_skill_move_mode: str = "right_only", manual_portal_pos: tuple = None):
         super().__init__()
         self.hwnd = hwnd
         self.buffs = [b for b in buffs if b.enabled and b.key]  # 只保留启用的buff

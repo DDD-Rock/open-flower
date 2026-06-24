@@ -13,7 +13,6 @@ a = Analysis(
     binaries=numpy_binaries + cv2_binaries,
     datas=[
         ('templates', 'templates'),
-        ('settings.ini', '.'),
         ('resources/app_icon.ico', 'resources'),
     ] + numpy_datas + cv2_datas,
     hiddenimports=[
@@ -72,7 +71,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='MapleKeeper',
+    name='YzY-Auto-Buff',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -107,5 +106,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name=f'MapleKeeper_v{app_version}',
+    name=f'YzY-Auto-Buff_v{app_version}',
 )

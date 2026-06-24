@@ -1,7 +1,4 @@
-"""
-枫灵 MapleKeeper - 自动技能释放工具
-程序入口文件
-"""
+"""YzY - Auto Buff Windows entry point."""
 
 import sys
 import os
@@ -24,7 +21,7 @@ from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QIcon
 
-from ui.main_window import MainWindow
+from ui.modern_main_window import MainWindow
 from config import APP_NAME
 
 

@@ -729,7 +729,10 @@ class MainWindow(QMainWindow):
             # 检查是否在市场内
             from detection.market_button import MarketButtonDetector
             market_det = MarketButtonDetector(hwnd=self.game_window_hwnd, confidence=0.3)
-            if not market_det.is_market_logo_visible():
+            if not (
+                market_det.is_market_logo_visible()
+                and market_det.find_market_button_in_game() is not None
+            ):
                 QMessageBox.warning(self, "提示", "请在市场内使用此功能")
                 return
             

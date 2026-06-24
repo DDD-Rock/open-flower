@@ -28,6 +28,13 @@ class ModernUIContractTests(unittest.TestCase):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
         self.assertIn("from ui.modern_main_window import MainWindow", source)
 
+    def test_header_uses_packaged_icon_instead_of_emoji(self):
+        source = (ROOT / "ui" / "modern_main_window.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('resources", "app_icon.ico"', source)
+        self.assertNotIn('QLabel("⚡")', source)
+
 
 if __name__ == "__main__":
     unittest.main()

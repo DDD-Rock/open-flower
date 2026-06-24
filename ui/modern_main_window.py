@@ -1,11 +1,12 @@
 """Mac-like compact Windows UI for YzY - Auto Buff."""
 
 import ctypes
+import os
 import sys
 from typing import List, Optional
 
 from PyQt6.QtCore import QEvent, Qt, QTimer
-from PyQt6.QtGui import QIntValidator
+from PyQt6.QtGui import QIcon, QIntValidator
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -39,6 +40,16 @@ from models.skill_config import SkillConfig
 from ui.main_window import MainWindow as LegacyMainWindow
 from ui.virtual_keyboard import VirtualKeyboardDialog
 from utils.screen_utils import get_screen_resolution
+
+
+def resource_path(relative_path: str) -> str:
+    """Resolve resources in source and PyInstaller builds."""
+    base_path = getattr(
+        sys,
+        "_MEIPASS",
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    )
+    return os.path.join(base_path, relative_path)
 
 
 class MainWindow(LegacyMainWindow):
@@ -237,13 +248,19 @@ class MainWindow(LegacyMainWindow):
         header = QHBoxLayout()
         header.setSpacing(11)
 
-        icon = QLabel("⚡")
+        icon = QLabel()
         icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
         icon.setFixedSize(40, 40)
-        icon.setStyleSheet(
-            "background:#2382F7;color:white;border-radius:11px;"
-            "font-size:20px;font-weight:bold;"
+        app_icon = QIcon(resource_path(os.path.join("resources", "app_icon.ico")))
+        icon.setPixmap(
+            app_icon.pixmap(
+                40,
+                40,
+                QIcon.Mode.Normal,
+                QIcon.State.Off,
+            )
         )
+        icon.setScaledContents(True)
         header.addWidget(icon)
 
         title_column = QVBoxLayout()

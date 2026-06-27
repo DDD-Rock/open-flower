@@ -11,10 +11,13 @@
 import time
 import random
 import win32gui
+from typing import Optional
 from PyQt6.QtCore import QThread, pyqtSignal
+from pynput.keyboard import Key
 from detection.minimap_monitor import MinimapMonitor
 from automation.human_input import HumanInput
 from utils.logger import Logger
+from utils.key_names import normalize_key_name
 
 
 class MarketWorker(QThread):
@@ -22,17 +25,42 @@ class MarketWorker(QThread):
     finished_signal = pyqtSignal()
     error_signal = pyqtSignal(str)
 
-    def __init__(self, hwnd):
+    SPECIAL_KEY_MAP = {
+        'shift': Key.shift,
+        'ctrl': Key.ctrl, 'control': Key.ctrl,
+        'alt': Key.alt,
+        'tab': Key.tab,
+        'space': Key.space,
+        'enter': Key.enter,
+        'backspace': Key.backspace,
+        'delete': Key.delete,
+        'insert': Key.insert,
+        'home': Key.home,
+        'end': Key.end,
+        'page_up': Key.page_up, 'pageup': Key.page_up,
+        'page_down': Key.page_down, 'pagedown': Key.page_down,
+        'f1': Key.f1, 'f2': Key.f2, 'f3': Key.f3, 'f4': Key.f4,
+        'f5': Key.f5, 'f6': Key.f6, 'f7': Key.f7, 'f8': Key.f8,
+        'f9': Key.f9, 'f10': Key.f10, 'f11': Key.f11, 'f12': Key.f12,
+    }
+
+    def __init__(self, hwnd, jump_key: str = "Alt"):
         super().__init__()
         self.hwnd = hwnd
         self.is_running = True
         self.monitor = MinimapMonitor()
         self.human = HumanInput()
         self.logger = Logger()
+        self.jump_key = self._resolve_key(jump_key)
         
         # 导航参数
         self.TOLERANCE = 3  # X坐标容差（像素），到达判定
         self.DETECT_INTERVAL = (50, 100)  # 检测间隔（ms），随机化
+
+    def _resolve_key(self, key_str: str):
+        """将按键字符串转换为pynput可识别的按键"""
+        normalized_key = normalize_key_name(key_str)
+        return self.SPECIAL_KEY_MAP.get(normalized_key.lower(), normalized_key)
 
     def _bring_window_to_front(self) -> bool:
         """将游戏窗口设置为前台"""
@@ -46,6 +74,30 @@ class MarketWorker(QThread):
         except Exception as e:
             self.log_update.emit(f"设置窗口焦点失败: {e}")
             return False
+
+    def _find_player_position_during_jump(self) -> Optional[tuple]:
+        """短按跳跃键，并在起跳期间重采一次玩家黄点。"""
+        if not self.is_running:
+            return None
+        self.human.stop_move()
+        self._bring_window_to_front()
+
+        jump_duration = random.uniform(0.08, 0.16)
+        sample_delay = min(jump_duration, random.uniform(0.04, 0.08))
+        self.human.keyboard.press(self.jump_key)
+        try:
+            self._random_sleep(int(sample_delay * 1000), int(sample_delay * 1000))
+            if not self.is_running:
+                return None
+            return self.monitor.find_player_position()
+        finally:
+            try:
+                self.human.keyboard.release(self.jump_key)
+            except Exception as e:
+                self.log_update.emit(f"释放跳跃键失败: {e}")
+            remaining = jump_duration - sample_delay
+            if remaining > 0:
+                self._random_sleep(int(remaining * 1000), int(remaining * 1000))
 
     def run(self):
         try:
@@ -93,10 +145,15 @@ class MarketWorker(QThread):
                 
                 if not player_pos:
                     retry_count += 1
+                    self.human.stop_move()
                     if retry_count % 10 == 0:
-                        self.log_update.emit(f"未检测到玩家位置，重试 {retry_count}/{max_retries}")
-                    self._random_sleep(100, 200)
-                    continue
+                        self.log_update.emit(f"未检测到玩家位置，重试 {retry_count}/{max_retries}，尝试跳跃定位")
+                    player_pos = self._find_player_position_during_jump()
+                    if player_pos:
+                        self.log_update.emit(f"跳跃时重新定位玩家: X={player_pos[0]:.1f}")
+                    else:
+                        self._random_sleep(100, 200)
+                        continue
                 
                 player_x, player_y = player_pos
                 dx = portal_x - player_x

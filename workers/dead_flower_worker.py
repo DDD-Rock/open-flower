@@ -331,12 +331,16 @@ class DeadFlowerWorker(QThread):
         # 解析按键
         key = self._resolve_key(buff.key)
         
-        # 拟人化按键
-        duration = random.uniform(0.05, 0.15)
-        self.human.keyboard.press(key)
-        pressed_at = time.time()
-        time.sleep(duration)
-        self.human.keyboard.release(key)
+        # 与活花模式一致：连续短按两次，降低游戏偶发吞键概率。
+        pressed_at = None
+        for press_index in range(2):
+            duration = random.uniform(0.05, 0.15)
+            self.human.keyboard.press(key)
+            pressed_at = time.time()
+            time.sleep(duration)
+            self.human.keyboard.release(key)
+            if press_index == 0:
+                time.sleep(random.uniform(0.1, 0.3))
         
         # 最后一次技能 key-down 后立即启动并发布该 Buff 的倒计时。
         release_at = next_release_time(
@@ -356,10 +360,12 @@ class DeadFlowerWorker(QThread):
         to_cast = self._get_buffs_to_cast(include_upcoming=True)
         
         if not to_cast:
-            return
+            return False
         
         self.log_update.emit(f"准备释放 {len(to_cast)} 个技能")
-        self._bring_window_to_front()
+        if not self._ensure_game_focus("释放技能"):
+            self.log_update.emit("❌ 释放技能前无法确认游戏窗口焦点")
+            return False
         
         for i, buff in enumerate(to_cast):
             if not self.is_running:
@@ -369,6 +375,7 @@ class DeadFlowerWorker(QThread):
             # 技能之间的间隔（拟人化，与活花模式一致：1-2秒）
             if i < len(to_cast) - 1:
                 self._random_sleep(1.0, 2.0)
+        return True
     
     def _move_right_before_skill(self):
         """释放技能前向右移动一段距离（拟人化微调）"""
@@ -431,6 +438,30 @@ class DeadFlowerWorker(QThread):
         # 释放后与方向键的拟人化间隔 (100-300ms)
         wait_duration = random.uniform(0.1, 0.3)
         self._interruptible_sleep(wait_duration)
+
+    def _find_player_position_during_jump(self) -> Optional[tuple]:
+        """短按跳跃键，并在起跳期间重采一次玩家黄点。"""
+        if not self.is_running:
+            return None
+        if not self._ensure_game_focus("跳跃定位"):
+            return None
+
+        jump_duration = random.uniform(0.08, 0.16)
+        sample_delay = min(jump_duration, random.uniform(0.04, 0.08))
+        self.human.keyboard.press(self.jump_key)
+        try:
+            self._interruptible_sleep(sample_delay)
+            if not self.is_running:
+                return None
+            return self.monitor.find_player_position()
+        finally:
+            try:
+                self.human.keyboard.release(self.jump_key)
+            except Exception as e:
+                self.log_update.emit(f"释放跳跃键失败: {e}")
+            remaining = jump_duration - sample_delay
+            if remaining > 0:
+                self._interruptible_sleep(remaining)
 
     def _return_to_market(self) -> bool:
         """
@@ -528,6 +559,11 @@ class DeadFlowerWorker(QThread):
                 break
             self._interruptible_sleep(0.2)
         if not initial_player:
+            self.log_update.emit("导航前黄点被遮挡，尝试跳跃定位...")
+            initial_player = self._find_player_position_during_jump()
+            if initial_player:
+                self.log_update.emit(f"跳跃时定位到玩家: X={initial_player[0]:.1f}")
+        if not initial_player:
             self.log_update.emit("❌ 导航前无法定位玩家黄点")
             return False
 
@@ -559,6 +595,7 @@ class DeadFlowerWorker(QThread):
                 # 确保 key-up 发送给游戏窗口，再根据当前位置重新按方向键。
                 self.human.release_all()
 
+            recovered_by_jump = False
             player_pos = self.monitor.find_player_position()
             
             if not player_pos:
@@ -566,17 +603,23 @@ class DeadFlowerWorker(QThread):
                 if current_direction is not None:
                     self.human.stop_move()
                     current_direction = None
+                last_player_x = None
+                stuck_count = 0
                 if miss_count == 1 or miss_count % 5 == 0:
-                    self.log_update.emit(f"⚠️ 丢失玩家黄点 {miss_count} 次，已停止移动")
-                if miss_count >= 15:
-                    self.log_update.emit("❌ 连续无法定位玩家，终止本次导航")
-                    break
-                self._random_sleep(0.15, 0.25)
-                retry_count += 1
-                continue
+                    self.log_update.emit(f"⚠️ 丢失玩家黄点 {miss_count} 次，已停止移动，尝试跳跃定位")
+                player_pos = self._find_player_position_during_jump()
+                recovered_by_jump = player_pos is not None
+                if not player_pos:
+                    if miss_count >= 15:
+                        self.log_update.emit("❌ 连续无法定位玩家，终止本次导航")
+                        break
+                    self._random_sleep(0.15, 0.25)
+                    retry_count += 1
+                    continue
             
             if miss_count:
-                self.log_update.emit(f"已重新定位玩家: X={player_pos[0]:.1f}")
+                prefix = "跳跃时重新定位玩家" if recovered_by_jump else "已重新定位玩家"
+                self.log_update.emit(f"{prefix}: X={player_pos[0]:.1f}")
             miss_count = 0
             player_x, _ = player_pos
             dx = portal_x - player_x
@@ -727,7 +770,10 @@ class DeadFlowerWorker(QThread):
                     if in_monster_map:
                         # 已经在怪物地图，直接释放技能
                         self.log_update.emit("已在怪物地图，直接释放技能...")
-                        self._cast_all_ready_buffs()
+                        if not self._cast_all_ready_buffs():
+                            self.log_update.emit("释放技能未完成，等待后重试...")
+                            self._interruptible_sleep(2)
+                            continue
                         self._update_countdown_display()  # 释放后立即刷新倒计时
                     elif in_market:
                         # 在市场，需要先出去
@@ -748,15 +794,18 @@ class DeadFlowerWorker(QThread):
                             self._move_left_wiggle()
                         
                         self.human.stop_move()
-                        self._random_sleep(0.3, 0.8)
+                        self._random_sleep(0.5, 1.0)
                         
                         # 3. 释放所有需要的技能
-                        self._cast_all_ready_buffs()
+                        if not self._cast_all_ready_buffs():
+                            self.log_update.emit("释放技能未完成，等待后重试...")
+                            self._interruptible_sleep(2)
+                            continue
                         self._update_countdown_display()  # 释放后立即刷新倒计时
                         
                         # 4. 等待技能后摇结束，避免技能释放失败
                         self.log_update.emit("等待技能后摇结束...")
-                        self._random_sleep(0.5, 0.8)
+                        self._random_sleep(1.0, 1.5)
                         
                         # 5. 释放完毕后直接准备回市场 (不需要再移动)
                     else:
@@ -767,7 +816,7 @@ class DeadFlowerWorker(QThread):
                     
                     # 拟人化：释放完技能后随机等待1-2秒再回市场
                     self.log_update.emit("等待后返回市场...")
-                    self._random_sleep(0.8, 1.0)
+                    self._random_sleep(1.2, 1.8)
                     
                     # 回到市场（循环重试直到成功）
                     return_retry_count = 0

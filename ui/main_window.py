@@ -986,7 +986,10 @@ class MainWindow(QMainWindow):
         self.toggle_btn.setEnabled(False)
         
         # 创建并启动worker
-        self.market_worker = MarketWorker(self.game_window_hwnd)
+        self.market_worker = MarketWorker(
+            self.game_window_hwnd,
+            getattr(self, 'selected_jump_key', 'Alt')
+        )
         self.market_worker.log_update.connect(self.on_status_update)
         self.market_worker.finished_signal.connect(self.on_test_market_finished)
         self.market_worker.error_signal.connect(self.on_error)

@@ -22,6 +22,7 @@ from models.game_config import GameConfig
 from workers.skill_worker import SkillWorker
 from workers.market_worker import MarketWorker
 from workers.dead_flower_worker import DeadFlowerWorker
+from workers.follow_heal_worker import FollowHealWorker
 from utils.logger import Logger
 from utils.screen_utils import get_screen_resolution
 from utils.settings_manager import SettingsManager
@@ -46,9 +47,13 @@ class MainWindow(QMainWindow):
         self.game_window_hwnd = None  # 游戏窗口句柄
         self.is_window_identified = False  # 是否已识别窗口
         self.return_to_market = True  # 是否释放后回到市场
+        self.mode = "dead"  # dead/live/follow_heal
         self.movement_mode = "none"  # 移动模式: "none"(原地不动), "right"(向右走开buff), "left"(向左走开buff)
         self.pre_skill_move_mode = "right_left"  # 死花出市场后移动: "right_left" 或 "left_only"
         self.manual_portal_pos = None  # 手动标记的传送门位置 (x, y) 或 None
+        self.follow_heal_key = ""
+        self.follow_heal_anchor_pos = None
+        self.follow_heal_minimap_region = None
         
         # 初始化窗口选择器
         if WINDOW_SELECTOR_AVAILABLE:
@@ -92,13 +97,24 @@ class MainWindow(QMainWindow):
     def _apply_saved_settings(self, settings: dict):
         """应用保存的设置"""
         # 加载模式设置
-        self.return_to_market = settings.get("return_to_market", False)
+        self.mode = settings.get(
+            "mode",
+            "dead" if settings.get("return_to_market", False) else "live",
+        )
+        self.return_to_market = self.mode == "dead"
         self._update_mode_tab_style()
         
         # 加载跳跃键
         self.selected_jump_key = settings.get("jump_key", "Alt")
         if hasattr(self, 'jump_key_btn'):
             self.jump_key_btn.setText(self.selected_jump_key)
+        self.follow_heal_key = settings.get("heal_skill_key", "")
+        self.follow_heal_anchor_pos = settings.get("follow_heal_anchor_pos")
+        self.follow_heal_minimap_region = settings.get("follow_heal_minimap_region")
+        if hasattr(self, "heal_key_btn"):
+            self.heal_key_btn.setText(self.follow_heal_key or "选择按键")
+        if hasattr(self, "_update_follow_heal_anchor_label"):
+            self._update_follow_heal_anchor_label()
             
         # 加载空闲时坐椅子设置
         self.sit_chair_enabled = settings.get("sit_chair_enabled", False)
@@ -156,10 +172,18 @@ class MainWindow(QMainWindow):
         self.speed_threshold_input.setText(str(self.game_config.speed_threshold))
         
         # 默认跳跃键
+        self.mode = "dead"
+        self.follow_heal_key = ""
+        self.follow_heal_anchor_pos = None
+        self.follow_heal_minimap_region = None
         if hasattr(self, 'selected_jump_key'):
             self.selected_jump_key = "Alt"
         if hasattr(self, 'jump_key_btn'):
             self.jump_key_btn.setText("Alt")
+        if hasattr(self, "heal_key_btn"):
+            self.heal_key_btn.setText("选择按键")
+        if hasattr(self, "_update_follow_heal_anchor_label"):
+            self._update_follow_heal_anchor_label()
             
         # 默认空闲时坐椅子设置
         self.sit_chair_enabled = False
@@ -184,8 +208,12 @@ class MainWindow(QMainWindow):
         
         self.settings_manager.save_settings(
             buffs=self.buffs,
+            mode=getattr(self, "mode", "dead" if self.return_to_market else "live"),
             return_to_market=self.return_to_market,
             jump_key=getattr(self, 'selected_jump_key', 'Alt'),
+            heal_skill_key=getattr(self, "follow_heal_key", ""),
+            follow_heal_anchor_pos=getattr(self, "follow_heal_anchor_pos", None),
+            follow_heal_minimap_region=getattr(self, "follow_heal_minimap_region", None),
             sit_chair_enabled=getattr(self, 'sit_chair_enabled', False),
             chair_key=getattr(self, 'selected_chair_key', '='),
             random_behavior_enabled=self.random_behavior_checkbox.isChecked(),
@@ -765,6 +793,67 @@ class MainWindow(QMainWindow):
             self.logger.log(f"标记传送门出错: {str(e)}")
             traceback.print_exc()
             self.update_log_display()
+
+    def on_select_heal_key(self):
+        """弹出虚拟键盘选择跟补加血键"""
+        dialog = VirtualKeyboardDialog(self, getattr(self, "follow_heal_key", "") or "Ctrl")
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.follow_heal_key = dialog.get_selected_key()
+            if hasattr(self, "heal_key_btn"):
+                self.heal_key_btn.setText(self.follow_heal_key)
+            self.logger.log(f"加血技能键已设置为: {self.follow_heal_key}")
+            self.update_log_display()
+
+    def on_mark_follow_anchor(self):
+        """手动标记跟补基准点，并保存当时的小地图区域"""
+        if not self.game_window_hwnd:
+            QMessageBox.warning(self, "提示", "请先识别游戏窗口")
+            return
+
+        try:
+            from detection.minimap_monitor import MinimapMonitor
+
+            monitor = MinimapMonitor()
+            monitor.set_window_handle(self.game_window_hwnd)
+
+            region = monitor.auto_detect_dark_region()
+            if region is None:
+                QMessageBox.warning(self, "错误", "无法检测到小地图区域，请确保游戏窗口可见")
+                return
+
+            minimap = monitor.capture_minimap()
+            if minimap is None:
+                QMessageBox.warning(self, "错误", "截取小地图失败")
+                return
+
+            dialog = PortalMarkerDialog(
+                self,
+                minimap,
+                auto_portal_pos=None,
+                current_manual_pos=self.follow_heal_anchor_pos,
+                title="标记跟补基准点",
+                hint_text="点击小地图标记跟补基准点（红色=跟补基准点，运行时只使用 X 坐标）",
+                show_auto_portal=False,
+                confirm_button_text="使用此基准点",
+                clear_button_text="清除基准点",
+            )
+
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                self.follow_heal_anchor_pos = dialog.get_marked_position()
+                self.follow_heal_minimap_region = region if self.follow_heal_anchor_pos else None
+                if hasattr(self, "_update_follow_heal_anchor_label"):
+                    self._update_follow_heal_anchor_label()
+                if self.follow_heal_anchor_pos:
+                    self.logger.log(f"跟补基准点已标记: {self.follow_heal_anchor_pos}")
+                else:
+                    self.logger.log("已清除跟补基准点")
+                self.update_log_display()
+
+        except Exception as e:
+            import traceback
+            self.logger.log(f"标记跟补基准点出错: {str(e)}")
+            traceback.print_exc()
+            self.update_log_display()
     
     def update_window_status_display(self, status_text: str = None, success: bool = False):
         """更新窗口状态显示"""
@@ -875,8 +964,10 @@ class MainWindow(QMainWindow):
         if self.worker:
             self.worker.stop()
         
-        # 根据是否需要回到市场启动不同的worker
-        if self.return_to_market:
+        mode = getattr(self, "mode", "dead" if self.return_to_market else "live")
+
+        # 根据当前模式启动不同的 worker
+        if mode == "dead":
             # 需要回到市场模式（原死花模式逻辑）
             self.logger.log("启动回市场模式...")
             self.update_log_display()
@@ -897,6 +988,31 @@ class MainWindow(QMainWindow):
             
             self.worker.start()
             self.logger.log("回市场模式已启动")
+        elif mode == "follow_heal":
+            if not getattr(self, "follow_heal_key", ""):
+                QMessageBox.warning(self, "警告", "请先设置加血技能键！")
+                return
+            if not getattr(self, "follow_heal_anchor_pos", None):
+                QMessageBox.warning(self, "警告", "请先标记跟补基准点！")
+                return
+
+            self.logger.log("启动跟补模式...")
+            self.update_log_display()
+
+            self.worker = FollowHealWorker(
+                self.game_window_hwnd,
+                self.buffs,
+                self.follow_heal_key,
+                self.follow_heal_anchor_pos,
+                self.follow_heal_minimap_region,
+            )
+            self.worker.log_update.connect(self.on_status_update)
+            self.worker.finished_signal.connect(self.on_worker_finished)
+            self.worker.error_signal.connect(self.on_error)
+            self.worker.countdown_update.connect(self.on_countdown_update)
+
+            self.worker.start()
+            self.logger.log("跟补模式已启动")
         else:
             # 活花模式
             skills = self._build_live_flower_skills(enabled_buffs)
@@ -950,6 +1066,8 @@ class MainWindow(QMainWindow):
         self._set_buff_settings_enabled(False)
         self.dead_flower_tab.setEnabled(False)
         self.live_flower_tab.setEnabled(False)
+        if hasattr(self, "follow_heal_tab"):
+            self.follow_heal_tab.setEnabled(False)
         self._update_movement_mode_visibility()
         
         # 显示buff倒计时区域
@@ -1075,6 +1193,8 @@ class MainWindow(QMainWindow):
         self._set_buff_settings_enabled(True)
         self.dead_flower_tab.setEnabled(True)
         self.live_flower_tab.setEnabled(True)
+        if hasattr(self, "follow_heal_tab"):
+            self.follow_heal_tab.setEnabled(True)
         self._update_movement_mode_visibility()
         
         # 隐藏buff倒计时区域
@@ -1137,8 +1257,11 @@ class MainWindow(QMainWindow):
     
     def _update_movement_mode_visibility(self):
         """根据模式切换显示/隐藏移动选项"""
-        if self.return_to_market:
+        mode = getattr(self, "mode", "dead" if self.return_to_market else "live")
+        if mode == "dead":
             self.movement_stack.setCurrentIndex(1)  # 死花: 出市场选项
+        elif mode == "follow_heal" and self.movement_stack.count() > 2:
+            self.movement_stack.setCurrentIndex(2)  # 跟补: 加血键与基准点
         else:
             self.movement_stack.setCurrentIndex(0)  # 活花: 移动模式选项
 

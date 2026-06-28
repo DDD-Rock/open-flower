@@ -58,7 +58,11 @@ class MainWindow(LegacyMainWindow):
     def init_ui(self):
         self._loading_settings = True
         self.buffs = [BuffConfig() for _ in range(DEFAULT_BUFF_SLOT_COUNT)]
+        self.mode = "dead"
         self.pre_skill_move_mode = "right_only"
+        self.follow_heal_key = ""
+        self.follow_heal_anchor_pos = None
+        self.follow_heal_minimap_region = None
         self.buff_rows = []
         self.buff_remove_btns = []
         self.chair_checkboxes = []
@@ -345,30 +349,44 @@ class MainWindow(LegacyMainWindow):
         self.live_flower_tab = QPushButton(
             "↻  活花模式\n    在当前地图循环释放"
         )
-        for button in (self.dead_flower_tab, self.live_flower_tab):
+        self.follow_heal_tab = QPushButton(
+            "♥  跟补模式\n    自动补血并回位"
+        )
+        for button in (self.dead_flower_tab, self.live_flower_tab, self.follow_heal_tab):
             button.setObjectName("modeCard")
             button.setCursor(Qt.CursorShape.PointingHandCursor)
             row.addWidget(button, 1)
         self.dead_flower_tab.clicked.connect(
-            lambda: self._switch_mode_tab(True)
+            lambda: self._switch_mode_tab("dead")
         )
         self.live_flower_tab.clicked.connect(
-            lambda: self._switch_mode_tab(False)
+            lambda: self._switch_mode_tab("live")
+        )
+        self.follow_heal_tab.clicked.connect(
+            lambda: self._switch_mode_tab("follow_heal")
         )
         parent_layout.addLayout(row)
         self._update_mode_tab_style()
 
-    def _switch_mode_tab(self, return_to_market: bool):
+    def _switch_mode_tab(self, mode):
         if self.is_worker_running:
             return
-        self.return_to_market = return_to_market
+        if isinstance(mode, bool):
+            mode = "dead" if mode else "live"
+        self.mode = mode
+        self.return_to_market = self.mode == "dead"
         self._update_mode_tab_style()
         self._update_movement_mode_visibility()
-        self.logger.log(
-            f"切换到: {'死花模式' if return_to_market else '活花模式'}"
-        )
+        self.logger.log(f"切换到: {self._mode_title(self.mode)}")
         self.update_log_display()
         self._schedule_save()
+
+    def _mode_title(self, mode: str) -> str:
+        return {
+            "dead": "死花模式",
+            "live": "活花模式",
+            "follow_heal": "跟补模式",
+        }.get(mode, "活花模式")
 
     def _update_mode_tab_style(self):
         selected = (
@@ -384,11 +402,10 @@ class MainWindow(LegacyMainWindow):
             "font-size:12px;font-weight:600;}"
             "QPushButton:hover{background:#F8FAFD;border-color:#AFCFFF;}"
         )
-        self.dead_flower_tab.setStyleSheet(
-            selected if self.return_to_market else normal
-        )
-        self.live_flower_tab.setStyleSheet(
-            normal if self.return_to_market else selected
+        self.dead_flower_tab.setStyleSheet(selected if self.mode == "dead" else normal)
+        self.live_flower_tab.setStyleSheet(selected if self.mode == "live" else normal)
+        self.follow_heal_tab.setStyleSheet(
+            selected if self.mode == "follow_heal" else normal
         )
 
     def create_settings_section(self, parent_layout):
@@ -431,6 +448,7 @@ class MainWindow(LegacyMainWindow):
         self.movement_stack = QStackedWidget()
         self.movement_stack.addWidget(self._create_live_options())
         self.movement_stack.addWidget(self._create_dead_options())
+        self.movement_stack.addWidget(self._create_follow_heal_options())
         layout.addWidget(self.movement_stack)
         parent_layout.addWidget(card)
 
@@ -503,6 +521,31 @@ class MainWindow(LegacyMainWindow):
 
         chair_row = self._create_chair_controls()
         row.addWidget(self._option_column("空闲时坐椅子", chair_row), 1)
+        return panel
+
+    def _create_follow_heal_options(self):
+        panel = QWidget()
+        row = QHBoxLayout(panel)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(10)
+
+        self.heal_key_btn = QPushButton("选键")
+        self.heal_key_btn.setFixedWidth(54)
+        self.heal_key_btn.clicked.connect(self.on_select_heal_key)
+        row.addWidget(self._option_column("加血技能键", self.heal_key_btn), 1)
+
+        anchor_row = QWidget()
+        anchor_layout = QHBoxLayout(anchor_row)
+        anchor_layout.setContentsMargins(0, 0, 0, 0)
+        anchor_layout.setSpacing(6)
+        self.follow_anchor_btn = QPushButton("⌖ 标记")
+        self.follow_anchor_btn.clicked.connect(self.on_mark_follow_anchor)
+        self.follow_anchor_label = QLabel("未标记")
+        self.follow_anchor_label.setStyleSheet("color:#747D8D;font-size:9px;")
+        anchor_layout.addWidget(self.follow_anchor_btn)
+        anchor_layout.addWidget(self.follow_anchor_label, 1)
+        row.addWidget(self._option_column("跟补基准点", anchor_row), 2)
+
         return panel
 
     def _option_column(self, title: str, control: QWidget):
@@ -774,8 +817,15 @@ class MainWindow(LegacyMainWindow):
         QTimer.singleShot(0, self._dismiss_input_focus)
 
     def _apply_saved_settings(self, settings: dict):
-        self.return_to_market = settings.get("return_to_market", True)
+        self.mode = settings.get(
+            "mode",
+            "dead" if settings.get("return_to_market", True) else "live",
+        )
+        self.return_to_market = self.mode == "dead"
         self.selected_jump_key = settings.get("jump_key", "Alt")
+        self.follow_heal_key = settings.get("heal_skill_key", "")
+        self.follow_heal_anchor_pos = settings.get("follow_heal_anchor_pos")
+        self.follow_heal_minimap_region = settings.get("follow_heal_minimap_region")
         self.sit_chair_enabled = settings.get("sit_chair_enabled", False)
         self.selected_chair_key = settings.get("chair_key", "=")
         self.movement_mode = settings.get("movement_mode", "none")
@@ -800,6 +850,8 @@ class MainWindow(LegacyMainWindow):
         self._rebuild_buff_rows()
 
         self.jump_key_btn.setText(self.selected_jump_key)
+        self.heal_key_btn.setText(self.follow_heal_key or "选键")
+        self._update_follow_heal_anchor_label()
         self._sync_chair_controls()
         self.random_behavior_checkbox.setChecked(
             self.game_config.random_behavior_enabled
@@ -812,10 +864,14 @@ class MainWindow(LegacyMainWindow):
         self._update_mode_tab_style()
 
     def _apply_default_settings(self):
+        self.mode = "dead"
         self.return_to_market = True
         self.movement_mode = "none"
         self.pre_skill_move_mode = "right_only"
         self.selected_jump_key = "Alt"
+        self.follow_heal_key = ""
+        self.follow_heal_anchor_pos = None
+        self.follow_heal_minimap_region = None
         self.sit_chair_enabled = False
         self.selected_chair_key = "="
         self.manual_portal_pos = None
@@ -828,6 +884,8 @@ class MainWindow(LegacyMainWindow):
         ]
         self._rebuild_buff_rows()
         self.jump_key_btn.setText("Alt")
+        self.heal_key_btn.setText("选键")
+        self._update_follow_heal_anchor_label()
         self._sync_chair_controls()
         self.random_behavior_checkbox.setChecked(True)
         self.random_behavior_input.setText("20")
@@ -845,8 +903,12 @@ class MainWindow(LegacyMainWindow):
             random_value = 20
         self.settings_manager.save_settings(
             buffs=self.buffs,
+            mode=self.mode,
             return_to_market=self.return_to_market,
             jump_key=self.selected_jump_key,
+            heal_skill_key=self.follow_heal_key,
+            follow_heal_anchor_pos=self.follow_heal_anchor_pos,
+            follow_heal_minimap_region=self.follow_heal_minimap_region,
             sit_chair_enabled=self.sit_chair_enabled,
             chair_key=self.selected_chair_key,
             random_behavior_enabled=self.random_behavior_checkbox.isChecked(),
@@ -944,9 +1006,41 @@ class MainWindow(LegacyMainWindow):
             self.jump_key_btn.setText(self.selected_jump_key)
             self._schedule_save()
 
+    def on_select_heal_key(self):
+        previous = self.follow_heal_key
+        super().on_select_heal_key()
+        if self.follow_heal_key != previous:
+            self.heal_key_btn.setText(self.follow_heal_key or "选键")
+            self._schedule_save()
+
+    def on_mark_follow_anchor(self):
+        previous_anchor = self.follow_heal_anchor_pos
+        previous_region = self.follow_heal_minimap_region
+        super().on_mark_follow_anchor()
+        if (
+            self.follow_heal_anchor_pos != previous_anchor
+            or self.follow_heal_minimap_region != previous_region
+        ):
+            self._update_follow_heal_anchor_label()
+            self._schedule_save()
+
+    def _update_follow_heal_anchor_label(self):
+        if not hasattr(self, "follow_anchor_label"):
+            return
+        if self.follow_heal_anchor_pos:
+            x, _ = self.follow_heal_anchor_pos
+            self.follow_anchor_label.setText(f"X={x} · ±7")
+        else:
+            self.follow_anchor_label.setText("未标记")
+
     def _update_movement_mode_visibility(self):
-        self.movement_stack.setCurrentIndex(1 if self.return_to_market else 0)
-        self.portal_marker_btn.setVisible(self.return_to_market)
+        if self.mode == "dead":
+            self.movement_stack.setCurrentIndex(1)
+        elif self.mode == "follow_heal":
+            self.movement_stack.setCurrentIndex(2)
+        else:
+            self.movement_stack.setCurrentIndex(0)
+        self.portal_marker_btn.setVisible(self.mode == "dead")
 
     def update_window_status_display(
         self, status_text: Optional[str] = None, success: bool = False
@@ -998,6 +1092,13 @@ class MainWindow(LegacyMainWindow):
         keys = [buff.key.lower() for buff in enabled if buff.key]
         if len(keys) != len(set(keys)):
             errors.append("启用的 BUFF 按键不能重复")
+        if self.mode == "follow_heal":
+            if not self.follow_heal_key:
+                errors.append("请设置加血技能键")
+            elif self.follow_heal_key.lower() in keys:
+                errors.append("加血技能键不能和 BUFF 按键重复")
+            if not self.follow_heal_anchor_pos:
+                errors.append("请先标记跟补基准点")
         if errors:
             QMessageBox.warning(self, "配置有误", "\n".join(errors))
             return
@@ -1062,6 +1163,8 @@ class MainWindow(LegacyMainWindow):
         self.movement_combo.setEnabled(enabled)
         self.pre_skill_combo.setEnabled(enabled)
         self.jump_key_btn.setEnabled(enabled)
+        self.heal_key_btn.setEnabled(enabled)
+        self.follow_anchor_btn.setEnabled(enabled)
 
     def on_mark_portal(self):
         previous = self.manual_portal_pos

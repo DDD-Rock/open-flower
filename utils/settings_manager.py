@@ -36,8 +36,12 @@ class SettingsManager:
     
     def save_settings(self, 
                       buffs: list,
+                      mode: str = None,
                       return_to_market: bool = False,
                       jump_key: str = "Alt",
+                      heal_skill_key: str = "",
+                      follow_heal_anchor_pos: Optional[Tuple[int, int]] = None,
+                      follow_heal_minimap_region: Optional[Tuple[int, int, int, int]] = None,
                       sit_chair_enabled: bool = False,
                       chair_key: str = "=",
                       random_behavior_enabled: bool = True,
@@ -50,8 +54,12 @@ class SettingsManager:
         
         Args:
             buffs: BuffConfig 列表，包含 enabled, key, duration 属性
+            mode: 运行模式，dead/live/follow_heal
             return_to_market: 是否释放后回到市场
             jump_key: 跳跃键
+            heal_skill_key: 跟补模式加血技能键
+            follow_heal_anchor_pos: 跟补基准点小地图坐标
+            follow_heal_minimap_region: 标记基准点时保存的小地图区域
             sit_chair_enabled: 是否空闲时坐椅子
             chair_key: 椅子按键
             random_behavior_enabled: 是否启用随机提前释放
@@ -64,9 +72,28 @@ class SettingsManager:
         self.config.clear()
         
         # 保存通用设置
+        if mode is None:
+            mode = "dead" if return_to_market else "live"
+        anchor_x = "" if follow_heal_anchor_pos is None else str(follow_heal_anchor_pos[0])
+        anchor_y = "" if follow_heal_anchor_pos is None else str(follow_heal_anchor_pos[1])
+        if follow_heal_minimap_region is None:
+            region_x = region_y = region_w = region_h = ""
+        else:
+            region_x = str(follow_heal_minimap_region[0])
+            region_y = str(follow_heal_minimap_region[1])
+            region_w = str(follow_heal_minimap_region[2])
+            region_h = str(follow_heal_minimap_region[3])
         self.config["General"] = {
+            "mode": mode,
             "return_to_market": str(return_to_market),
             "jump_key": jump_key,
+            "heal_skill_key": heal_skill_key,
+            "follow_heal_anchor_x": anchor_x,
+            "follow_heal_anchor_y": anchor_y,
+            "follow_heal_minimap_x": region_x,
+            "follow_heal_minimap_y": region_y,
+            "follow_heal_minimap_width": region_w,
+            "follow_heal_minimap_height": region_h,
             "sit_chair_enabled": str(sit_chair_enabled),
             "chair_key": chair_key,
             "random_behavior_enabled": str(random_behavior_enabled),
@@ -119,9 +146,29 @@ class SettingsManager:
         try:
             self.config.read(load_path, encoding='utf-8')
             
+            return_to_market = self.config.getboolean("General", "return_to_market", fallback=True)
+            mode = self.config.get(
+                "General",
+                "mode",
+                fallback=("dead" if return_to_market else "live"),
+            )
+            if mode not in {"dead", "live", "follow_heal"}:
+                mode = "dead" if return_to_market else "live"
             settings = {
-                "return_to_market": self.config.getboolean("General", "return_to_market", fallback=True),
+                "mode": mode,
+                "return_to_market": mode == "dead",
                 "jump_key": self.config.get("General", "jump_key", fallback="Alt"),
+                "heal_skill_key": self.config.get("General", "heal_skill_key", fallback=""),
+                "follow_heal_anchor_pos": self._load_optional_pair(
+                    "follow_heal_anchor_x",
+                    "follow_heal_anchor_y",
+                ),
+                "follow_heal_minimap_region": self._load_optional_rect(
+                    "follow_heal_minimap_x",
+                    "follow_heal_minimap_y",
+                    "follow_heal_minimap_width",
+                    "follow_heal_minimap_height",
+                ),
                 "sit_chair_enabled": self.config.getboolean("General", "sit_chair_enabled", fallback=False),
                 "chair_key": self.config.get("General", "chair_key", fallback="="),
                 "random_behavior_enabled": self.config.getboolean("General", "random_behavior_enabled", fallback=True),
@@ -171,11 +218,29 @@ class SettingsManager:
             return None
 
     def _load_manual_portal_pos(self):
-        x = self.config.get("General", "manual_portal_x", fallback="").strip()
-        y = self.config.get("General", "manual_portal_y", fallback="").strip()
+        return self._load_optional_pair("manual_portal_x", "manual_portal_y")
+
+    def _load_optional_pair(self, x_key: str, y_key: str):
+        x = self.config.get("General", x_key, fallback="").strip()
+        y = self.config.get("General", y_key, fallback="").strip()
         if not x or not y:
             return None
         try:
             return (int(x), int(y))
+        except ValueError:
+            return None
+
+    def _load_optional_rect(self, x_key: str, y_key: str, w_key: str, h_key: str):
+        x = self.config.get("General", x_key, fallback="").strip()
+        y = self.config.get("General", y_key, fallback="").strip()
+        w = self.config.get("General", w_key, fallback="").strip()
+        h = self.config.get("General", h_key, fallback="").strip()
+        if not x or not y or not w or not h:
+            return None
+        try:
+            rect = (int(x), int(y), int(w), int(h))
+            if rect[2] <= 0 or rect[3] <= 0:
+                return None
+            return rect
         except ValueError:
             return None

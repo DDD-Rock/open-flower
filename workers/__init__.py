@@ -6,4 +6,3 @@
 from .skill_worker import SkillWorker
 
 __all__ = ['SkillWorker']
-

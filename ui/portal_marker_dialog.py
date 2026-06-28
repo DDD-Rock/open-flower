@@ -34,8 +34,18 @@ class PortalMarkerDialog(QDialog):
     
     SCALE = 2  # 小地图放大倍数
     
-    def __init__(self, parent, minimap_image: np.ndarray, 
-                 auto_portal_pos=None, current_manual_pos=None):
+    def __init__(
+        self,
+        parent,
+        minimap_image: np.ndarray,
+        auto_portal_pos=None,
+        current_manual_pos=None,
+        title: str = "标记传送门位置",
+        hint_text: str = "点击小地图标记传送门位置（红色=手动标记，蓝色=自动检测）",
+        show_auto_portal: bool = True,
+        confirm_button_text: str = "使用此位置",
+        clear_button_text: str = "清除标记（恢复自动）",
+    ):
         """
         Args:
             parent: 父窗口
@@ -44,11 +54,15 @@ class PortalMarkerDialog(QDialog):
             current_manual_pos: 当前已有的手动标记位置 (x, y) 或 None
         """
         super().__init__(parent)
-        self.setWindowTitle("标记传送门位置")
+        self.setWindowTitle(title)
         self.minimap_image = minimap_image
         self.auto_portal_pos = auto_portal_pos
         self.manual_pos = current_manual_pos  # 用户标记的位置（小地图原始坐标）
         self.result_pos = current_manual_pos  # 最终返回的位置
+        self.hint_text = hint_text
+        self.show_auto_portal = show_auto_portal
+        self.confirm_button_text = confirm_button_text
+        self.clear_button_text = clear_button_text
         
         self._init_ui()
         self._update_image()
@@ -58,7 +72,7 @@ class PortalMarkerDialog(QDialog):
         layout.setSpacing(10)
         
         # 提示文字
-        hint_label = QLabel("点击小地图标记传送门位置（红色=手动标记，蓝色=自动检测）")
+        hint_label = QLabel(self.hint_text)
         hint_label.setStyleSheet("font-size: 12px; color: #333; padding: 5px;")
         hint_label.setWordWrap(True)
         layout.addWidget(hint_label)
@@ -81,13 +95,13 @@ class PortalMarkerDialog(QDialog):
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(8)
         
-        self.confirm_btn = QPushButton("使用此位置")
+        self.confirm_btn = QPushButton(self.confirm_button_text)
         self.confirm_btn.setStyleSheet("background-color: #4CAF50; color: white; padding: 8px 16px;")
         self.confirm_btn.clicked.connect(self._on_confirm)
         self.confirm_btn.setEnabled(self.manual_pos is not None)
         btn_layout.addWidget(self.confirm_btn)
         
-        self.clear_btn = QPushButton("清除标记（恢复自动）")
+        self.clear_btn = QPushButton(self.clear_button_text)
         self.clear_btn.setStyleSheet("background-color: #FF9800; color: white; padding: 8px 16px;")
         self.clear_btn.clicked.connect(self._on_clear)
         btn_layout.addWidget(self.clear_btn)
@@ -118,9 +132,9 @@ class PortalMarkerDialog(QDialog):
     def _update_info_text(self):
         """更新坐标信息文字"""
         parts = []
-        if self.auto_portal_pos:
+        if self.show_auto_portal and self.auto_portal_pos:
             parts.append(f"自动检测: ({self.auto_portal_pos[0]}, {self.auto_portal_pos[1]})")
-        else:
+        elif self.show_auto_portal:
             parts.append("自动检测: 未找到")
         
         if self.manual_pos:
@@ -140,7 +154,7 @@ class PortalMarkerDialog(QDialog):
         )
         
         # 画自动检测的蓝色圆点
-        if self.auto_portal_pos:
+        if self.show_auto_portal and self.auto_portal_pos:
             ax, ay = self.auto_portal_pos
             cx, cy = int(ax * self.SCALE + self.SCALE // 2), int(ay * self.SCALE + self.SCALE // 2)
             cv2.circle(display_img, (cx, cy), 8, (255, 100, 0), 2)       # 蓝色空心圆

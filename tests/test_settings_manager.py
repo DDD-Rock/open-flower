@@ -81,6 +81,47 @@ class SettingsManagerTests(unittest.TestCase):
             self.assertEqual(settings["manual_portal_pos"], (37, 18))
             self.assertEqual(settings["pre_skill_move_mode"], "right_only")
 
+    def test_legacy_return_to_market_migrates_to_mode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.ini"
+            config = configparser.ConfigParser()
+            config["General"] = {"return_to_market": "False"}
+            config["Buff1"] = {"enabled": "True", "key": "1", "duration": "200"}
+            with path.open("w", encoding="utf-8") as stream:
+                config.write(stream)
+
+            settings = SettingsManager(str(path)).load_settings()
+
+            self.assertEqual(settings["mode"], "live")
+            self.assertFalse(settings["return_to_market"])
+
+    def test_follow_heal_settings_round_trip(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.ini"
+            manager = SettingsManager(str(path))
+            buffs = [
+                BuffConfig(True, "1", 200),
+                BuffConfig(True, "2", 260),
+                BuffConfig(),
+            ]
+
+            self.assertTrue(
+                manager.save_settings(
+                    buffs=buffs,
+                    mode="follow_heal",
+                    heal_skill_key="Q",
+                    follow_heal_anchor_pos=(74, 58),
+                    follow_heal_minimap_region=(6, 122, 164, 86),
+                )
+            )
+            settings = SettingsManager(str(path)).load_settings()
+
+            self.assertEqual(settings["mode"], "follow_heal")
+            self.assertFalse(settings["return_to_market"])
+            self.assertEqual(settings["heal_skill_key"], "Q")
+            self.assertEqual(settings["follow_heal_anchor_pos"], (74, 58))
+            self.assertEqual(settings["follow_heal_minimap_region"], (6, 122, 164, 86))
+
 
 if __name__ == "__main__":
     unittest.main()

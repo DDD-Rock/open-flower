@@ -54,6 +54,7 @@ class MainWindow(QMainWindow):
         self.follow_heal_key = ""
         self.follow_heal_anchor_pos = None
         self.follow_heal_minimap_region = None
+        self.follow_heal_adjust_hold_ms = (200, 300)
         
         # 初始化窗口选择器
         if WINDOW_SELECTOR_AVAILABLE:
@@ -111,6 +112,10 @@ class MainWindow(QMainWindow):
         self.follow_heal_key = settings.get("heal_skill_key", "")
         self.follow_heal_anchor_pos = settings.get("follow_heal_anchor_pos")
         self.follow_heal_minimap_region = settings.get("follow_heal_minimap_region")
+        self.follow_heal_adjust_hold_ms = settings.get(
+            "follow_heal_adjust_hold_ms",
+            (200, 300),
+        )
         if hasattr(self, "heal_key_btn"):
             self.heal_key_btn.setText(self.follow_heal_key or "选择按键")
         if hasattr(self, "_update_follow_heal_anchor_label"):
@@ -176,6 +181,7 @@ class MainWindow(QMainWindow):
         self.follow_heal_key = ""
         self.follow_heal_anchor_pos = None
         self.follow_heal_minimap_region = None
+        self.follow_heal_adjust_hold_ms = (200, 300)
         if hasattr(self, 'selected_jump_key'):
             self.selected_jump_key = "Alt"
         if hasattr(self, 'jump_key_btn'):
@@ -214,6 +220,11 @@ class MainWindow(QMainWindow):
             heal_skill_key=getattr(self, "follow_heal_key", ""),
             follow_heal_anchor_pos=getattr(self, "follow_heal_anchor_pos", None),
             follow_heal_minimap_region=getattr(self, "follow_heal_minimap_region", None),
+            follow_heal_adjust_hold_ms=getattr(
+                self,
+                "follow_heal_adjust_hold_ms",
+                (200, 300),
+            ),
             sit_chair_enabled=getattr(self, 'sit_chair_enabled', False),
             chair_key=getattr(self, 'selected_chair_key', '='),
             random_behavior_enabled=self.random_behavior_checkbox.isChecked(),
@@ -1005,6 +1016,7 @@ class MainWindow(QMainWindow):
                 self.follow_heal_key,
                 self.follow_heal_anchor_pos,
                 self.follow_heal_minimap_region,
+                getattr(self, "follow_heal_adjust_hold_ms", (200, 300)),
             )
             self.worker.log_update.connect(self.on_status_update)
             self.worker.finished_signal.connect(self.on_worker_finished)

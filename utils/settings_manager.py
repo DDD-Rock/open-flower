@@ -10,6 +10,8 @@ from typing import Optional, Tuple
 
 from config import DEFAULT_BUFF_SLOT_COUNT, MAX_BUFF_SLOT_COUNT
 
+DEFAULT_FOLLOW_HEAL_ADJUST_HOLD_MS = (200, 300)
+
 
 class SettingsManager:
     """设置管理器，负责保存和加载用户配置"""
@@ -42,6 +44,7 @@ class SettingsManager:
                       heal_skill_key: str = "",
                       follow_heal_anchor_pos: Optional[Tuple[int, int]] = None,
                       follow_heal_minimap_region: Optional[Tuple[int, int, int, int]] = None,
+                      follow_heal_adjust_hold_ms: Tuple[int, int] = DEFAULT_FOLLOW_HEAL_ADJUST_HOLD_MS,
                       sit_chair_enabled: bool = False,
                       chair_key: str = "=",
                       random_behavior_enabled: bool = True,
@@ -60,6 +63,7 @@ class SettingsManager:
             heal_skill_key: 跟补模式加血技能键
             follow_heal_anchor_pos: 跟补基准点小地图坐标
             follow_heal_minimap_region: 标记基准点时保存的小地图区域
+            follow_heal_adjust_hold_ms: 跟补周期修正方向键按住时长，单位毫秒
             sit_chair_enabled: 是否空闲时坐椅子
             chair_key: 椅子按键
             random_behavior_enabled: 是否启用随机提前释放
@@ -94,6 +98,8 @@ class SettingsManager:
             "follow_heal_minimap_y": region_y,
             "follow_heal_minimap_width": region_w,
             "follow_heal_minimap_height": region_h,
+            "follow_heal_adjust_min_ms": str(follow_heal_adjust_hold_ms[0]),
+            "follow_heal_adjust_max_ms": str(follow_heal_adjust_hold_ms[1]),
             "sit_chair_enabled": str(sit_chair_enabled),
             "chair_key": chair_key,
             "random_behavior_enabled": str(random_behavior_enabled),
@@ -169,6 +175,7 @@ class SettingsManager:
                     "follow_heal_minimap_width",
                     "follow_heal_minimap_height",
                 ),
+                "follow_heal_adjust_hold_ms": self._load_adjust_hold_ms(),
                 "sit_chair_enabled": self.config.getboolean("General", "sit_chair_enabled", fallback=False),
                 "chair_key": self.config.get("General", "chair_key", fallback="="),
                 "random_behavior_enabled": self.config.getboolean("General", "random_behavior_enabled", fallback=True),
@@ -219,6 +226,20 @@ class SettingsManager:
 
     def _load_manual_portal_pos(self):
         return self._load_optional_pair("manual_portal_x", "manual_portal_y")
+
+    def _load_adjust_hold_ms(self):
+        default_min, default_max = DEFAULT_FOLLOW_HEAL_ADJUST_HOLD_MS
+        min_ms = self.config.getint(
+            "General",
+            "follow_heal_adjust_min_ms",
+            fallback=default_min,
+        )
+        max_ms = self.config.getint(
+            "General",
+            "follow_heal_adjust_max_ms",
+            fallback=default_max,
+        )
+        return (min_ms, max_ms)
 
     def _load_optional_pair(self, x_key: str, y_key: str):
         x = self.config.get("General", x_key, fallback="").strip()

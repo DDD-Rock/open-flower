@@ -112,6 +112,7 @@ class SettingsManagerTests(unittest.TestCase):
                     heal_skill_key="Q",
                     follow_heal_anchor_pos=(74, 58),
                     follow_heal_minimap_region=(6, 122, 164, 86),
+                    follow_heal_adjust_hold_ms=(220, 330),
                 )
             )
             settings = SettingsManager(str(path)).load_settings()
@@ -121,6 +122,7 @@ class SettingsManagerTests(unittest.TestCase):
             self.assertEqual(settings["heal_skill_key"], "Q")
             self.assertEqual(settings["follow_heal_anchor_pos"], (74, 58))
             self.assertEqual(settings["follow_heal_minimap_region"], (6, 122, 164, 86))
+            self.assertEqual(settings["follow_heal_adjust_hold_ms"], (220, 330))
 
 
 if __name__ == "__main__":

@@ -21,6 +21,7 @@ class ModernUIContractTests(unittest.TestCase):
             "跟补模式",
             "加血技能键",
             "跟补基准点",
+            "修正按住",
             "空闲时坐椅子",
             "运行日志",
             "开始运行",

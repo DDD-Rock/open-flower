@@ -63,6 +63,7 @@ class MainWindow(LegacyMainWindow):
         self.follow_heal_key = ""
         self.follow_heal_anchor_pos = None
         self.follow_heal_minimap_region = None
+        self.follow_heal_adjust_hold_ms = (200, 300)
         self.buff_rows = []
         self.buff_remove_btns = []
         self.chair_checkboxes = []
@@ -546,6 +547,26 @@ class MainWindow(LegacyMainWindow):
         anchor_layout.addWidget(self.follow_anchor_label, 1)
         row.addWidget(self._option_column("跟补基准点", anchor_row), 2)
 
+        adjust_row = QWidget()
+        adjust_layout = QHBoxLayout(adjust_row)
+        adjust_layout.setContentsMargins(0, 0, 0, 0)
+        adjust_layout.setSpacing(4)
+        self.follow_adjust_min_input = QLineEdit("200")
+        self.follow_adjust_min_input.setValidator(QIntValidator(50, 1000, self))
+        self.follow_adjust_min_input.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self.follow_adjust_min_input.setFixedWidth(42)
+        self.follow_adjust_min_input.textChanged.connect(self._schedule_save)
+        self.follow_adjust_max_input = QLineEdit("300")
+        self.follow_adjust_max_input.setValidator(QIntValidator(50, 1000, self))
+        self.follow_adjust_max_input.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self.follow_adjust_max_input.setFixedWidth(42)
+        self.follow_adjust_max_input.textChanged.connect(self._schedule_save)
+        adjust_layout.addWidget(self.follow_adjust_min_input)
+        adjust_layout.addWidget(QLabel("-"))
+        adjust_layout.addWidget(self.follow_adjust_max_input)
+        adjust_layout.addWidget(QLabel("ms"))
+        row.addWidget(self._option_column("修正按住", adjust_row), 1)
+
         return panel
 
     def _option_column(self, title: str, control: QWidget):
@@ -699,6 +720,24 @@ class MainWindow(LegacyMainWindow):
             text = self.buff_duration_inputs[index].text().strip()
             buff.duration = float(text) if text else 0.0
 
+    def _read_follow_adjust_hold_ms(self):
+        try:
+            min_ms = int(self.follow_adjust_min_input.text() or "200")
+        except ValueError:
+            min_ms = 200
+        try:
+            max_ms = int(self.follow_adjust_max_input.text() or "300")
+        except ValueError:
+            max_ms = 300
+        min_ms = max(50, min(1000, min_ms))
+        max_ms = max(50, min(1000, max_ms))
+        return (min_ms, max_ms)
+
+    def _update_follow_adjust_inputs(self):
+        min_ms, max_ms = self.follow_heal_adjust_hold_ms
+        self.follow_adjust_min_input.setText(str(min_ms))
+        self.follow_adjust_max_input.setText(str(max_ms))
+
     def create_log_section(self, parent_layout):
         card = QFrame()
         card.setObjectName("card")
@@ -826,6 +865,10 @@ class MainWindow(LegacyMainWindow):
         self.follow_heal_key = settings.get("heal_skill_key", "")
         self.follow_heal_anchor_pos = settings.get("follow_heal_anchor_pos")
         self.follow_heal_minimap_region = settings.get("follow_heal_minimap_region")
+        self.follow_heal_adjust_hold_ms = settings.get(
+            "follow_heal_adjust_hold_ms",
+            (200, 300),
+        )
         self.sit_chair_enabled = settings.get("sit_chair_enabled", False)
         self.selected_chair_key = settings.get("chair_key", "=")
         self.movement_mode = settings.get("movement_mode", "none")
@@ -852,6 +895,7 @@ class MainWindow(LegacyMainWindow):
         self.jump_key_btn.setText(self.selected_jump_key)
         self.heal_key_btn.setText(self.follow_heal_key or "选键")
         self._update_follow_heal_anchor_label()
+        self._update_follow_adjust_inputs()
         self._sync_chair_controls()
         self.random_behavior_checkbox.setChecked(
             self.game_config.random_behavior_enabled
@@ -872,6 +916,7 @@ class MainWindow(LegacyMainWindow):
         self.follow_heal_key = ""
         self.follow_heal_anchor_pos = None
         self.follow_heal_minimap_region = None
+        self.follow_heal_adjust_hold_ms = (200, 300)
         self.sit_chair_enabled = False
         self.selected_chair_key = "="
         self.manual_portal_pos = None
@@ -886,6 +931,7 @@ class MainWindow(LegacyMainWindow):
         self.jump_key_btn.setText("Alt")
         self.heal_key_btn.setText("选键")
         self._update_follow_heal_anchor_label()
+        self._update_follow_adjust_inputs()
         self._sync_chair_controls()
         self.random_behavior_checkbox.setChecked(True)
         self.random_behavior_input.setText("20")
@@ -901,6 +947,7 @@ class MainWindow(LegacyMainWindow):
             random_value = int(self.random_behavior_input.text() or "20")
         except ValueError:
             random_value = 20
+        self.follow_heal_adjust_hold_ms = self._read_follow_adjust_hold_ms()
         self.settings_manager.save_settings(
             buffs=self.buffs,
             mode=self.mode,
@@ -909,6 +956,7 @@ class MainWindow(LegacyMainWindow):
             heal_skill_key=self.follow_heal_key,
             follow_heal_anchor_pos=self.follow_heal_anchor_pos,
             follow_heal_minimap_region=self.follow_heal_minimap_region,
+            follow_heal_adjust_hold_ms=self.follow_heal_adjust_hold_ms,
             sit_chair_enabled=self.sit_chair_enabled,
             chair_key=self.selected_chair_key,
             random_behavior_enabled=self.random_behavior_checkbox.isChecked(),
@@ -1078,6 +1126,7 @@ class MainWindow(LegacyMainWindow):
 
     def start_worker(self):
         self._sync_buff_values_from_inputs()
+        self.follow_heal_adjust_hold_ms = self._read_follow_adjust_hold_ms()
         errors = []
         enabled = [buff for buff in self.buffs if buff.enabled]
         if not enabled:

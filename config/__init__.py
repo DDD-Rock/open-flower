@@ -5,7 +5,7 @@
 
 # 应用配置
 APP_NAME = "YzY - Auto Buff"
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.0.1"
 
 # UI配置
 WINDOW_WIDTH = 520

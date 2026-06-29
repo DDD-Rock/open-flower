@@ -13,6 +13,7 @@ direction_for_center_adjustment = NAVIGATION_MODULE.direction_for_center_adjustm
 direction_to_base = NAVIGATION_MODULE.direction_to_base
 is_outside_anchor_band = NAVIGATION_MODULE.is_outside_anchor_band
 next_center_adjust_interval = NAVIGATION_MODULE.next_center_adjust_interval
+normalize_center_adjust_hold_ms = NAVIGATION_MODULE.normalize_center_adjust_hold_ms
 
 
 class FollowHealNavigationTests(unittest.TestCase):
@@ -21,12 +22,11 @@ class FollowHealNavigationTests(unittest.TestCase):
         self.assertEqual(direction_to_base(96, 100), "right")
         self.assertIsNone(direction_to_base(102.5, 100))
 
-    def test_anchor_band_allows_plus_minus_seven(self):
-        self.assertFalse(is_outside_anchor_band(106.5, 100))
-        self.assertFalse(is_outside_anchor_band(93.5, 100))
-        self.assertFalse(is_outside_anchor_band(107, 100))
-        self.assertFalse(is_outside_anchor_band(93, 100))
-        self.assertTrue(is_outside_anchor_band(107.5, 100))
+    def test_anchor_band_allows_plus_minus_six(self):
+        self.assertFalse(is_outside_anchor_band(106, 100))
+        self.assertFalse(is_outside_anchor_band(94, 100))
+        self.assertTrue(is_outside_anchor_band(106.5, 100))
+        self.assertTrue(is_outside_anchor_band(93.5, 100))
 
     def test_center_adjust_moves_toward_base_or_right_when_centered(self):
         self.assertEqual(direction_for_center_adjustment(104, 100), "left")
@@ -38,6 +38,11 @@ class FollowHealNavigationTests(unittest.TestCase):
             interval = next_center_adjust_interval()
             self.assertGreaterEqual(interval, 12)
             self.assertLessEqual(interval, 15)
+
+    def test_center_adjust_hold_ms_is_normalized(self):
+        self.assertEqual(normalize_center_adjust_hold_ms(200, 300), (200, 300))
+        self.assertEqual(normalize_center_adjust_hold_ms(300, 200), (200, 300))
+        self.assertEqual(normalize_center_adjust_hold_ms(10, 1200), (50, 1000))
 
 
 if __name__ == "__main__":

@@ -2,7 +2,7 @@
 
 运行时持续释放加血技能；Buff 到期时优先释放 Buff，随后继续补血。
 小地图只使用手动标记点的 X 坐标作为基准，角色横向离开区域时持续按
-方向键回到 baseX +/- 7 内。
+方向键回到 baseX +/- 6 内。
 """
 
 import random
@@ -19,10 +19,12 @@ from models.buff_config import BuffConfig
 from utils.countdown import format_release_time, next_release_time, remaining_seconds
 from utils.follow_heal_navigation import (
     MOVEMENT_OBSERVED_TOLERANCE,
+    DEFAULT_CENTER_ADJUST_HOLD_MS,
     direction_for_center_adjustment,
     direction_to_base,
     is_outside_anchor_band,
     next_center_adjust_interval,
+    normalize_center_adjust_hold_ms,
 )
 from utils.key_names import normalize_key_name
 from utils.window_selector import WindowSelector
@@ -75,6 +77,7 @@ class FollowHealWorker(QThread):
         heal_key: str,
         anchor_pos: Tuple[int, int],
         minimap_region: Optional[Tuple[int, int, int, int]] = None,
+        adjust_hold_ms: Tuple[int, int] = DEFAULT_CENTER_ADJUST_HOLD_MS,
     ):
         super().__init__()
         self.hwnd = hwnd
@@ -87,6 +90,7 @@ class FollowHealWorker(QThread):
         self.anchor_pos = anchor_pos
         self.base_x = float(anchor_pos[0])
         self.minimap_region = minimap_region
+        self.adjust_hold_ms = normalize_center_adjust_hold_ms(*adjust_hold_ms)
 
         self.is_running = True
         self.human = HumanInput()
@@ -426,6 +430,7 @@ class FollowHealWorker(QThread):
         if not self._ensure_game_focus("跟补修正"):
             return
         self._move_direction(direction)
-        self._interruptible_sleep(random.uniform(0.10, 0.18))
+        hold_min, hold_max = self.adjust_hold_ms
+        self._interruptible_sleep(random.uniform(hold_min, hold_max) / 1000.0)
         self.human.stop_move()
         self._random_sleep(0.22, 0.75)

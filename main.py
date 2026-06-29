@@ -17,12 +17,14 @@ if sys.platform == 'win32':
         except (AttributeError, OSError):
             pass
 
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QDialog
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QIcon
 
+from ui.activation_dialog import ActivationDialog
 from ui.modern_main_window import MainWindow
 from config import APP_NAME
+from utils.license_manager import LicenseManager
 
 
 def resource_path(relative_path: str) -> str:
@@ -44,6 +46,14 @@ def main():
     app_icon = QIcon(resource_path(os.path.join("resources", "app_icon.ico")))
     if not app_icon.isNull():
         app.setWindowIcon(app_icon)
+
+    license_manager = LicenseManager()
+    if not license_manager.is_activated():
+        activation_dialog = ActivationDialog(license_manager)
+        if not app_icon.isNull():
+            activation_dialog.setWindowIcon(app_icon)
+        if activation_dialog.exec() != QDialog.DialogCode.Accepted:
+            sys.exit(0)
 
     window = MainWindow()
     if not app_icon.isNull():

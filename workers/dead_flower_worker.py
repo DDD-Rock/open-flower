@@ -647,7 +647,10 @@ class DeadFlowerWorker(QThread):
             last_player_x = player_x
             
             if stuck_count >= 5:
-                self.log_update.emit("检测到移动停滞（游戏焦点正常），重新按方向键")
+                self.log_update.emit(
+                    "检测到移动停滞（游戏焦点正常），重新按方向键："
+                    f"{self.monitor.last_player_detection_summary}"
+                )
                 self.human.stop_move()
                 current_direction = None
                 self._random_sleep(0.1, 0.3)

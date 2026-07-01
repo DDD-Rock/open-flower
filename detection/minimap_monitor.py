@@ -20,6 +20,7 @@ class MinimapMonitor:
     
     def __init__(self):
         self.hwnd = 0
+        self.last_player_detection_summary = "尚未执行玩家黄点检测"
         
         # 小地图区域配置（相对于游戏窗口客户区）
         # (x, y, width, height) - None 表示未配置
@@ -197,6 +198,7 @@ class MinimapMonitor:
         """
         minimap = self.capture_minimap()
         if minimap is None:
+            self.last_player_detection_summary = "截取小地图失败"
             return None
         
         # 严格的 BGR 黄色范围
@@ -206,18 +208,49 @@ class MinimapMonitor:
         
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if not contours:
+            self.last_player_detection_summary = "未检测到玩家黄点，候选数=0"
             return None
-            
-        max_contour = max(contours, key=cv2.contourArea)
-        if cv2.contourArea(max_contour) < 5:
+
+        valid_contours = []
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            if area < 2 or area > 120:
+                continue
+            x, y, w, h = cv2.boundingRect(contour)
+            if w < 2 or h < 2 or w > 16 or h > 16:
+                continue
+            aspect = w / h if h > 0 else 0
+            fill_ratio = area / (w * h) if w > 0 and h > 0 else 0
+            if 0.55 <= aspect <= 1.9 and fill_ratio >= 0.45:
+                valid_contours.append(contour)
+
+        if not valid_contours:
+            self.last_player_detection_summary = f"未检测到玩家黄点，候选数={len(contours)}"
             return None
-            
-        M = cv2.moments(max_contour)
+
+        def player_marker_score(contour):
+            area = cv2.contourArea(contour)
+            _, _, w, h = cv2.boundingRect(contour)
+            aspect = w / h
+            fill_ratio = area / (w * h)
+            square_penalty = abs(np.log(aspect))
+            size_penalty = abs(area - 24) / 24
+            return fill_ratio * 8 + area / 20 - square_penalty * 3 - size_penalty
+
+        player_contour = max(valid_contours, key=player_marker_score)
+        M = cv2.moments(player_contour)
         if M["m00"] == 0:
+            self.last_player_detection_summary = f"玩家黄点矩为0，候选数={len(valid_contours)}"
             return None
             
         cx = int(M["m10"] / M["m00"])
         cy = int(M["m01"] / M["m00"])
+        area = cv2.contourArea(player_contour)
+        _, _, w, h = cv2.boundingRect(player_contour)
+        self.last_player_detection_summary = (
+            f"玩家黄点 x={cx:.1f}, y={cy:.1f}，面积={area:.1f}，尺寸={w}×{h}，"
+            f"候选数={len(valid_contours)}"
+        )
         return cx, cy
 
     def find_blue_portal(self, find_leftmost: bool = True) -> Optional[Tuple[int, int]]:
@@ -479,4 +512,3 @@ class MinimapMonitor:
         screen_x = client_pos[0] + best_loc[0]
         screen_y = client_pos[1] + best_loc[1]
         return (screen_x, screen_y, template_w, template_h, best_scale_x, best_scale_y)
-

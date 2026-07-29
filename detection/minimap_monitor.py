@@ -7,6 +7,8 @@ import time
 import win32gui
 from typing import Optional, Tuple
 
+from detection.minimap_region_detector import detect_minimap_content_region
+
 class MinimapMonitor:
     """
     小地图监控与定位类（简化版）
@@ -21,6 +23,7 @@ class MinimapMonitor:
     def __init__(self):
         self.hwnd = 0
         self.last_player_detection_summary = "尚未执行玩家黄点检测"
+        self.last_detection_summary = "尚未执行小地图检测"
         
         # 小地图区域配置（相对于游戏窗口客户区）
         # (x, y, width, height) - None 表示未配置
@@ -72,10 +75,28 @@ class MinimapMonitor:
             client_pos = win32gui.ClientToScreen(self.hwnd, (0, 0))
             client_x, client_y = client_pos
             
-            # 默认搜索左上角 400x400 区域
+            # 与 Mac 版本一致：优先识别左上角稳定的浅色外框，再裁掉地图
+            # 名称区域和外框。地图本身可能很亮（例如自由市场），不能再把
+            # “最大深色矩形”作为首选依据。
+            full_screen = self.capture_game_screen()
+            if full_screen is not None and search_region is None:
+                frame_region = detect_minimap_content_region(full_screen)
+                if frame_region is not None:
+                    final_x, final_y, width, height = frame_region
+                    self.set_minimap_region(final_x, final_y, width, height)
+                    self.last_detection_summary = (
+                        f"白框定位成功: x={final_x}, y={final_y}, "
+                        f"w={width}, h={height}"
+                    )
+                    print(f"✅ {self.last_detection_summary}")
+                    return frame_region
+
+            # 白框识别失败时保留旧版深色区域后备。搜索范围增大到与 Mac
+            # 版本相同的动态左上区域，避免高 DPI 或宽窗口截断小地图。
             if search_region is None:
-                search_w = min(400, client_width)
-                search_h = min(400, client_height)
+                dynamic_search_size = min(640, max(480, client_width // 4))
+                search_w = min(dynamic_search_size, client_width)
+                search_h = min(max(420, dynamic_search_size), client_height)
                 search_region = (0, 0, search_w, search_h)
             
             sx, sy, sw, sh = search_region
@@ -108,6 +129,7 @@ class MinimapMonitor:
             contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             
             if not contours:
+                self.last_detection_summary = "白框未匹配，深色后备未找到轮廓"
                 print("⚠️ 未找到任何轮廓")
                 return None
             
@@ -125,12 +147,23 @@ class MinimapMonitor:
                 rectangularity = area / rect_area if rect_area > 0 else 0
                 aspect_ratio = w / h if h > 0 else 0
                 
-                if rectangularity > 0.6 and 0.5 < aspect_ratio < 3.0:
-                    if area > best_area:
-                        best_area = area
+                if (
+                    rectangularity > 0.55
+                    and 0.5 < aspect_ratio < 4.0
+                    and w >= 60
+                    and h >= 40
+                    and w <= 420
+                    and h <= 320
+                ):
+                    # 同等面积时优先靠近游戏客户区左上角的候选，避免把
+                    # 聊天框或其它大块暗色 UI 当成小地图。
+                    score = area - (x + y) * 2
+                    if score > best_area:
+                        best_area = score
                         best_contour = contour
             
             if best_contour is None:
+                self.last_detection_summary = "白框未匹配，深色后备无合格候选"
                 print("⚠️ 未找到符合条件的深色区域")
                 return None
             
@@ -143,11 +176,15 @@ class MinimapMonitor:
             
             # 自动设置小地图区域
             self.set_minimap_region(final_x, final_y, w, h)
+            self.last_detection_summary = (
+                f"使用深色后备定位: x={final_x}, y={final_y}, w={w}, h={h}"
+            )
             
             print(f"✅ 自动检测到小地图区域: ({final_x}, {final_y}, {w}, {h})")
             return (final_x, final_y, w, h)
             
         except Exception as e:
+            self.last_detection_summary = f"小地图检测异常: {e}"
             print(f"❌ 深色区域检测失败: {e}")
             import traceback
             traceback.print_exc()

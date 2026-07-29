@@ -15,6 +15,8 @@ from typing import Optional, Tuple
 
 import sys
 
+from detection.minimap_region_detector import detect_minimap_content_region
+
 
 def _get_base_dir():
     """获取项目根目录（兼容PyInstaller打包）"""
@@ -34,6 +36,7 @@ class MarketButtonDetector:
     MARKET_BTN_TEMPLATE = os.path.join(TEMPLATE_DIR, "market_btn.png")
     MARKET_LOGO_TEMPLATE = os.path.join(TEMPLATE_DIR, "market_logo.png")  # 市场Logo模板
     MARKET_MINIMAP_TEMPLATE = os.path.join(_get_base_dir(), "templates", "minimap", "market_minimap.png")
+    TEMPLATE_SCALES = tuple(round(value * 0.05, 2) for value in range(10, 41))
     
     def __init__(self, hwnd: int = None, confidence: float = 0.4):
         """
@@ -109,7 +112,7 @@ class MarketButtonDetector:
         bottom_region = screen[bottom_region_start:, :]
         
         # 多尺度匹配（应对窗口拉伸）
-        scales = [0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4]
+        scales = self.TEMPLATE_SCALES
         best_match = None
         best_val = 0
         best_scale = 1.0
@@ -167,25 +170,32 @@ class MarketButtonDetector:
         return (screen_x, screen_y)
     
     def capture_minimap_region(self) -> Optional[np.ndarray]:
-        """截取小地图区域（左上角 200x150）"""
+        """识别并截取纯小地图内容区，失败时返回宽松的左上搜索区。"""
         if not self.hwnd:
             return None
         
         try:
-            client_pos = win32gui.ClientToScreen(self.hwnd, (0, 0))
-            
-            # 小地图在左上角，取前200x150范围
-            monitor = {
-                "top": client_pos[1],
-                "left": client_pos[0],
-                "width": 200,
-                "height": 150
-            }
-            
-            with mss.mss() as sct:
-                screenshot = sct.grab(monitor)
-                img = np.array(screenshot)
-                return cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+            screen = self.capture_game_screen()
+            if screen is None:
+                return None
+
+            region = detect_minimap_content_region(screen)
+            if region is not None:
+                x, y, width, height = region
+                print(f"小地图白框定位: x={x}, y={y}, w={width}, h={height}")
+                return screen[y:y + height, x:x + width].copy()
+
+            # 兼容没有完整白框或被公告条遮挡的帧。旧实现固定 200×150，
+            # 在高 DPI 和宽自由市场小地图上会直接截掉匹配目标。
+            screen_height, screen_width = screen.shape[:2]
+            dynamic_size = min(640, max(480, screen_width // 4))
+            fallback_width = min(dynamic_size, screen_width)
+            fallback_height = min(max(420, dynamic_size), screen_height)
+            print(
+                "⚠️ 小地图白框定位失败，使用左上后备区域: "
+                f"{fallback_width}x{fallback_height}"
+            )
+            return screen[:fallback_height, :fallback_width].copy()
                 
         except Exception as e:
             print(f"❌ 截取小地图失败: {e}")
@@ -250,8 +260,9 @@ class MarketButtonDetector:
         Returns:
             最佳匹配置信度
         """
-        scales = [0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3]
+        scales = self.TEMPLATE_SCALES
         best_val = 0.0
+        gray_region = cv2.cvtColor(region, cv2.COLOR_BGR2GRAY)
         
         h_orig, w_orig = template.shape[:2]
         
@@ -264,9 +275,29 @@ class MarketButtonDetector:
             if new_w > region.shape[1] or new_h > region.shape[0]:
                 continue
             
-            scaled_template = cv2.resize(template, (new_w, new_h))
-            result = cv2.matchTemplate(region, scaled_template, cv2.TM_CCOEFF_NORMED)
-            _, max_val, _, _ = cv2.minMaxLoc(result)
+            interpolation = cv2.INTER_AREA if scale < 1 else cv2.INTER_CUBIC
+            scaled_template = cv2.resize(
+                template,
+                (new_w, new_h),
+                interpolation=interpolation,
+            )
+            color_result = cv2.matchTemplate(
+                region,
+                scaled_template,
+                cv2.TM_CCOEFF_NORMED,
+            )
+            _, color_val, _, _ = cv2.minMaxLoc(color_result)
+
+            # Windows 的色彩配置、HDR 与采集路径可能改变饱和度；灰度匹配
+            # 保留形状信息，作为彩色模板匹配的后备。
+            gray_template = cv2.cvtColor(scaled_template, cv2.COLOR_BGR2GRAY)
+            gray_result = cv2.matchTemplate(
+                gray_region,
+                gray_template,
+                cv2.TM_CCOEFF_NORMED,
+            )
+            _, gray_val, _, _ = cv2.minMaxLoc(gray_result)
+            max_val = max(color_val, gray_val)
             
             if max_val > best_val:
                 best_val = max_val
@@ -299,7 +330,7 @@ class MarketButtonDetector:
             return False
         
         # 多尺度匹配（应对分辨率变化）
-        scales = [0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3]
+        scales = self.TEMPLATE_SCALES
         best_val = 0
         
         h_orig, w_orig = template.shape[:2]
@@ -313,7 +344,12 @@ class MarketButtonDetector:
             if new_w > minimap.shape[1] or new_h > minimap.shape[0]:
                 continue
             
-            scaled_template = cv2.resize(template, (new_w, new_h))
+            interpolation = cv2.INTER_AREA if scale < 1 else cv2.INTER_CUBIC
+            scaled_template = cv2.resize(
+                template,
+                (new_w, new_h),
+                interpolation=interpolation,
+            )
             result = cv2.matchTemplate(minimap, scaled_template, cv2.TM_CCOEFF_NORMED)
             _, max_val, _, _ = cv2.minMaxLoc(result)
             
@@ -352,7 +388,7 @@ class MarketButtonDetector:
         bottom_region = screen[bottom_region_start:, :]
         
         # 多尺度匹配
-        scales = [0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4]
+        scales = self.TEMPLATE_SCALES
         best_match = None
         best_val = 0
         best_scale = 1.0

@@ -451,6 +451,28 @@ class MainWindow(LegacyMainWindow):
         self.movement_stack.addWidget(self._create_dead_options())
         self.movement_stack.addWidget(self._create_follow_heal_options())
         layout.addWidget(self.movement_stack)
+
+        divider = QFrame()
+        divider.setFrameShape(QFrame.Shape.HLine)
+        divider.setStyleSheet("color:#E7EBF2;")
+        layout.addWidget(divider)
+
+        party_row = QHBoxLayout()
+        party_title = QLabel("自动同意组队")
+        party_title.setStyleSheet("font-size:11px;font-weight:600;")
+        party_row.addWidget(party_title)
+        self.party_invite_status_label = QLabel("待机")
+        self.party_invite_status_label.setStyleSheet(
+            "color:#747D8D;font-size:9px;"
+        )
+        party_row.addWidget(self.party_invite_status_label)
+        party_row.addStretch(1)
+        self.party_invite_checkbox = QCheckBox()
+        self.party_invite_checkbox.toggled.connect(
+            self.on_auto_accept_party_invite_toggled
+        )
+        party_row.addWidget(self.party_invite_checkbox)
+        layout.addLayout(party_row)
         parent_layout.addWidget(card)
 
     def _create_live_options(self):
@@ -876,6 +898,9 @@ class MainWindow(LegacyMainWindow):
             "pre_skill_move_mode", "right_only"
         )
         self.manual_portal_pos = settings.get("manual_portal_pos")
+        self.auto_accept_party_invite = settings.get(
+            "auto_accept_party_invite", False
+        )
         self.game_config.random_behavior_enabled = settings.get(
             "random_behavior_enabled", True
         )
@@ -906,6 +931,9 @@ class MainWindow(LegacyMainWindow):
         self._set_movement_mode_radio(self.movement_mode)
         self._set_pre_skill_move_mode_radio(self.pre_skill_move_mode)
         self._update_mode_tab_style()
+        self.party_invite_checkbox.blockSignals(True)
+        self.party_invite_checkbox.setChecked(self.auto_accept_party_invite)
+        self.party_invite_checkbox.blockSignals(False)
 
     def _apply_default_settings(self):
         self.mode = "dead"
@@ -920,6 +948,7 @@ class MainWindow(LegacyMainWindow):
         self.sit_chair_enabled = False
         self.selected_chair_key = "="
         self.manual_portal_pos = None
+        self.auto_accept_party_invite = False
         self.game_config.random_behavior_enabled = True
         self.game_config.random_behavior_value = 20
         self.buffs = [
@@ -938,6 +967,9 @@ class MainWindow(LegacyMainWindow):
         self._set_movement_mode_radio("none")
         self._set_pre_skill_move_mode_radio("right_only")
         self._update_mode_tab_style()
+        self.party_invite_checkbox.blockSignals(True)
+        self.party_invite_checkbox.setChecked(False)
+        self.party_invite_checkbox.blockSignals(False)
 
     def _persist_settings(self):
         if self._loading_settings:
@@ -963,6 +995,7 @@ class MainWindow(LegacyMainWindow):
             random_behavior_value=random_value,
             movement_mode=self.movement_mode,
             pre_skill_move_mode=self.pre_skill_move_mode,
+            auto_accept_party_invite=self.auto_accept_party_invite,
             manual_portal_pos=self.manual_portal_pos,
         )
 

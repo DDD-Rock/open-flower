@@ -51,6 +51,7 @@ class SettingsManager:
                       random_behavior_value: int = 20,
                       movement_mode: str = "none",
                       pre_skill_move_mode: str = "right_only",
+                      auto_accept_party_invite: bool = False,
                       manual_portal_pos: Optional[Tuple[int, int]] = None):
         """
         保存设置到 INI 文件
@@ -106,6 +107,7 @@ class SettingsManager:
             "random_behavior_value": str(random_behavior_value),
             "movement_mode": movement_mode,
             "pre_skill_move_mode": pre_skill_move_mode,
+            "auto_accept_party_invite": str(auto_accept_party_invite),
             "manual_portal_x": "" if manual_portal_pos is None else str(manual_portal_pos[0]),
             "manual_portal_y": "" if manual_portal_pos is None else str(manual_portal_pos[1]),
         }
@@ -182,6 +184,9 @@ class SettingsManager:
                 "random_behavior_value": self.config.getint("General", "random_behavior_value", fallback=20),
                 "movement_mode": self.config.get("General", "movement_mode", fallback="none"),
                 "pre_skill_move_mode": self.config.get("General", "pre_skill_move_mode", fallback="right_only"),
+                "auto_accept_party_invite": self.config.getboolean(
+                    "General", "auto_accept_party_invite", fallback=False
+                ),
                 "manual_portal_pos": self._load_manual_portal_pos(),
                 "buffs": []
             }

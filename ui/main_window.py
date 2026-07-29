@@ -23,6 +23,7 @@ from workers.skill_worker import SkillWorker
 from workers.market_worker import MarketWorker
 from workers.dead_flower_worker import DeadFlowerWorker
 from workers.follow_heal_worker import FollowHealWorker
+from workers.party_invite_worker import PartyInviteWorker
 from utils.logger import Logger
 from utils.screen_utils import get_screen_resolution
 from utils.settings_manager import SettingsManager
@@ -42,6 +43,7 @@ class MainWindow(QMainWindow):
         self.buffs: List[BuffConfig] = [BuffConfig() for _ in range(6)]  # 6个buff
         self.game_config = GameConfig()
         self.worker: SkillWorker = None
+        self.party_invite_worker: PartyInviteWorker = None
         self.logger = Logger()
         self.window_selector = None
         self.game_window_hwnd = None  # 游戏窗口句柄
@@ -55,6 +57,7 @@ class MainWindow(QMainWindow):
         self.follow_heal_anchor_pos = None
         self.follow_heal_minimap_region = None
         self.follow_heal_adjust_hold_ms = (200, 300)
+        self.auto_accept_party_invite = False
         
         # 初始化窗口选择器
         if WINDOW_SELECTOR_AVAILABLE:
@@ -116,6 +119,13 @@ class MainWindow(QMainWindow):
             "follow_heal_adjust_hold_ms",
             (200, 300),
         )
+        self.auto_accept_party_invite = settings.get(
+            "auto_accept_party_invite", False
+        )
+        if hasattr(self, "party_invite_checkbox"):
+            self.party_invite_checkbox.blockSignals(True)
+            self.party_invite_checkbox.setChecked(self.auto_accept_party_invite)
+            self.party_invite_checkbox.blockSignals(False)
         if hasattr(self, "heal_key_btn"):
             self.heal_key_btn.setText(self.follow_heal_key or "选择按键")
         if hasattr(self, "_update_follow_heal_anchor_label"):
@@ -182,6 +192,7 @@ class MainWindow(QMainWindow):
         self.follow_heal_anchor_pos = None
         self.follow_heal_minimap_region = None
         self.follow_heal_adjust_hold_ms = (200, 300)
+        self.auto_accept_party_invite = False
         if hasattr(self, 'selected_jump_key'):
             self.selected_jump_key = "Alt"
         if hasattr(self, 'jump_key_btn'):
@@ -230,7 +241,8 @@ class MainWindow(QMainWindow):
             random_behavior_enabled=self.random_behavior_checkbox.isChecked(),
             random_behavior_value=random_value,
             movement_mode=self.movement_mode,
-            pre_skill_move_mode=self.pre_skill_move_mode
+            pre_skill_move_mode=self.pre_skill_move_mode,
+            auto_accept_party_invite=self.auto_accept_party_invite,
         )
         self.logger.log("设置已保存")
         self.update_log_display()
@@ -680,7 +692,9 @@ class MainWindow(QMainWindow):
                 # 更新窗口状态显示
                 status_text = f"状态: 已识别\n窗口标题: {window_title}\n分辨率: {window_size[0]}x{window_size[1]}"
                 self.update_window_status_display(status_text, success=True)
+                self._sync_party_invite_worker()
             else:
+                self._stop_party_invite_worker()
                 self.logger.log("启动时未找到游戏窗口")
                 self.update_log_display()
                 self.is_window_identified = False
@@ -688,6 +702,7 @@ class MainWindow(QMainWindow):
                 self.update_window_status_display("状态: 未识别\n提示: 请确保游戏已启动，然后点击'识别'按钮")
                 
         except Exception as e:
+            self._stop_party_invite_worker()
             error_msg = f"启动时识别窗口出错: {str(e)}"
             self.logger.log(error_msg)
             self.update_log_display()
@@ -726,10 +741,12 @@ class MainWindow(QMainWindow):
                 # 更新窗口状态显示
                 status_text = f"状态: 已识别\n窗口标题: {window_title}\n分辨率: {window_size[0]}x{window_size[1]}"
                 self.update_window_status_display(status_text, success=True)
+                self._sync_party_invite_worker()
                 
                 QMessageBox.information(self, "识别成功", 
                     f"已识别游戏窗口：\n标题: {window_title}\n分辨率: {window_size[0]}x{window_size[1]}")
             else:
+                self._stop_party_invite_worker()
                 self.logger.log("未找到游戏窗口，请确保游戏已启动")
                 self.update_log_display()
                 self.is_window_identified = False
@@ -739,6 +756,7 @@ class MainWindow(QMainWindow):
                     "未找到游戏窗口，请确保：\n1. 游戏已启动\n2. 游戏窗口可见\n3. 游戏窗口标题包含'冒险岛'、'Maple'等关键词")
                 
         except Exception as e:
+            self._stop_party_invite_worker()
             error_msg = f"识别窗口时出错: {str(e)}"
             self.logger.log(error_msg)
             self.update_log_display()
@@ -1187,6 +1205,91 @@ class MainWindow(QMainWindow):
         self.toggle_btn.setEnabled(True)
         self.market_worker = None
 
+    def on_auto_accept_party_invite_toggled(self, checked: bool):
+        """Enable party invitation handling independently from BUFF workers."""
+        self.auto_accept_party_invite = checked
+        if getattr(self, "_loading_settings", False):
+            return
+
+        if hasattr(self, "_schedule_save"):
+            self._schedule_save()
+        if checked:
+            if not self.is_window_identified:
+                self.auto_identify_on_startup()
+            self._sync_party_invite_worker(log_missing_requirements=True)
+            if self.party_invite_worker is not None:
+                self.logger.log("自动同意组队已开启")
+        else:
+            self._stop_party_invite_worker()
+            self.logger.log("自动同意组队已关闭")
+        self.update_log_display()
+
+    def _sync_party_invite_worker(self, log_missing_requirements: bool = False):
+        if not self.auto_accept_party_invite:
+            self._stop_party_invite_worker()
+            return
+        if (
+            not self.is_window_identified
+            or not self.game_window_hwnd
+            or not self.window_selector
+        ):
+            self._stop_party_invite_worker()
+            if log_missing_requirements:
+                self.logger.log("请先识别游戏窗口后再开启自动同意组队")
+            return
+        if not self.window_selector.is_window_valid(self.game_window_hwnd):
+            self._stop_party_invite_worker()
+            if log_missing_requirements:
+                self.logger.log("游戏窗口已失效，请重新识别后开启自动同意组队")
+            return
+        if (
+            self.party_invite_worker is not None
+            and self.party_invite_worker.isRunning()
+            and self.party_invite_worker.hwnd == self.game_window_hwnd
+        ):
+            self._update_party_invite_status(True)
+            return
+
+        self._stop_party_invite_worker()
+        worker = PartyInviteWorker(self.game_window_hwnd)
+        worker.log_update.connect(self._on_party_invite_log)
+        worker.error_signal.connect(self._on_party_invite_error)
+        worker.finished_signal.connect(
+            lambda current=worker: self._on_party_invite_finished(current)
+        )
+        self.party_invite_worker = worker
+        worker.start()
+        self._update_party_invite_status(True)
+
+    def _stop_party_invite_worker(self):
+        worker = self.party_invite_worker
+        self.party_invite_worker = None
+        if worker is not None:
+            worker.stop()
+        self._update_party_invite_status(False)
+
+    def _on_party_invite_log(self, message: str):
+        self.logger.log(message)
+        self.update_log_display()
+
+    def _on_party_invite_error(self, message: str):
+        self.logger.log(f"错误: {message}")
+        self.update_log_display()
+
+    def _on_party_invite_finished(self, worker: PartyInviteWorker):
+        if self.party_invite_worker is worker:
+            self.party_invite_worker = None
+            self._update_party_invite_status(False)
+
+    def _update_party_invite_status(self, running: bool):
+        if hasattr(self, "party_invite_status_label"):
+            self.party_invite_status_label.setText("运行中" if running else "待机")
+            self.party_invite_status_label.setStyleSheet(
+                "color:#168A55;font-size:9px;"
+                if running
+                else "color:#747D8D;font-size:9px;"
+            )
+
     def stop_worker(self):
         """停止技能释放"""
         if self.worker:
@@ -1331,6 +1434,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         """窗口关闭事件"""
         self.save_settings()
+        self._stop_party_invite_worker()
         if self.worker:
             if hasattr(self.worker, 'is_running'):
                 self.worker.is_running = False

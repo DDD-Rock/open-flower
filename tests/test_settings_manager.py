@@ -124,6 +124,21 @@ class SettingsManagerTests(unittest.TestCase):
             self.assertEqual(settings["follow_heal_minimap_region"], (6, 122, 164, 86))
             self.assertEqual(settings["follow_heal_adjust_hold_ms"], (220, 330))
 
+    def test_auto_accept_party_invite_round_trip(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.ini"
+            manager = SettingsManager(str(path))
+
+            self.assertTrue(
+                manager.save_settings(
+                    buffs=[BuffConfig(True, "1", 200), BuffConfig(), BuffConfig()],
+                    auto_accept_party_invite=True,
+                )
+            )
+            settings = manager.load_settings()
+
+            self.assertTrue(settings["auto_accept_party_invite"])
+
 
 if __name__ == "__main__":
     unittest.main()

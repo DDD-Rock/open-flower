@@ -5,6 +5,9 @@
 `open-flower` 是 YzY - Auto Buff 的 Windows / Python 版本，与 macOS
 版 AutoBuff 保持相同的主要功能、配置语义和界面结构。
 
+启动软件时使用 AutoBuff Monitor 账号登录；Windows、macOS 客户端和监控网页
+共用同一套账号，不再使用机器码或离线激活码。
+
 ## 主要功能
 
 - 死花模式：BUFF 到期后离开自由市场、移动并释放 BUFF，随后返回市场。

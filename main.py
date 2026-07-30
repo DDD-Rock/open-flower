@@ -30,10 +30,10 @@ from PyQt6.QtWidgets import QApplication, QDialog
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QIcon
 
-from ui.activation_dialog import ActivationDialog
+from ui.login_dialog import LoginDialog
 from ui.modern_main_window import MainWindow
 from config import APP_NAME
-from utils.license_manager import LicenseManager
+from utils.account_manager import AccountManager
 
 
 def resource_path(relative_path: str) -> str:
@@ -56,12 +56,12 @@ def main():
     if not app_icon.isNull():
         app.setWindowIcon(app_icon)
 
-    license_manager = LicenseManager()
-    if not license_manager.is_activated():
-        activation_dialog = ActivationDialog(license_manager)
+    account_manager = AccountManager()
+    if account_manager.restore() is None:
+        login_dialog = LoginDialog(account_manager)
         if not app_icon.isNull():
-            activation_dialog.setWindowIcon(app_icon)
-        if activation_dialog.exec() != QDialog.DialogCode.Accepted:
+            login_dialog.setWindowIcon(app_icon)
+        if login_dialog.exec() != QDialog.DialogCode.Accepted:
             sys.exit(0)
 
     window = MainWindow()

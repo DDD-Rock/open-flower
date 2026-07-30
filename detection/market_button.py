@@ -200,6 +200,30 @@ class MarketButtonDetector:
         except Exception as e:
             print(f"❌ 截取小地图失败: {e}")
             return None
+
+    def capture_minimap_header_region(self) -> Optional[np.ndarray]:
+        """截取小地图标题区；市场图标位于地图画布上方而不是画布内部。"""
+        if not self.hwnd:
+            return None
+
+        try:
+            screen = self.capture_game_screen()
+            if screen is None:
+                return None
+
+            # 标题始终锚定在客户区左上角。这里不再依赖地图白框定位：
+            # 动画帧中白框偶尔会被顶栏的小按钮误识别成一个更小的矩形，
+            # 反而会把真正的市场图标裁掉。
+            header_width = min(screen.shape[1], 480)
+            header_height = min(screen.shape[0], 240)
+            print(
+                "小地图标题搜索区: "
+                f"x=0, y=0, w={header_width}, h={header_height}"
+            )
+            return screen[:header_height, :header_width].copy()
+        except Exception as e:
+            print(f"❌ 截取小地图标题区失败: {e}")
+            return None
     
     def is_market_logo_visible(self, confidence: float = 0.5) -> bool:
         """
@@ -220,34 +244,56 @@ class MarketButtonDetector:
             print(f"⚠️ 市场Logo模板不存在: {self.MARKET_LOGO_TEMPLATE}")
             return False
         
-        # 截取小地图区域
-        minimap = self.capture_minimap_region()
-        if minimap is None:
-            return False
-        
         # 加载市场Logo模板
         template = cv2.imread(self.MARKET_LOGO_TEMPLATE)
         if template is None:
             print(f"❌ 无法加载市场Logo模板")
             return False
-        
-        # 第一次搜索：使用完整模板
-        best_val = self._match_logo_multiscale(minimap, template)
-        
-        if best_val >= confidence:
-            print(f"市场Logo匹配: confidence={best_val:.3f} (阈值={confidence})")
-            return True
-        
-        # 第二次搜索：使用模板的下半部分（应对活动公告条遮挡Logo上半部分）
+
+        # 市场 Logo 位于小地图标题区。旧实现截取的是标题下方的纯地图画布，
+        # 因而即使画面中清楚显示“自由市场”，模板也永远搜索不到真实 Logo。
+        # 失败时重采一帧，避开小地图展开动画或其它线程恰好切换画面的瞬间。
         h_orig = template.shape[0]
         crop_top = int(h_orig * 0.4)  # 裁掉上方40%，保留下方60%
         template_bottom = template[crop_top:, :]
-        
-        best_val_bottom = self._match_logo_multiscale(minimap, template_bottom)
-        final_val = max(best_val, best_val_bottom)
-        
-        print(f"市场Logo匹配: confidence={final_val:.3f} (含局部匹配, 阈值={confidence})")
-        return final_val >= confidence
+        best_full_val = 0.0
+        best_bottom_val = 0.0
+        # 局部模板信息量更少，必须使用更高门槛。否则怪物地图顶部的技能
+        # 图标可能在灰度、低缩放下偶然超过完整 Logo 的普通阈值。
+        partial_confidence = max(0.68, confidence + 0.12)
+        for attempt in range(2):
+            minimap_header = self.capture_minimap_header_region()
+            if minimap_header is not None:
+                full_val = self._match_logo_multiscale(
+                    minimap_header,
+                    template,
+                )
+                bottom_val = self._match_logo_multiscale(
+                    minimap_header,
+                    template_bottom,
+                )
+                best_full_val = max(best_full_val, full_val)
+                best_bottom_val = max(best_bottom_val, bottom_val)
+                if (
+                    best_full_val >= confidence
+                    or best_bottom_val >= partial_confidence
+                ):
+                    print(
+                        "市场Logo匹配: "
+                        f"完整={best_full_val:.3f}/{confidence}, "
+                        f"局部={best_bottom_val:.3f}/{partial_confidence}, "
+                        f"第{attempt + 1}帧"
+                    )
+                    return True
+            if attempt == 0:
+                time.sleep(0.08)
+
+        print(
+            "市场Logo匹配失败: "
+            f"完整={best_full_val:.3f}/{confidence}, "
+            f"局部={best_bottom_val:.3f}/{partial_confidence}, 已重采"
+        )
+        return False
     
     def _match_logo_multiscale(self, region: np.ndarray, template: np.ndarray) -> float:
         """

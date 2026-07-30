@@ -63,11 +63,11 @@ class MarketLogoMatchingTests(unittest.TestCase):
 
         self.assertGreater(confidence, 0.90)
 
-    def test_market_check_uses_detected_wide_minimap_content(self):
+    def test_market_check_uses_minimap_header_above_detected_content(self):
         detector = MarketButtonDetector(hwnd=1)
         image, (panel_left, divider_y) = self._game_frame_with_minimap()
         template = cv2.imread(detector.MARKET_LOGO_TEMPLATE)
-        scale = 1.65
+        scale = 1.15
         scaled = cv2.resize(
             template,
             (
@@ -76,9 +76,41 @@ class MarketLogoMatchingTests(unittest.TestCase):
             ),
             interpolation=cv2.INTER_CUBIC,
         )
-        x, y = panel_left + 255, divider_y + 35
+        x, y = panel_left + 12, 18
         image[y : y + scaled.shape[0], x : x + scaled.shape[1]] = scaled
         detector.capture_game_screen = lambda: image
+
+        self.assertTrue(detector.is_market_logo_visible(confidence=0.50))
+
+    def test_minimap_header_search_is_anchored_to_upper_left(self):
+        detector = MarketButtonDetector(hwnd=1)
+        image, _ = self._game_frame_with_minimap()
+        detector.capture_game_screen = lambda: image
+
+        header = detector.capture_minimap_header_region()
+
+        self.assertIsNotNone(header)
+        self.assertEqual(header.shape[:2], (240, 480))
+
+    def test_weak_partial_logo_match_does_not_mark_monster_map_as_market(self):
+        detector = MarketButtonDetector(hwnd=1)
+        detector.capture_minimap_header_region = lambda: np.zeros(
+            (240, 480, 3),
+            dtype=np.uint8,
+        )
+        scores = iter((0.31, 0.53, 0.32, 0.52))
+        detector._match_logo_multiscale = lambda *_: next(scores)
+
+        self.assertFalse(detector.is_market_logo_visible(confidence=0.50))
+
+    def test_strong_partial_logo_match_still_handles_occlusion(self):
+        detector = MarketButtonDetector(hwnd=1)
+        detector.capture_minimap_header_region = lambda: np.zeros(
+            (240, 480, 3),
+            dtype=np.uint8,
+        )
+        scores = iter((0.34, 0.82))
+        detector._match_logo_multiscale = lambda *_: next(scores)
 
         self.assertTrue(detector.is_market_logo_visible(confidence=0.50))
 

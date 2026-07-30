@@ -101,6 +101,30 @@ class MinimapRegionDetectorTests(unittest.TestCase):
         self.assertGreater(minimap.shape[1], 350)
         self.assertGreater(minimap.shape[0], 140)
 
+    def test_header_subframe_is_not_selected_as_map_canvas(self):
+        image, geometry = self._make_frame(
+            panel_width=290,
+            panel_height=330,
+        )
+        panel_x, divider_y, _, _ = geometry
+        # Reproduce the current game's title controls forming a convincing
+        # smaller white frame above the real map canvas.
+        cv2.line(
+            image,
+            (panel_x + 165, 8),
+            (panel_x + 165, divider_y),
+            (225, 225, 225),
+            4,
+        )
+
+        region = detect_minimap_content_region(image)
+
+        self.assertIsNotNone(region)
+        _, y, width, height = region
+        self.assertGreater(width, 260)
+        self.assertGreater(height, 150)
+        self.assertGreaterEqual(y, divider_y)
+
     def test_rejects_unframed_dark_rectangle(self):
         image = np.full((720, 1_280, 3), 110, dtype=np.uint8)
         cv2.rectangle(image, (0, 0), (360, 300), (20, 20, 20), -1)

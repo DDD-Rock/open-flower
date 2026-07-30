@@ -16,7 +16,7 @@ class PartyInviteDetectorTests(unittest.TestCase):
     def setUp(self):
         self.detector = PartyInviteDetector()
 
-    def test_finds_vertically_paired_orange_buttons_in_responsive_region(self):
+    def test_rejects_vertically_paired_orange_ui_without_invite_icons(self):
         image = np.zeros((500, 800, 3), dtype=np.uint8)
         orange = (20, 120, 240)
         cv2.rectangle(image, (650, 400), (660, 410), orange, -1)
@@ -24,9 +24,7 @@ class PartyInviteDetectorTests(unittest.TestCase):
 
         point = self.detector.find_accept_button_in_image(image)
 
-        self.assertIsNotNone(point)
-        self.assertAlmostEqual(point[0], 655, delta=1)
-        self.assertAlmostEqual(point[1], 405, delta=1)
+        self.assertIsNone(point)
 
     def test_rejects_single_orange_control(self):
         image = np.zeros((500, 800, 3), dtype=np.uint8)
@@ -50,6 +48,18 @@ class PartyInviteDetectorTests(unittest.TestCase):
         point = self.detector._find_by_template(region)
 
         self.assertEqual(point, (x + width // 2, y + height // 2))
+
+    def test_full_image_finds_real_paired_invite_icons(self):
+        image = np.full((500, 800, 3), 35, dtype=np.uint8)
+        accept = cv2.imread(self.detector.ACCEPT_TEMPLATE)
+        decline = cv2.imread(self.detector.DECLINE_TEMPLATE)
+        x, y = 650, 350
+        image[y : y + 54, x : x + 54] = accept
+        image[y + 68 : y + 122, x : x + 54] = decline
+
+        point = self.detector.find_accept_button_in_image(image)
+
+        self.assertEqual(point, (x + 27, y + 27))
 
     def test_templates_are_packaged_in_source_tree(self):
         self.assertTrue(self.detector.ACCEPT_TEMPLATE.endswith("accept_btn.png"))

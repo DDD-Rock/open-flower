@@ -30,7 +30,7 @@ class PartyInviteDetector:
     ACCEPT_TEMPLATE = os.path.join(TEMPLATE_DIR, "accept_btn.png")
     DECLINE_TEMPLATE = os.path.join(TEMPLATE_DIR, "decline_btn.png")
 
-    def __init__(self, hwnd: Optional[int] = None, confidence: float = 0.58):
+    def __init__(self, hwnd: Optional[int] = None, confidence: float = 0.76):
         self.hwnd = hwnd
         self.confidence = confidence
 
@@ -88,9 +88,9 @@ class PartyInviteDetector:
         if region.size == 0:
             return None
 
-        point = self._find_by_color(region)
-        if point is None and include_template:
-            point = self._find_by_template(region)
+        # 橙色在技能栏和常驻 UI 中非常常见，不能仅凭两个橙色色块就判定为
+        # 邀请。必须同时匹配“接受”和“拒绝”两个不同图标及其相对位置。
+        point = self._find_by_template(region) if include_template else None
         if point is None:
             return None
         return search_x + point[0], search_y + point[1]
@@ -227,9 +227,9 @@ class PartyInviteDetector:
             dx = abs(decline_center_x - center_x)
             dy = decline_center_y - center_y
             max_size = max(accept_w, accept_h, decline_w, decline_h)
-            if dx > max(accept_w, decline_w):
+            if dx > max(6, max(accept_w, decline_w) * 0.40):
                 continue
-            if dy < max(accept_h, decline_h) * 0.65 or dy > max_size * 2.4:
+            if dy < max_size * 0.80 or dy > max_size * 1.80:
                 continue
 
             pair_score = min(float(score), float(decline_score))

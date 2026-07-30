@@ -27,20 +27,29 @@ class PartyInviteWorker(QThread):
 
     def run(self):
         try:
-            scan_count = 0
+            pending_point = None
             while self.is_running and not self.isInterruptionRequested():
                 if not self.window_selector.is_window_valid(self.hwnd):
                     self.error_signal.emit("游戏窗口已失效，自动同意组队已停止")
                     break
 
-                point = self.detector.find_accept_button(
-                    include_template=scan_count % 3 == 0
-                )
-                scan_count += 1
+                point = self.detector.find_accept_button()
                 if point is None:
+                    pending_point = None
                     self._sleep(random.uniform(1.0, 2.0))
                     continue
 
+                # 连续两帧在近似位置都匹配成功后才点击，避免场景切换和动画帧
+                # 造成瞬时误识别。
+                if pending_point is None or (
+                    abs(point[0] - pending_point[0]) > 12
+                    or abs(point[1] - pending_point[1]) > 12
+                ):
+                    pending_point = point
+                    self._sleep(random.uniform(0.25, 0.45))
+                    continue
+
+                pending_point = None
                 self._accept_invite(point)
                 self._sleep(random.uniform(4.0, 7.0))
         except Exception as exc:

@@ -564,7 +564,10 @@ class DeadFlowerWorker(QThread):
             if initial_player:
                 self.log_update.emit(f"跳跃时定位到玩家: X={initial_player[0]:.1f}")
         if not initial_player:
-            self.log_update.emit("❌ 导航前无法定位玩家黄点")
+            self.log_update.emit(
+                "❌ 导航前无法定位玩家黄点："
+                f"{self.monitor.last_player_detection_summary}"
+            )
             return False
 
         initial_dx = portal_x - initial_player[0]
@@ -606,7 +609,10 @@ class DeadFlowerWorker(QThread):
                 last_player_x = None
                 stuck_count = 0
                 if miss_count == 1 or miss_count % 5 == 0:
-                    self.log_update.emit(f"⚠️ 丢失玩家黄点 {miss_count} 次，已停止移动，尝试跳跃定位")
+                    self.log_update.emit(
+                        f"⚠️ 丢失玩家黄点 {miss_count} 次，已停止移动，尝试跳跃定位；"
+                        f"{self.monitor.last_player_detection_summary}"
+                    )
                 player_pos = self._find_player_position_during_jump()
                 recovered_by_jump = player_pos is not None
                 if not player_pos:

@@ -101,18 +101,21 @@ class MinimapMonitor:
             
             sx, sy, sw, sh = search_region
             
-            # 使用MSS截取搜索区域（每次创建新实例，线程安全）
-            region = {
-                "top": client_y + sy,
-                "left": client_x + sx,
-                "width": sw,
-                "height": sh
-            }
-            
-            with mss.mss() as sct:
-                sct_img = sct.grab(region)
-                screenshot = np.array(sct_img)
-            screenshot = cv2.cvtColor(screenshot, cv2.COLOR_BGRA2BGR)
+            # 白框检测与深色后备必须分析同一帧，否则 UI 动画期间可能前一帧
+            # 判定失败、后一帧却裁到另一个状态的小地图。
+            if full_screen is not None:
+                screenshot = full_screen[sy : sy + sh, sx : sx + sw].copy()
+            else:
+                region = {
+                    "top": client_y + sy,
+                    "left": client_x + sx,
+                    "width": sw,
+                    "height": sh
+                }
+                with mss.mss() as sct:
+                    sct_img = sct.grab(region)
+                    screenshot = np.array(sct_img)
+                screenshot = cv2.cvtColor(screenshot, cv2.COLOR_BGRA2BGR)
             
             # 1. 转为灰度图
             gray = cv2.cvtColor(screenshot, cv2.COLOR_BGR2GRAY)
@@ -233,62 +236,109 @@ class MinimapMonitor:
         Returns:
             (x, y) 玩家在小地图中的坐标，或 None
         """
-        minimap = self.capture_minimap()
-        if minimap is None:
-            self.last_player_detection_summary = "截取小地图失败"
-            return None
-        
-        # 严格的 BGR 黄色范围
-        lower_yellow = np.array([0, 240, 240])
-        upper_yellow = np.array([30, 255, 255])
-        mask = cv2.inRange(minimap, lower_yellow, upper_yellow)
-        
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if not contours:
-            self.last_player_detection_summary = "未检测到玩家黄点，候选数=0"
-            return None
+        # 玩家黄点会闪烁。若当前帧只有大量暗黄色地图装饰，短暂重采，
+        # 等待纯黄色核心出现；正常首帧命中时不会增加延迟。
+        for attempt in range(3):
+            minimap = self.capture_minimap()
+            if minimap is None:
+                self.last_player_detection_summary = "截取小地图失败"
+                return None
 
-        valid_contours = []
-        for contour in contours:
-            area = cv2.contourArea(contour)
-            if area < 2 or area > 120:
-                continue
-            x, y, w, h = cv2.boundingRect(contour)
-            if w < 2 or h < 2 or w > 16 or h > 16:
-                continue
-            aspect = w / h if h > 0 else 0
-            fill_ratio = area / (w * h) if w > 0 and h > 0 else 0
-            if 0.55 <= aspect <= 1.9 and fill_ratio >= 0.45:
-                valid_contours.append(contour)
+            position, summary = self.find_player_position_in_image(minimap)
+            self.last_player_detection_summary = summary
+            if position is not None:
+                return position
+            if attempt < 2:
+                time.sleep(0.04)
+        return None
 
-        if not valid_contours:
-            self.last_player_detection_summary = f"未检测到玩家黄点，候选数={len(contours)}"
-            return None
+    @staticmethod
+    def find_player_position_in_image(
+        minimap: np.ndarray,
+    ) -> Tuple[Optional[Tuple[int, int]], str]:
+        """在已截取的小地图中查找黄点，便于离线测试和调节阈值。"""
+        if minimap is None or minimap.ndim != 3 or minimap.size == 0:
+            return None, "小地图图像无效"
 
-        def player_marker_score(contour):
-            area = cv2.contourArea(contour)
-            _, _, w, h = cv2.boundingRect(contour)
-            aspect = w / h
-            fill_ratio = area / (w * h)
-            square_penalty = abs(np.log(aspect))
-            size_penalty = abs(area - 24) / 24
-            return fill_ratio * 8 + area / 20 - square_penalty * 3 - size_penalty
-
-        player_contour = max(valid_contours, key=player_marker_score)
-        M = cv2.moments(player_contour)
-        if M["m00"] == 0:
-            self.last_player_detection_summary = f"玩家黄点矩为0，候选数={len(valid_contours)}"
-            return None
-            
-        cx = int(M["m10"] / M["m00"])
-        cy = int(M["m01"] / M["m00"])
-        area = cv2.contourArea(player_contour)
-        _, _, w, h = cv2.boundingRect(player_contour)
-        self.last_player_detection_summary = (
-            f"玩家黄点 x={cx:.1f}, y={cy:.1f}，面积={area:.1f}，尺寸={w}×{h}，"
-            f"候选数={len(valid_contours)}"
+        # 不再只接受接近 (0, 255, 255) 的纯黄色。Windows 缩放、录屏色彩
+        # 转换和黄点边缘抗锯齿都会明显降低 G/R，但色相和饱和度仍然稳定。
+        strict_mask = cv2.inRange(
+            minimap,
+            np.array([0, 240, 240], dtype=np.uint8),
+            np.array([30, 255, 255], dtype=np.uint8),
         )
-        return cx, cy
+        hsv = cv2.cvtColor(minimap, cv2.COLOR_BGR2HSV)
+        hsv_mask = cv2.inRange(
+            hsv,
+            np.array([18, 135, 165], dtype=np.uint8),
+            np.array([38, 255, 255], dtype=np.uint8),
+        )
+
+        blue, green, red = cv2.split(minimap)
+        channel_mask = (
+            (red >= 170)
+            & (green >= 165)
+            & (blue <= 115)
+            & ((red.astype(np.int16) - blue.astype(np.int16)) >= 75)
+            & ((green.astype(np.int16) - blue.astype(np.int16)) >= 70)
+            & (np.abs(red.astype(np.int16) - green.astype(np.int16)) <= 75)
+        ).astype(np.uint8) * 255
+        tolerant_mask = cv2.bitwise_or(hsv_mask, channel_mask)
+
+        candidates = []
+        count = 1
+        centroids = None
+        source = "宽容黄色"
+        # 真实玩家标记包含纯黄色核心；自由市场建筑中却有大量暗黄色装饰。
+        # 优先使用纯黄色核心，只有整帧不存在时才启用抗锯齿宽容范围。
+        for source, mask in (
+            ("纯黄色", strict_mask),
+            ("宽容黄色", tolerant_mask),
+        ):
+            count, _, stats, centroids = cv2.connectedComponentsWithStats(mask, 8)
+            candidates = []
+            for index in range(1, count):
+                x, y, w, h, pixel_area = stats[index]
+                # 2×2 的零散高光在自由市场小地图里很多，不是玩家标记。
+                if pixel_area < 6 or pixel_area > 180:
+                    continue
+                if w < 2 or h < 2 or w > 18 or h > 18:
+                    continue
+                aspect = w / h
+                fill_ratio = pixel_area / (w * h)
+                minimum_fill = 0.30 if source == "纯黄色" else 0.35
+                if not 0.5 <= aspect <= 2.0 or fill_ratio < minimum_fill:
+                    continue
+
+                square_penalty = abs(np.log(aspect))
+                size_penalty = abs(pixel_area - 40) / 40
+                score = (
+                    fill_ratio * 8
+                    + pixel_area / 20
+                    - square_penalty * 3
+                    - size_penalty
+                )
+                candidates.append((score, index, w, h, pixel_area))
+            if candidates:
+                break
+
+        if not candidates or centroids is None:
+            raw_count = max(0, count - 1)
+            return None, f"未检测到玩家黄点，黄色连通域={raw_count}，有效候选=0"
+
+        if source == "宽容黄色" and len(candidates) > 5:
+            return (
+                None,
+                f"宽容黄色候选过多={len(candidates)}，等待玩家黄点亮起",
+            )
+
+        _, index, w, h, pixel_area = max(candidates, key=lambda item: item[0])
+        cx, cy = centroids[index]
+        summary = (
+            f"玩家黄点 x={cx:.1f}, y={cy:.1f}，像素={pixel_area}，尺寸={w}×{h}，"
+            f"候选数={len(candidates)}，来源={source}"
+        )
+        return (int(round(cx)), int(round(cy))), summary
 
     def find_blue_portal(self, find_leftmost: bool = True) -> Optional[Tuple[int, int]]:
         """

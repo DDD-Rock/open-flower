@@ -3,6 +3,15 @@
 import sys
 import os
 
+# Windows 控制台默认 GBK，避免 print 含 emoji 时启动崩溃
+if sys.platform == "win32":
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except (OSError, ValueError):
+                pass
+
 # 设置DPI感知（在创建QApplication之前）
 if sys.platform == 'win32':
     try:

@@ -183,7 +183,10 @@ def _content_rect(
     )
     content_width = panel_width - horizontal_inset * 2
     content_height = content_bottom - content_top
-    if content_width < 70 or content_height < 45:
+    # 标题区里的按钮/分栏也可能组成完整白框，但其“内容”通常只有
+    # 50~60 像素高。真实可导航地图在当前支持的最小 UI 缩放下仍不低于
+    # 70 像素，借此避免把标题栏当成地图画布。
+    if content_width < 70 or content_height < 70:
         return None
     return left + horizontal_inset, content_top, content_width, content_height
 

@@ -49,7 +49,7 @@ class MainWindow(QMainWindow):
         self.game_window_hwnd = None  # 游戏窗口句柄
         self.is_window_identified = False  # 是否已识别窗口
         self.return_to_market = True  # 是否释放后回到市场
-        self.mode = "dead"  # dead/live/follow_heal
+        self.mode = "dead"  # dead/live/follow_heal/monitor
         self.movement_mode = "none"  # 移动模式: "none"(原地不动), "right"(向右走开buff), "left"(向左走开buff)
         self.pre_skill_move_mode = "right_left"  # 死花出市场后移动: "right_left" 或 "left_only"
         self.manual_portal_pos = None  # 手动标记的传送门位置 (x, y) 或 None
@@ -1098,6 +1098,8 @@ class MainWindow(QMainWindow):
         self.live_flower_tab.setEnabled(False)
         if hasattr(self, "follow_heal_tab"):
             self.follow_heal_tab.setEnabled(False)
+        if hasattr(self, "monitor_tab"):
+            self.monitor_tab.setEnabled(False)
         self._update_movement_mode_visibility()
         
         # 显示buff倒计时区域
@@ -1310,6 +1312,8 @@ class MainWindow(QMainWindow):
         self.live_flower_tab.setEnabled(True)
         if hasattr(self, "follow_heal_tab"):
             self.follow_heal_tab.setEnabled(True)
+        if hasattr(self, "monitor_tab"):
+            self.monitor_tab.setEnabled(True)
         self._update_movement_mode_visibility()
         
         # 隐藏buff倒计时区域

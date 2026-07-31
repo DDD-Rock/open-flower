@@ -5,12 +5,17 @@ import os
 import sys
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 from typing import Optional
 
 
 class AccountError(Exception):
     """A user-facing account authentication error."""
+
+    def __init__(self, message: str, code: str = ""):
+        super().__init__(message)
+        self.code = code
 
 
 class AccountManager:
@@ -25,6 +30,7 @@ class AccountManager:
         ).rstrip("/")
 
     def authenticate(self, username: str, password: str) -> str:
+        client_id = self._load_or_create_client_id()
         response = self._request(
             "/api/auth/login",
             method="POST",
@@ -34,7 +40,8 @@ class AccountManager:
         account = str((response.get("user") or {}).get("username") or "")
         if not token or not account:
             raise AccountError("监控服务器返回了无效数据")
-        self._save(token, account)
+        binding = self._bind_client(token, client_id) or {}
+        self._save(token, account, client_id, str(binding.get("name") or ""))
         return account
 
     def restore(self) -> Optional[str]:
@@ -44,8 +51,10 @@ class AccountManager:
         token = str(credentials.get("accessToken") or "")
         if not token:
             return None
+        client_id = self._client_id_from(credentials)
         try:
             response = self._request("/api/auth/me", token=token)
+            self._validate_client(token, client_id)
         except AccountError:
             self.logout()
             return None
@@ -53,18 +62,50 @@ class AccountManager:
         if not account:
             self.logout()
             return None
-        self._save(token, account)
+        self._save(
+            token,
+            account,
+            client_id,
+            str(credentials.get("clientName") or ""),
+        )
         return account
 
     def logout(self):
-        try:
-            self.storage_path.unlink()
-        except FileNotFoundError:
-            pass
+        credentials = self._load() or {}
+        client_id = self._client_id_from(credentials)
+        self._save("", "", client_id, str(credentials.get("clientName") or ""))
+
+    def validate_session(self):
+        credentials = self._load() or {}
+        token = str(credentials.get("accessToken") or "")
+        client_id = self._client_id_from(credentials, create=False)
+        if not token or not client_id:
+            raise AccountError("登录已失效，请重新登录", "invalid_token")
+        self._validate_client(token, client_id)
 
     @property
     def registration_url(self) -> str:
         return f"{self.server_base_url}/register"
+
+    def session_credentials(self) -> dict:
+        """返回远程监控连接需要的当前会话，不暴露可写内部字典。"""
+        credentials = dict(self._load() or {})
+        return {
+            "accessToken": str(credentials.get("accessToken") or ""),
+            "username": str(credentials.get("username") or ""),
+            "clientId": self._client_id_from(credentials, create=False),
+            "clientName": str(credentials.get("clientName") or ""),
+            "serverBaseURL": self.server_base_url,
+        }
+
+    def save_client_name(self, name: str):
+        credentials = self._load() or {}
+        self._save(
+            str(credentials.get("accessToken") or ""),
+            str(credentials.get("username") or ""),
+            self._client_id_from(credentials),
+            name.strip(),
+        )
 
     def _request(self, path: str, method: str = "GET", body=None, token: str = "") -> dict:
         data = json.dumps(body).encode("utf-8") if body is not None else None
@@ -80,14 +121,20 @@ class AccountManager:
         )
         try:
             with urllib.request.urlopen(request, timeout=10) as response:
-                return json.loads(response.read().decode("utf-8"))
+                payload = response.read()
+                return json.loads(payload.decode("utf-8")) if payload else {}
         except urllib.error.HTTPError as error:
             try:
                 payload = json.loads(error.read().decode("utf-8"))
                 message = payload.get("message")
+                code = str(payload.get("error") or "")
             except (ValueError, UnicodeDecodeError):
                 message = None
-            raise AccountError(message or f"登录请求失败（{error.code}）") from error
+                code = ""
+            raise AccountError(
+                message or f"登录请求失败（{error.code}）",
+                code,
+            ) from error
         except (urllib.error.URLError, TimeoutError, OSError) as error:
             raise AccountError("无法连接监控服务器，请检查网络") from error
 
@@ -97,11 +144,51 @@ class AccountManager:
         except (FileNotFoundError, ValueError, OSError):
             return None
 
-    def _save(self, token: str, username: str):
+    def _bind_client(self, token: str, client_id: str):
+        return self._request(
+            "/api/clients/bind",
+            method="POST",
+            body={"clientId": client_id},
+            token=token,
+        )
+
+    def _validate_client(self, token: str, client_id: str):
+        self._request(
+            f"/api/clients/authorization?client_id={client_id}",
+            token=token,
+        )
+
+    def _load_or_create_client_id(self) -> str:
+        credentials = self._load() or {}
+        client_id = self._client_id_from(credentials, create=False)
+        if client_id:
+            return client_id
+        client_id = str(uuid.uuid4())
+        self._save(
+            str(credentials.get("accessToken") or ""),
+            str(credentials.get("username") or ""),
+            client_id,
+            str(credentials.get("clientName") or ""),
+        )
+        return client_id
+
+    @staticmethod
+    def _client_id_from(credentials: dict, create: bool = True) -> str:
+        client_id = str(credentials.get("clientId") or "").strip()
+        if client_id:
+            return client_id
+        return str(uuid.uuid4()) if create else ""
+
+    def _save(self, token: str, username: str, client_id: str, client_name: str = ""):
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         self.storage_path.write_text(
             json.dumps(
-                {"accessToken": token, "username": username},
+                {
+                    "accessToken": token,
+                    "username": username,
+                    "clientId": client_id,
+                    "clientName": client_name,
+                },
                 ensure_ascii=False,
             ),
             encoding="utf-8",

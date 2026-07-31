@@ -1,0 +1,170 @@
+"""只读监控会话：持续捕获小地图，不发送任何键盘或鼠标输入。"""
+
+from __future__ import annotations
+
+import time
+
+from PyQt6.QtCore import QThread, pyqtSignal
+
+from detection.exp_recognizer import EXPFixedFontRecognizer, EXPRecognitionStabilizer
+from detection.minimap_monitor import MinimapMonitor
+from detection.rune_alert_detector import RuneAlertDetector, RuneAlertStabilizer
+from models.map_topology import MinimapVisualMatcher
+
+
+class MonitorWorker(QThread):
+    frame_ready = pyqtSignal(object)
+    status_update = pyqtSignal(str)
+    rune_update = pyqtSignal(bool, object)
+    exp_update = pyqtSignal(object, str)
+    error_signal = pyqtSignal(str)
+    stopped = pyqtSignal()
+
+    TARGET_INTERVAL = 1 / 30
+    MAP_MATCH_INTERVAL_FRAMES = 6
+    RUNE_INTERVAL_FRAMES = 30
+    EXP_INTERVAL_FRAMES = 15
+    WINDOW_CHECK_INTERVAL_FRAMES = 30
+    MAP_MISS_LIMIT = 5
+
+    def __init__(self, hwnd: int, maps=None, window_selector=None, parent=None):
+        super().__init__(parent)
+        self.hwnd = hwnd
+        self.maps = list(maps or [])
+        self.window_selector = window_selector
+        self._running = False
+        self.monitor = MinimapMonitor()
+        self.monitor.set_window_handle(hwnd)
+        self._matched_map = None
+        self._map_misses = 0
+
+    def stop(self):
+        self._running = False
+        self.requestInterruption()
+        if self.isRunning() and QThread.currentThread() is not self:
+            self.wait(2000)
+
+    def run(self):
+        self._running = True
+        rune_state = RuneAlertStabilizer()
+        exp_recognizer = EXPFixedFontRecognizer()
+        exp_state = EXPRecognitionStabilizer()
+        frame_index = 0
+        fps_started_at = time.monotonic()
+        fps_frames = 0
+        measured_fps = 0.0
+        try:
+            self.status_update.emit("正在识别小地图")
+            if self.monitor.auto_detect_dark_region() is None:
+                raise RuntimeError(self.monitor.last_detection_summary or "无法识别小地图")
+            self.status_update.emit("小地图已识别，正在监控")
+
+            while self._running and not self.isInterruptionRequested():
+                started = time.monotonic()
+                if (
+                    frame_index % self.WINDOW_CHECK_INTERVAL_FRAMES == 0
+                    and self.window_selector is not None
+                    and not self.window_selector.is_window_valid(self.hwnd)
+                ):
+                    raise RuntimeError("游戏窗口已关闭或失效")
+
+                image = self.monitor.capture_minimap()
+                if image is None:
+                    self.status_update.emit("小地图截图失败，正在重新识别")
+                    if self.monitor.auto_detect_dark_region() is None:
+                        self._interruptible_sleep(0.3)
+                        continue
+                    image = self.monitor.capture_minimap()
+                    if image is None:
+                        self._interruptible_sleep(0.1)
+                        continue
+
+                player, _ = MinimapMonitor.find_player_position_in_image(image)
+                teammates = MinimapMonitor.find_teammate_positions_in_image(image)
+                others = MinimapMonitor.find_other_player_positions_in_image(image)
+                if frame_index % self.MAP_MATCH_INTERVAL_FRAMES == 0:
+                    self._match_map(image)
+
+                fps_frames += 1
+                elapsed = time.monotonic() - fps_started_at
+                if elapsed >= 1:
+                    measured_fps = fps_frames / elapsed
+                    fps_frames = 0
+                    fps_started_at = time.monotonic()
+
+                self.frame_ready.emit(
+                    {
+                        "image": image,
+                        "player": player,
+                        "teammates": teammates,
+                        "others": others,
+                        "map": self._matched_map,
+                        "fps": measured_fps,
+                        "capturedAt": int(time.time() * 1000),
+                    }
+                )
+
+                if (
+                    frame_index % self.RUNE_INTERVAL_FRAMES == 0
+                    or frame_index % self.EXP_INTERVAL_FRAMES == 0
+                ):
+                    full_image = self.monitor.capture_game_screen()
+                else:
+                    full_image = None
+                if frame_index % self.EXP_INTERVAL_FRAMES == 0:
+                    reading = exp_recognizer.recognize(full_image)
+                    stable = exp_state.update(reading)
+                    self.exp_update.emit(
+                        stable,
+                        stable.display_text if stable else "尚未识别到 EXP",
+                    )
+                if frame_index % self.RUNE_INTERVAL_FRAMES == 0:
+                    detection = (
+                        RuneAlertDetector.detect(full_image)
+                        if full_image is not None
+                        else None
+                    )
+                    changed = rune_state.update(detection)
+                    if changed or rune_state.is_present:
+                        self.rune_update.emit(rune_state.is_present, rune_state.latest_detection)
+
+                frame_index += 1
+                remaining = self.TARGET_INTERVAL - (time.monotonic() - started)
+                if remaining > 0:
+                    self._interruptible_sleep(remaining)
+        except Exception as error:
+            self.error_signal.emit(str(error))
+        finally:
+            self._running = False
+            self.stopped.emit()
+
+    def _match_map(self, image):
+        if not self.maps:
+            self._matched_map = None
+            return
+        signature = MinimapVisualMatcher.signature(image)
+        matches = []
+        for topology in self.maps:
+            if topology.visual_signature:
+                comparison = MinimapVisualMatcher.comparison(
+                    signature,
+                    topology.visual_signature,
+                )
+                if comparison["isMatch"]:
+                    matches.append((comparison["similarityPercentage"], topology))
+        candidate = max(matches, default=(0, None), key=lambda item: item[0])[1]
+        if candidate is not None:
+            self._map_misses = 0
+            if self._matched_map is None or candidate.map_name != self._matched_map.map_name:
+                self._matched_map = candidate
+                self.status_update.emit(f"已匹配：{candidate.map_name}")
+        elif self._matched_map is not None:
+            self._map_misses += 1
+            if self._map_misses >= self.MAP_MISS_LIMIT:
+                self._matched_map = None
+                self.status_update.emit("未匹配到已标注地图")
+
+    def _interruptible_sleep(self, seconds):
+        deadline = time.monotonic() + seconds
+        while self._running and time.monotonic() < deadline:
+            time.sleep(min(0.02, max(0, deadline - time.monotonic())))

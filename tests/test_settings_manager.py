@@ -18,6 +18,28 @@ SettingsManager = SETTINGS_MODULE.SettingsManager
 
 
 class SettingsManagerTests(unittest.TestCase):
+    def test_monitor_settings_round_trip(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "settings.ini"
+            manager = SettingsManager(str(path))
+            zone = {
+                "center": {"x": 0.4, "y": 0.6},
+                "width": 0.25,
+                "height": 0.35,
+            }
+
+            manager.save_settings(
+                buffs=[],
+                mode="monitor",
+                monitor_display_mode="annotations_only",
+                monitor_safe_zone=zone,
+            )
+            settings = manager.load_settings()
+
+            self.assertEqual(settings["mode"], "monitor")
+            self.assertEqual(settings["monitor_display_mode"], "annotations_only")
+            self.assertEqual(settings["monitor_safe_zone"], zone)
+
     def test_legacy_empty_six_slots_collapse_to_three(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "settings.ini"

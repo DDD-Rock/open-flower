@@ -4,6 +4,7 @@
 
 import os
 import configparser
+import json
 import re
 import sys
 from typing import Optional, Tuple
@@ -20,7 +21,7 @@ class SettingsManager:
     
     def __init__(self, config_path: Optional[str] = None):
         default_path = self.DEFAULT_CONFIG_PATH
-        if os.name == "nt":
+        if os.name == "nt" and config_path is None:
             app_data = os.environ.get("APPDATA") or os.path.expanduser("~")
             settings_dir = os.path.join(app_data, "YzY-Auto-Buff")
             os.makedirs(settings_dir, exist_ok=True)
@@ -52,13 +53,15 @@ class SettingsManager:
                       movement_mode: str = "none",
                       pre_skill_move_mode: str = "right_only",
                       auto_accept_party_invite: bool = False,
-                      manual_portal_pos: Optional[Tuple[int, int]] = None):
+                      manual_portal_pos: Optional[Tuple[int, int]] = None,
+                      monitor_display_mode: str = "minimap_with_annotations",
+                      monitor_safe_zone: Optional[dict] = None):
         """
         保存设置到 INI 文件
         
         Args:
             buffs: BuffConfig 列表，包含 enabled, key, duration 属性
-            mode: 运行模式，dead/live/follow_heal
+            mode: 运行模式，dead/live/follow_heal/monitor
             return_to_market: 是否释放后回到市场
             jump_key: 跳跃键
             heal_skill_key: 跟补模式加血技能键
@@ -110,6 +113,12 @@ class SettingsManager:
             "auto_accept_party_invite": str(auto_accept_party_invite),
             "manual_portal_x": "" if manual_portal_pos is None else str(manual_portal_pos[0]),
             "manual_portal_y": "" if manual_portal_pos is None else str(manual_portal_pos[1]),
+            "monitor_display_mode": monitor_display_mode,
+            "monitor_safe_zone": (
+                json.dumps(monitor_safe_zone, ensure_ascii=False)
+                if monitor_safe_zone is not None
+                else ""
+            ),
         }
         
         # 保存每个 buff 配置
@@ -160,7 +169,7 @@ class SettingsManager:
                 "mode",
                 fallback=("dead" if return_to_market else "live"),
             )
-            if mode not in {"dead", "live", "follow_heal"}:
+            if mode not in {"dead", "live", "follow_heal", "monitor"}:
                 mode = "dead" if return_to_market else "live"
             settings = {
                 "mode": mode,
@@ -188,6 +197,12 @@ class SettingsManager:
                     "General", "auto_accept_party_invite", fallback=False
                 ),
                 "manual_portal_pos": self._load_manual_portal_pos(),
+                "monitor_display_mode": self.config.get(
+                    "General",
+                    "monitor_display_mode",
+                    fallback="minimap_with_annotations",
+                ),
+                "monitor_safe_zone": self._load_monitor_safe_zone(),
                 "buffs": []
             }
             
@@ -231,6 +246,16 @@ class SettingsManager:
 
     def _load_manual_portal_pos(self):
         return self._load_optional_pair("manual_portal_x", "manual_portal_y")
+
+    def _load_monitor_safe_zone(self):
+        raw = self.config.get("General", "monitor_safe_zone", fallback="").strip()
+        if not raw:
+            return None
+        try:
+            value = json.loads(raw)
+            return value if isinstance(value, dict) else None
+        except ValueError:
+            return None
 
     def _load_adjust_hold_ms(self):
         default_min, default_max = DEFAULT_FOLLOW_HEAL_ADJUST_HOLD_MS

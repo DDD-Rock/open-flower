@@ -24,6 +24,7 @@ a = Analysis(
         'win32con',
         'win32api',
         'win32process',
+        'websocket',
     ] + numpy_hiddenimports + cv2_hiddenimports,
     hookspath=[],
     hooksconfig={},

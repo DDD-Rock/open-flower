@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QDialog,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -37,9 +38,14 @@ from config import (
 )
 from models.buff_config import BuffConfig
 from models.skill_config import SkillConfig
+from models.map_library import MapLibraryStore
+from models.map_topology import NormalizedMapPoint
+from models.monitor_state import MonitorSafeZone, SafeZoneStabilizer
+from ui.monitor_panel import MonitorPanel
 from ui.main_window import MainWindow as LegacyMainWindow
 from ui.virtual_keyboard import VirtualKeyboardDialog
 from utils.screen_utils import get_screen_resolution
+from workers.monitor_worker import MonitorWorker
 
 
 def resource_path(relative_path: str) -> str:
@@ -54,6 +60,17 @@ def resource_path(relative_path: str) -> str:
 
 class MainWindow(LegacyMainWindow):
     """Modern compact shell while retaining the proven Windows workflows."""
+
+    def __init__(self, account_manager=None, remote_monitor_client=None):
+        self.account_manager = account_manager
+        self.remote_monitor_client = remote_monitor_client
+        self.monitor_worker = None
+        self.map_library_store = MapLibraryStore()
+        self.map_topologies = self.map_library_store.load()
+        self.monitor_matched_topology = None
+        self.monitor_safe_zone = None
+        self.monitor_zone_stabilizer = SafeZoneStabilizer()
+        super().__init__()
 
     def init_ui(self):
         self._loading_settings = True
@@ -342,8 +359,9 @@ class MainWindow(LegacyMainWindow):
         )
 
     def _create_mode_tabs(self, parent_layout):
-        row = QHBoxLayout()
-        row.setSpacing(9)
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(9)
+        grid.setVerticalSpacing(9)
         self.dead_flower_tab = QPushButton(
             "↩  死花模式\n    释放后进入自由市场"
         )
@@ -353,10 +371,21 @@ class MainWindow(LegacyMainWindow):
         self.follow_heal_tab = QPushButton(
             "♥  跟补模式\n    自动补血并回位"
         )
-        for button in (self.dead_flower_tab, self.live_flower_tab, self.follow_heal_tab):
+        self.monitor_tab = QPushButton(
+            "◉  监控模式\n    只读显示实时地图"
+        )
+        for button in (
+            self.dead_flower_tab,
+            self.live_flower_tab,
+            self.follow_heal_tab,
+            self.monitor_tab,
+        ):
             button.setObjectName("modeCard")
             button.setCursor(Qt.CursorShape.PointingHandCursor)
-            row.addWidget(button, 1)
+        grid.addWidget(self.dead_flower_tab, 0, 0)
+        grid.addWidget(self.live_flower_tab, 0, 1)
+        grid.addWidget(self.follow_heal_tab, 1, 0)
+        grid.addWidget(self.monitor_tab, 1, 1)
         self.dead_flower_tab.clicked.connect(
             lambda: self._switch_mode_tab("dead")
         )
@@ -366,7 +395,10 @@ class MainWindow(LegacyMainWindow):
         self.follow_heal_tab.clicked.connect(
             lambda: self._switch_mode_tab("follow_heal")
         )
-        parent_layout.addLayout(row)
+        self.monitor_tab.clicked.connect(
+            lambda: self._switch_mode_tab("monitor")
+        )
+        parent_layout.addLayout(grid)
         self._update_mode_tab_style()
 
     def _switch_mode_tab(self, mode):
@@ -378,6 +410,8 @@ class MainWindow(LegacyMainWindow):
         self.return_to_market = self.mode == "dead"
         self._update_mode_tab_style()
         self._update_movement_mode_visibility()
+        if self.remote_monitor_client:
+            self.remote_monitor_client.publish_client_state(self.mode, False)
         self.logger.log(f"切换到: {self._mode_title(self.mode)}")
         self.update_log_display()
         self._schedule_save()
@@ -387,6 +421,7 @@ class MainWindow(LegacyMainWindow):
             "dead": "死花模式",
             "live": "活花模式",
             "follow_heal": "跟补模式",
+            "monitor": "监控模式",
         }.get(mode, "活花模式")
 
     def _update_mode_tab_style(self):
@@ -408,6 +443,7 @@ class MainWindow(LegacyMainWindow):
         self.follow_heal_tab.setStyleSheet(
             selected if self.mode == "follow_heal" else normal
         )
+        self.monitor_tab.setStyleSheet(selected if self.mode == "monitor" else normal)
 
     def create_settings_section(self, parent_layout):
         card = QFrame()
@@ -473,7 +509,19 @@ class MainWindow(LegacyMainWindow):
         )
         party_row.addWidget(self.party_invite_checkbox)
         layout.addLayout(party_row)
+        self.settings_card = card
         parent_layout.addWidget(card)
+        self.monitor_panel = MonitorPanel()
+        self.monitor_panel.manage_maps_button.clicked.connect(self.on_manage_maps)
+        self.monitor_panel.action_test_button.clicked.connect(self.on_map_action_test)
+        self.monitor_panel.route_test_button.clicked.connect(self.on_map_route_test)
+        self.monitor_panel.zone_button.clicked.connect(self.on_mark_monitor_zone)
+        self.monitor_panel.clear_zone_button.clicked.connect(self.on_clear_monitor_zone)
+        self.monitor_panel.display_mode.currentIndexChanged.connect(self._schedule_save)
+        self.monitor_panel.zone_width.valueChanged.connect(self._update_monitor_zone_size)
+        self.monitor_panel.zone_height.valueChanged.connect(self._update_monitor_zone_size)
+        self.monitor_panel.setVisible(False)
+        parent_layout.addWidget(self.monitor_panel)
 
     def _create_live_options(self):
         panel = QWidget()
@@ -901,6 +949,11 @@ class MainWindow(LegacyMainWindow):
         self.auto_accept_party_invite = settings.get(
             "auto_accept_party_invite", False
         )
+        self.monitor_safe_zone = (
+            MonitorSafeZone.from_dict(settings["monitor_safe_zone"])
+            if settings.get("monitor_safe_zone")
+            else None
+        )
         self.game_config.random_behavior_enabled = settings.get(
             "random_behavior_enabled", True
         )
@@ -934,6 +987,19 @@ class MainWindow(LegacyMainWindow):
         self.party_invite_checkbox.blockSignals(True)
         self.party_invite_checkbox.setChecked(self.auto_accept_party_invite)
         self.party_invite_checkbox.blockSignals(False)
+        display_mode = settings.get(
+            "monitor_display_mode",
+            "minimap_with_annotations",
+        )
+        display_index = self.monitor_panel.display_mode.findData(display_mode)
+        self.monitor_panel.display_mode.setCurrentIndex(max(0, display_index))
+        if self.monitor_safe_zone:
+            self.monitor_panel.zone_width.setValue(
+                round(self.monitor_safe_zone.width * 100)
+            )
+            self.monitor_panel.zone_height.setValue(
+                round(self.monitor_safe_zone.height * 100)
+            )
 
     def _apply_default_settings(self):
         self.mode = "dead"
@@ -949,6 +1015,8 @@ class MainWindow(LegacyMainWindow):
         self.selected_chair_key = "="
         self.manual_portal_pos = None
         self.auto_accept_party_invite = False
+        self.monitor_safe_zone = None
+        self.monitor_zone_stabilizer.reset()
         self.game_config.random_behavior_enabled = True
         self.game_config.random_behavior_value = 20
         self.buffs = [
@@ -997,6 +1065,12 @@ class MainWindow(LegacyMainWindow):
             pre_skill_move_mode=self.pre_skill_move_mode,
             auto_accept_party_invite=self.auto_accept_party_invite,
             manual_portal_pos=self.manual_portal_pos,
+            monitor_display_mode=self.monitor_panel.display_mode.currentData(),
+            monitor_safe_zone=(
+                self.monitor_safe_zone.to_dict()
+                if self.monitor_safe_zone is not None
+                else None
+            ),
         )
 
     def save_settings(self):
@@ -1121,6 +1195,9 @@ class MainWindow(LegacyMainWindow):
             self.movement_stack.setCurrentIndex(2)
         else:
             self.movement_stack.setCurrentIndex(0)
+        is_monitor = self.mode == "monitor"
+        self.settings_card.setVisible(not is_monitor)
+        self.monitor_panel.setVisible(is_monitor)
         self.portal_marker_btn.setVisible(self.mode == "dead")
 
     def update_window_status_display(
@@ -1158,6 +1235,9 @@ class MainWindow(LegacyMainWindow):
         self.update_log_display()
 
     def start_worker(self):
+        if self.mode == "monitor":
+            self._start_monitor_worker()
+            return
         self._sync_buff_values_from_inputs()
         self.follow_heal_adjust_hold_ms = self._read_follow_adjust_hold_ms()
         errors = []
@@ -1186,17 +1266,34 @@ class MainWindow(LegacyMainWindow):
             return
         self._persist_settings()
         super().start_worker()
+        if self.is_worker_running and self.remote_monitor_client:
+            self.remote_monitor_client.publish_client_state(self.mode, True)
         self._refresh_primary_action()
 
     def stop_worker(self):
+        monitor_worker = self.monitor_worker
+        self.monitor_worker = None
+        if monitor_worker is not None:
+            monitor_worker.stop()
         super().stop_worker()
+        if hasattr(self, "monitor_tab"):
+            self.monitor_tab.setEnabled(True)
+        if hasattr(self, "monitor_panel") and self.mode == "monitor":
+            self.monitor_panel.reset()
+        if self.remote_monitor_client:
+            self.remote_monitor_client.publish_client_state(self.mode, False)
+        self._sync_party_invite_worker()
         self._refresh_primary_action()
 
     def _refresh_primary_action(self):
         self.toggle_btn.setStyleSheet("")
         self.toggle_btn.setProperty("running", self.is_worker_running)
         self.toggle_btn.setText(
-            "■  停止运行" if self.is_worker_running else "▶  开始运行"
+            (
+                "■  停止监控" if self.is_worker_running else "▶  开始监控"
+            )
+            if self.mode == "monitor"
+            else ("■  停止运行" if self.is_worker_running else "▶  开始运行")
         )
         self.toggle_btn.style().unpolish(self.toggle_btn)
         self.toggle_btn.style().polish(self.toggle_btn)
@@ -1248,6 +1345,258 @@ class MainWindow(LegacyMainWindow):
         self.heal_key_btn.setEnabled(enabled)
         self.follow_anchor_btn.setEnabled(enabled)
 
+    def _start_monitor_worker(self):
+        if not self.is_window_identified:
+            self.auto_identify_on_startup()
+        if not self.is_window_identified or not self.game_window_hwnd:
+            QMessageBox.warning(self, "警告", "未找到游戏窗口，请确保游戏已启动！")
+            return
+        if self.window_selector and not self.window_selector.is_window_valid(
+            self.game_window_hwnd
+        ):
+            QMessageBox.warning(self, "警告", "游戏窗口已关闭，请重新识别！")
+            return
+
+        self._stop_party_invite_worker()
+        worker = MonitorWorker(
+            self.game_window_hwnd,
+            maps=self.map_topologies,
+            window_selector=self.window_selector,
+            parent=self,
+        )
+        self.monitor_worker = worker
+        worker.frame_ready.connect(self._on_monitor_frame)
+        worker.status_update.connect(self._on_monitor_status)
+        worker.rune_update.connect(self._on_monitor_rune)
+        worker.exp_update.connect(self._on_monitor_exp)
+        worker.error_signal.connect(self._on_monitor_error)
+        worker.stopped.connect(lambda current=worker: self._on_monitor_stopped(current))
+        self.is_worker_running = True
+        self.dead_flower_tab.setEnabled(False)
+        self.live_flower_tab.setEnabled(False)
+        self.follow_heal_tab.setEnabled(False)
+        self.monitor_tab.setEnabled(False)
+        self.monitor_panel.manage_maps_button.setEnabled(False)
+        self.monitor_panel.action_test_button.setEnabled(False)
+        self.monitor_panel.route_test_button.setEnabled(False)
+        self.logger.log("只读监控已启动")
+        self.update_log_display()
+        worker.start()
+        if self.remote_monitor_client:
+            self.remote_monitor_client.publish_client_state("monitor", True)
+        self._refresh_primary_action()
+
+    def _on_monitor_frame(self, frame):
+        if self.monitor_worker is None:
+            return
+        image = frame.get("image")
+        player = frame.get("player")
+        if self.monitor_safe_zone is not None and image is not None and player is not None:
+            observed_outside = not self.monitor_safe_zone.contains(
+                player,
+                (image.shape[1], image.shape[0]),
+            )
+        else:
+            observed_outside = None
+        change = self.monitor_zone_stabilizer.update(observed_outside)
+        if change == "breached":
+            self.logger.log("角色已离开监控安全区")
+            self.update_log_display()
+        elif change == "returned":
+            self.logger.log("角色已回到监控安全区")
+            self.update_log_display()
+        elif change == "lost_track":
+            self.logger.log("持续未识别到角色，已停止安全区报警")
+            self.update_log_display()
+        frame["safe_zone"] = self.monitor_safe_zone
+        frame["zone_outside"] = self.monitor_zone_stabilizer.is_outside
+        self.monitor_panel.update_frame(frame)
+        topology = frame.get("map")
+        if topology is not None:
+            self.monitor_matched_topology = topology
+        if self.remote_monitor_client and image is not None:
+            size = (image.shape[1], image.shape[0])
+            if topology is not None:
+                self.remote_monitor_client.publish_map(topology, size)
+            self.remote_monitor_client.publish_frame(
+                frame.get("player"),
+                frame.get("teammates", []),
+                frame.get("others", []),
+                size,
+                frame.get("fps", 0),
+                frame.get("capturedAt"),
+            )
+            self.remote_monitor_client.publish_zone(
+                self.monitor_zone_stabilizer.is_outside,
+                self.monitor_safe_zone,
+            )
+
+    def _on_monitor_status(self, message):
+        self.monitor_panel.status_label.setText(message)
+
+    def _on_monitor_rune(self, present, detection):
+        self.monitor_panel.set_rune(present, detection)
+        if self.remote_monitor_client:
+            confidence = detection.confidence if detection is not None else None
+            self.remote_monitor_client.publish_rune(present, confidence)
+
+    def _on_monitor_exp(self, reading, status):
+        self.monitor_panel.set_exp(reading, status)
+        if self.remote_monitor_client:
+            self.remote_monitor_client.publish_exp(reading, status)
+
+    def _on_monitor_error(self, message):
+        self.logger.log(f"监控错误：{message}")
+        self.update_log_display()
+        self.monitor_panel.status_label.setText(message)
+
+    def _on_monitor_stopped(self, worker):
+        if self.monitor_worker is not worker:
+            return
+        self.monitor_worker = None
+        self.is_worker_running = False
+        self.monitor_tab.setEnabled(True)
+        self.dead_flower_tab.setEnabled(True)
+        self.live_flower_tab.setEnabled(True)
+        self.follow_heal_tab.setEnabled(True)
+        self.monitor_panel.manage_maps_button.setEnabled(True)
+        self.monitor_panel.action_test_button.setEnabled(True)
+        self.monitor_panel.route_test_button.setEnabled(True)
+        if self.remote_monitor_client:
+            self.remote_monitor_client.publish_client_state("monitor", False)
+        self._sync_party_invite_worker()
+        self._refresh_primary_action()
+
+    def handle_remote_command(self, action):
+        if action == "start" and not self.is_worker_running:
+            self.logger.log("收到网页远程开始指令")
+            self.update_log_display()
+            self.start_worker()
+        elif action == "stop" and self.is_worker_running:
+            self.logger.log("收到网页远程停止指令")
+            self.update_log_display()
+            self.stop_worker()
+
+    def on_manage_maps(self):
+        from ui.map_library_dialog import MapLibraryDialog
+
+        frame = getattr(self.monitor_panel.canvas, "_frame", None)
+        current_image = frame.get("image") if frame else None
+        dialog = MapLibraryDialog(
+            self.map_library_store,
+            current_image=current_image,
+            hwnd=self.game_window_hwnd,
+            window_selector=self.window_selector,
+            parent=self,
+        )
+        dialog.exec()
+        self.map_topologies = self.map_library_store.load()
+        if (
+            self.monitor_matched_topology is not None
+            and not any(
+                item.id == self.monitor_matched_topology.id
+                for item in self.map_topologies
+            )
+        ):
+            self.monitor_matched_topology = None
+
+    def on_map_action_test(self):
+        if not self.game_window_hwnd:
+            QMessageBox.information(self, "提示", "请先识别游戏窗口")
+            return
+        from ui.map_action_test_dialog import MapActionTestDialog
+
+        MapActionTestDialog(
+            jump_key=self.selected_jump_key,
+            hwnd=self.game_window_hwnd,
+            window_selector=self.window_selector,
+            parent=self,
+        ).exec()
+
+    def on_map_route_test(self):
+        if not self.game_window_hwnd:
+            QMessageBox.information(self, "提示", "请先识别游戏窗口")
+            return
+        topology = self.monitor_matched_topology
+        if topology is None:
+            QMessageBox.information(
+                self,
+                "提示",
+                "尚未匹配到当前地图，请先监控并确认地图标注。",
+            )
+            return
+        from ui.map_route_dialog import MapRouteDialog
+
+        MapRouteDialog(
+            hwnd=self.game_window_hwnd,
+            topology=topology,
+            maps=self.map_topologies,
+            jump_key=self.selected_jump_key,
+            window_selector=self.window_selector,
+            parent=self,
+        ).exec()
+
+    def on_mark_monitor_zone(self):
+        frame = getattr(self.monitor_panel.canvas, "_frame", None)
+        image = frame.get("image") if frame else None
+        if image is None:
+            QMessageBox.information(self, "提示", "请先开始监控并识别小地图")
+            return
+        from ui.portal_marker_dialog import PortalMarkerDialog
+
+        current = None
+        if self.monitor_safe_zone is not None:
+            current = tuple(
+                round(value)
+                for value in self.monitor_safe_zone.center.to_pixel(
+                    (image.shape[1], image.shape[0])
+                )
+            )
+        dialog = PortalMarkerDialog(
+            self,
+            image,
+            current_manual_pos=current,
+            title="设置监控安全区基准点",
+            hint_text="点击小地图选择安全区中心，长宽在监控面板中按百分比设置。",
+            show_auto_portal=False,
+            confirm_button_text="使用此基准点",
+            clear_button_text="清除安全区",
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        point = dialog.get_marked_position()
+        if point is None:
+            self.on_clear_monitor_zone()
+            return
+        self.monitor_safe_zone = MonitorSafeZone(
+            NormalizedMapPoint.from_pixel(
+                point,
+                (image.shape[1], image.shape[0]),
+            ),
+            self.monitor_panel.zone_width.value() / 100,
+            self.monitor_panel.zone_height.value() / 100,
+        )
+        self.monitor_zone_stabilizer.reset()
+        self._schedule_save()
+
+    def on_clear_monitor_zone(self):
+        self.monitor_safe_zone = None
+        self.monitor_zone_stabilizer.reset()
+        if self.remote_monitor_client:
+            self.remote_monitor_client.publish_zone(False, None)
+        self._schedule_save()
+
+    def _update_monitor_zone_size(self, *_):
+        if self.monitor_safe_zone is None:
+            return
+        self.monitor_safe_zone = MonitorSafeZone(
+            self.monitor_safe_zone.center,
+            self.monitor_panel.zone_width.value() / 100,
+            self.monitor_panel.zone_height.value() / 100,
+        )
+        self.monitor_zone_stabilizer.reset()
+        self._schedule_save()
+
     def on_mark_portal(self):
         previous = self.manual_portal_pos
         super().on_mark_portal()
@@ -1270,4 +1619,9 @@ class MainWindow(LegacyMainWindow):
 
     def closeEvent(self, event):
         self._persist_settings()
+        monitor_worker = self.monitor_worker
+        if monitor_worker is not None:
+            monitor_worker.stop()
+            monitor_worker.wait(2000)
+            self.monitor_worker = None
         super().closeEvent(event)

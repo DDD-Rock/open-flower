@@ -340,6 +340,60 @@ class MinimapMonitor:
         )
         return (int(round(cx)), int(round(cy))), summary
 
+    @staticmethod
+    def _compact_marker_points(mask: np.ndarray) -> list:
+        count, _, stats, centroids = cv2.connectedComponentsWithStats(mask, 8)
+        points = []
+        for index in range(1, count):
+            _, _, width, height, area = stats[index]
+            if not 2 <= area <= 120 or not 2 <= width <= 16 or not 2 <= height <= 16:
+                continue
+            aspect = width / height
+            fill_ratio = area / (width * height)
+            if not 0.5 <= aspect <= 2.0 or fill_ratio < 0.4:
+                continue
+            x, y = centroids[index]
+            points.append((int(round(x)), int(round(y))))
+        return sorted(points)
+
+    @staticmethod
+    def find_teammate_positions_in_image(minimap: np.ndarray) -> list:
+        """识别一个或多个队友橙点，阈值与 macOS 监控模式保持一致。"""
+        if minimap is None or minimap.ndim != 3 or minimap.size == 0:
+            return []
+        hsv = cv2.cvtColor(minimap, cv2.COLOR_BGR2HSV)
+        blue, green, red = [item.astype(np.int16) for item in cv2.split(minimap)]
+        hue, saturation, value = cv2.split(hsv)
+        mask = (
+            (hue > 12)
+            & (hue < 20)
+            & (saturation >= 90)
+            & (value >= 130)
+            & (red >= 160)
+            & (green >= 80)
+            & (red >= green + 30)
+            & (green >= blue + 30)
+        ).astype(np.uint8) * 255
+        return MinimapMonitor._compact_marker_points(mask)
+
+    @staticmethod
+    def find_other_player_positions_in_image(minimap: np.ndarray) -> list:
+        """识别一个或多个其他玩家红点，过滤细线和大块红色 UI。"""
+        if minimap is None or minimap.ndim != 3 or minimap.size == 0:
+            return []
+        hsv = cv2.cvtColor(minimap, cv2.COLOR_BGR2HSV)
+        blue, green, red = [item.astype(np.int16) for item in cv2.split(minimap)]
+        hue, saturation, value = cv2.split(hsv)
+        mask = (
+            ((hue <= 12) | (hue >= 168))
+            & (saturation >= 90)
+            & (value >= 110)
+            & (red >= 130)
+            & (red >= green + 40)
+            & (red >= blue + 40)
+        ).astype(np.uint8) * 255
+        return MinimapMonitor._compact_marker_points(mask)
+
     def find_blue_portal(self, find_leftmost: bool = True) -> Optional[Tuple[int, int]]:
         """
         在小地图上寻找蓝色传送门位置（使用 HSV 色彩空间）

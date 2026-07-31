@@ -1,0 +1,183 @@
+import json
+import unittest
+
+from detection.exp_recognizer import (
+    EXPRecognitionResult,
+    EXPRecognitionStabilizer,
+    format_percent,
+)
+try:
+    import cv2
+    import numpy as np
+
+    from detection.minimap_monitor import MinimapMonitor
+    from detection.rune_alert_detector import RuneAlertDetector, RuneAlertStabilizer
+    from models.map_topology import MinimapVisualMatcher
+except ImportError:
+    cv2 = None
+    np = None
+    MinimapMonitor = None
+    RuneAlertDetector = None
+    RuneAlertStabilizer = None
+    MinimapVisualMatcher = None
+
+from models.map_topology import (
+    MapPlatform,
+    MapPortal,
+    MapRope,
+    MapTopology,
+    MapTopologyValidator,
+    MapTransferService,
+    NormalizedMapPoint,
+    PlatformTraceBuilder,
+    RopeTraceBuilder,
+)
+from models.monitor_state import MonitorSafeZone, SafeZoneStabilizer
+
+
+class MapTopologyTests(unittest.TestCase):
+    def test_mac_compatible_map_round_trip(self):
+        topology = MapTopology(
+            map_name="测试地图",
+            reference_width=240,
+            reference_height=120,
+            visual_signature=[12] * (24 * 16),
+            reference_bgr=b"\x00\x01\x02",
+            platforms=[
+                MapPlatform(
+                    points=[NormalizedMapPoint(0.1, 0.4), NormalizedMapPoint(0.8, 0.4)]
+                )
+            ],
+            ropes=[MapRope(0.5, 0.2, 0.7)],
+            portals=[MapPortal(NormalizedMapPoint(0.9, 0.4), "mapExit")],
+        )
+
+        encoded = MapTransferService.export_data([topology])
+        root = json.loads(encoded)
+        self.assertEqual(root["maps"][0]["referenceBGR"], "AAEC")
+        decoded = MapTransferService.import_data(encoded)
+
+        self.assertEqual(decoded[0].map_name, topology.map_name)
+        self.assertEqual(decoded[0].platforms[0].points, topology.platforms[0].points)
+        self.assertEqual(decoded[0].reference_bgr, topology.reference_bgr)
+
+    @unittest.skipIf(cv2 is None, "OpenCV is not installed")
+    def test_visual_signature_ignores_saturated_marker(self):
+        first = np.full((160, 240, 3), 20, dtype=np.uint8)
+        second = first.copy()
+        cv2.line(first, (10, 80), (230, 80), (90, 90, 90), 2)
+        cv2.line(second, (10, 80), (230, 80), (90, 90, 90), 2)
+        cv2.circle(second, (100, 75), 3, (0, 255, 255), -1)
+
+        comparison = MinimapVisualMatcher.comparison(
+            MinimapVisualMatcher.signature(first),
+            MinimapVisualMatcher.signature(second),
+        )
+
+        self.assertTrue(comparison["isMatch"])
+
+    def test_platform_trace_merges_return_trip_and_preserves_slope(self):
+        samples = []
+        for x in range(10, 91, 2):
+            samples.extend(((x, 30 + x * 0.08), (x, 31 + x * 0.08)))
+        samples.extend(reversed(samples))
+        points = PlatformTraceBuilder.build_polyline(samples, (100, 80))
+        self.assertGreaterEqual(len(points), 2)
+        self.assertLess(points[0].x, 0.2)
+        self.assertGreater(points[-1].x, 0.8)
+        self.assertGreater(points[-1].y, points[0].y)
+
+    def test_rope_trace_discards_outliers_and_builds_vertical_range(self):
+        samples = [
+            (50 + index % 3, y)
+            for y in range(10, 71, 2)
+            for index in range(2)
+        ]
+        samples.extend(((2, 1), (98, 78)))
+        rope = RopeTraceBuilder.build_rope(samples, (100, 80))
+        self.assertIsNotNone(rope)
+        self.assertAlmostEqual(rope.x, 0.51, delta=0.02)
+        self.assertLess(rope.top_y, 0.2)
+        self.assertGreater(rope.bottom_y, 0.8)
+
+    def test_validator_reports_unreachable_portal(self):
+        topology = MapTopology(
+            "校验地图",
+            100,
+            80,
+            platforms=[
+                MapPlatform(
+                    [NormalizedMapPoint(0.1, 0.7), NormalizedMapPoint(0.9, 0.7)]
+                )
+            ],
+            portals=[MapPortal(NormalizedMapPoint(0.5, 0.1))],
+        )
+        messages = MapTopologyValidator.messages(topology)
+        self.assertTrue(any("传送点 T1" in item for item in messages))
+
+
+@unittest.skipIf(cv2 is None, "OpenCV is not installed")
+class MarkerDetectionTests(unittest.TestCase):
+    def test_detects_multiple_teammates_and_other_players(self):
+        image = np.full((120, 240, 3), 25, dtype=np.uint8)
+        for point in ((30, 40), (90, 70)):
+            cv2.circle(image, point, 3, (10, 125, 235), -1)
+        for point in ((150, 30), (200, 90)):
+            cv2.circle(image, point, 3, (15, 20, 235), -1)
+        cv2.rectangle(image, (10, 100), (180, 102), (15, 20, 235), -1)
+
+        self.assertEqual(
+            MinimapMonitor.find_teammate_positions_in_image(image),
+            [(30, 40), (90, 70)],
+        )
+        self.assertEqual(
+            MinimapMonitor.find_other_player_positions_in_image(image),
+            [(150, 30), (200, 90)],
+        )
+
+
+class AlertStateTests(unittest.TestCase):
+    @unittest.skipIf(cv2 is None, "OpenCV is not installed")
+    def test_rune_detector_and_stabilizer(self):
+        image = np.full((300, 500, 3), (45, 25, 70), dtype=np.uint8)
+        image[100:104, 100:400] = (180, 55, 130)
+        image[145:149, 100:400] = (180, 55, 130)
+        image[104:145, 100:400] = (90, 35, 65)
+
+        detection = RuneAlertDetector.detect(image)
+
+        self.assertIsNotNone(detection)
+        stabilizer = RuneAlertStabilizer()
+        self.assertFalse(stabilizer.update(detection))
+        self.assertTrue(stabilizer.update(detection))
+        self.assertTrue(stabilizer.is_present)
+        self.assertFalse(stabilizer.update(None))
+        self.assertTrue(stabilizer.update(None))
+        self.assertFalse(stabilizer.is_present)
+
+    def test_safe_zone_uses_duration_and_lost_marker_grace(self):
+        zone = MonitorSafeZone(NormalizedMapPoint(0.5, 0.5), 0.2, 0.4)
+        self.assertTrue(zone.contains((50, 50), (100, 100)))
+        self.assertFalse(zone.contains((90, 50), (100, 100)))
+
+        state = SafeZoneStabilizer()
+        self.assertEqual(state.update(True, now=0), "none")
+        self.assertEqual(state.update(True, now=1.4), "none")
+        self.assertEqual(state.update(True, now=1.5), "breached")
+        self.assertEqual(state.update(None, now=10), "none")
+        self.assertEqual(state.update(None, now=20), "lost_track")
+
+    def test_exp_stabilizer(self):
+        reading = EXPRecognitionResult(123456, 12.3400, 0.91)
+        state = EXPRecognitionStabilizer()
+
+        self.assertEqual(format_percent(reading.percent), "12.34")
+        self.assertIsNone(state.update(reading))
+        self.assertEqual(state.update(reading), reading)
+        for _ in range(3):
+            self.assertEqual(state.update(None), reading)
+        self.assertIsNone(state.update(None))
+
+
+if __name__ == "__main__":
+    unittest.main()

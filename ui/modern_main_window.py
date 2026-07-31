@@ -1487,6 +1487,7 @@ class MainWindow(LegacyMainWindow):
             current_image=current_image,
             hwnd=self.game_window_hwnd,
             window_selector=self.window_selector,
+            account_manager=self.account_manager,
             parent=self,
         )
         dialog.exec()

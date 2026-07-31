@@ -37,11 +37,12 @@ class AccountManager:
             body={"username": username.strip(), "password": password},
         )
         token = str(response.get("accessToken") or "")
-        account = str((response.get("user") or {}).get("username") or "")
+        user = response.get("user") or {}
+        account = str(user.get("username") or "")
         if not token or not account:
             raise AccountError("监控服务器返回了无效数据")
         binding = self._bind_client(token, client_id) or {}
-        self._save(token, account, client_id, str(binding.get("name") or ""))
+        self._save(token, account, client_id, str(binding.get("name") or ""), bool(user.get("isSuperAdmin")))
         return account
 
     def restore(self) -> Optional[str]:
@@ -67,13 +68,14 @@ class AccountManager:
             account,
             client_id,
             str(credentials.get("clientName") or ""),
+            bool(response.get("isSuperAdmin")),
         )
         return account
 
     def logout(self):
         credentials = self._load() or {}
         client_id = self._client_id_from(credentials)
-        self._save("", "", client_id, str(credentials.get("clientName") or ""))
+        self._save("", "", client_id, str(credentials.get("clientName") or ""), False)
 
     def validate_session(self):
         credentials = self._load() or {}
@@ -96,7 +98,31 @@ class AccountManager:
             "clientId": self._client_id_from(credentials, create=False),
             "clientName": str(credentials.get("clientName") or ""),
             "serverBaseURL": self.server_base_url,
+            "isSuperAdmin": bool(credentials.get("isSuperAdmin")),
         }
+
+    def list_cloud_maps(self) -> list[dict]:
+        credentials = self.session_credentials()
+        return list(self._request(
+            "/api/admin/maps", token=credentials["accessToken"]
+        ).get("maps") or [])
+
+    def upload_cloud_maps(self, maps) -> int:
+        from models.map_topology import MapTransferService
+        package = json.loads(MapTransferService.export_data(maps).decode("utf-8"))
+        response = self._request(
+            "/api/admin/maps", method="POST", body=package,
+            token=self.session_credentials()["accessToken"],
+        )
+        return int(response.get("uploadedCount") or 0)
+
+    def download_cloud_map(self, map_id: int):
+        from models.map_topology import MapTransferService
+        response = self._request(
+            f"/api/admin/maps/{int(map_id)}",
+            token=self.session_credentials()["accessToken"],
+        )
+        return MapTransferService.import_data(json.dumps(response).encode("utf-8"))
 
     def save_client_name(self, name: str):
         credentials = self._load() or {}
@@ -179,7 +205,12 @@ class AccountManager:
             return client_id
         return str(uuid.uuid4()) if create else ""
 
-    def _save(self, token: str, username: str, client_id: str, client_name: str = ""):
+    def _save(
+        self, token: str, username: str, client_id: str,
+        client_name: str = "", is_super_admin: Optional[bool] = None,
+    ):
+        if is_super_admin is None:
+            is_super_admin = bool((self._load() or {}).get("isSuperAdmin"))
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         self.storage_path.write_text(
             json.dumps(
@@ -188,6 +219,7 @@ class AccountManager:
                     "username": username,
                     "clientId": client_id,
                     "clientName": client_name,
+                    "isSuperAdmin": is_super_admin,
                 },
                 ensure_ascii=False,
             ),

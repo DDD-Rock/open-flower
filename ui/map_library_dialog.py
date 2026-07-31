@@ -29,6 +29,7 @@ from models.map_topology import (
     MapRope,
     MapTopology,
     MapTopologyValidator,
+    MapTransferService,
     MinimapVisualMatcher,
     NormalizedMapPoint,
     PlatformTraceBuilder,
@@ -476,6 +477,7 @@ class MapLibraryDialog(QDialog):
         current_image=None,
         hwnd=None,
         window_selector=None,
+        account_manager=None,
         parent=None,
     ):
         super().__init__(parent)
@@ -486,6 +488,7 @@ class MapLibraryDialog(QDialog):
         self.current_image = current_image.copy() if current_image is not None else None
         self.hwnd = hwnd
         self.window_selector = window_selector
+        self.account_manager = account_manager
 
         layout = QVBoxLayout(self)
         self.list_widget = QListWidget()
@@ -511,6 +514,14 @@ class MapLibraryDialog(QDialog):
         self.export_button = QPushButton("导出全部")
         second_row.addWidget(self.import_button)
         second_row.addWidget(self.export_button)
+        self.cloud_upload_button = QPushButton("上传云端")
+        self.cloud_download_button = QPushButton("云端下载")
+        if self.account_manager and self.account_manager.session_credentials()["isSuperAdmin"]:
+            second_row.addWidget(self.cloud_upload_button)
+            second_row.addWidget(self.cloud_download_button)
+        else:
+            self.cloud_upload_button.hide()
+            self.cloud_download_button.hide()
         second_row.addStretch(1)
         close_button = QPushButton("完成")
         close_button.clicked.connect(self.accept)
@@ -523,6 +534,8 @@ class MapLibraryDialog(QDialog):
         self.delete_button.clicked.connect(self._delete)
         self.import_button.clicked.connect(self._import)
         self.export_button.clicked.connect(self._export)
+        self.cloud_upload_button.clicked.connect(self._cloud_upload)
+        self.cloud_download_button.clicked.connect(self._cloud_download)
         self._reload()
 
     def _reload(self, selected_name=None):
@@ -656,3 +669,40 @@ class MapLibraryDialog(QDialog):
                 self.store.export_file(path, self.maps)
             except OSError as error:
                 QMessageBox.warning(self, "导出失败", str(error))
+
+    def _cloud_upload(self):
+        if not self.maps:
+            QMessageBox.information(self, "提示", "当前没有可上传的地图")
+            return
+        try:
+            count = self.account_manager.upload_cloud_maps(self.maps)
+            QMessageBox.information(self, "上传完成", f"已上传 {count} 张地图到云端")
+        except Exception as error:
+            QMessageBox.warning(self, "上传失败", str(error))
+
+    def _cloud_download(self):
+        try:
+            items = self.account_manager.list_cloud_maps()
+            if not items:
+                QMessageBox.information(self, "云端地图", "云端还没有地图")
+                return
+            labels = [
+                f"{item['name']}  ·  {item.get('uploadedBy', '')}"
+                for item in items
+            ]
+            selected, ok = QInputDialog.getItem(
+                self, "云端地图", "选择要按需下载的地图", labels, 0, False
+            )
+            if not ok:
+                return
+            downloaded = self.account_manager.download_cloud_map(
+                items[labels.index(selected)]["id"]
+            )
+            self.maps, added, replaced = MapTransferService.merge(downloaded, self.maps)
+            self.store.save(self.maps)
+            self._reload(downloaded[0].map_name if downloaded else None)
+            QMessageBox.information(
+                self, "下载完成", f"新增 {added} 张，替换 {replaced} 张"
+            )
+        except Exception as error:
+            QMessageBox.warning(self, "下载失败", str(error))

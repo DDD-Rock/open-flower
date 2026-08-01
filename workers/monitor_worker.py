@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from detection.exp_recognizer import EXPFixedFontRecognizer, EXPRecognitionStabilizer
+from detection.exp_recognizer import EXPRapidOCRRecognizer, EXPRecognitionStabilizer
 from detection.minimap_monitor import MinimapMonitor
 from detection.rune_alert_detector import RuneAlertDetector, RuneAlertStabilizer
 from models.map_topology import MinimapVisualMatcher
@@ -47,8 +48,10 @@ class MonitorWorker(QThread):
     def run(self):
         self._running = True
         rune_state = RuneAlertStabilizer()
-        exp_recognizer = EXPFixedFontRecognizer()
+        exp_recognizer = EXPRapidOCRRecognizer()
         exp_state = EXPRecognitionStabilizer()
+        exp_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="exp-ocr")
+        exp_future = None
         frame_index = 0
         fps_started_at = time.monotonic()
         fps_frames = 0
@@ -111,12 +114,25 @@ class MonitorWorker(QThread):
                     full_image = self.monitor.capture_game_screen()
                 else:
                     full_image = None
-                if frame_index % self.EXP_INTERVAL_FRAMES == 0:
-                    reading = exp_recognizer.recognize(full_image)
+                if exp_future is not None and exp_future.done():
+                    try:
+                        reading = exp_future.result()
+                    except Exception:
+                        reading = None
+                    exp_future = None
                     stable = exp_state.update(reading)
                     self.exp_update.emit(
                         stable,
                         stable.display_text if stable else "尚未识别到 EXP",
+                    )
+                if (
+                    frame_index % self.EXP_INTERVAL_FRAMES == 0
+                    and full_image is not None
+                    and exp_future is None
+                ):
+                    exp_future = exp_executor.submit(
+                        exp_recognizer.recognize,
+                        full_image.copy(),
                     )
                 if frame_index % self.RUNE_INTERVAL_FRAMES == 0:
                     detection = (
@@ -135,6 +151,7 @@ class MonitorWorker(QThread):
         except Exception as error:
             self.error_signal.emit(str(error))
         finally:
+            exp_executor.shutdown(wait=False, cancel_futures=True)
             self._running = False
             self.stopped.emit()
 

@@ -10,11 +10,17 @@ cv2_datas, cv2_binaries, cv2_hiddenimports = collect_all('cv2')
 a = Analysis(
     ['main.py'],
     pathex=[],
-    binaries=numpy_binaries + cv2_binaries,
     datas=[
         ('templates', 'templates'),
         ('resources/app_icon.ico', 'resources'),
+        ('resources/rapidocr/models', 'resources/rapidocr/models'),
+        ('resources/rapidocr/THIRD_PARTY_NOTICES.md', 'resources/rapidocr'),
+        ('resources/rapidocr/LICENSE-RapidOCR-json.txt', 'resources/rapidocr'),
+        ('resources/rapidocr/LICENSE-PaddleOCR.txt', 'resources/rapidocr'),
     ] + numpy_datas + cv2_datas,
+    binaries=[
+        ('resources/rapidocr/RapidOCR-json.exe', 'resources/rapidocr'),
+    ] + numpy_binaries + cv2_binaries,
     hiddenimports=[
         'pynput.keyboard._win32',
         'pynput.mouse._win32',

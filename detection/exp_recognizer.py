@@ -1,10 +1,14 @@
 """EXP 固定字体模板识别及读数防抖。"""
 
+import json
 import os
+import re
+import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 try:
     import cv2
@@ -34,7 +38,7 @@ class EXPRecognitionResult:
 
 
 class EXPRecognitionStabilizer:
-    def __init__(self, required_matches: int = 2, tolerated_misses: int = 3):
+    def __init__(self, required_matches: int = 3, tolerated_misses: int = 3):
         self.required_matches = max(1, required_matches)
         self.tolerated_misses = max(0, tolerated_misses)
         self.reset()
@@ -201,6 +205,31 @@ class EXPFixedFontRecognizer:
             sum(scores) / len(scores),
         )
 
+    def locate_panel(self, frame):
+        """Locate and crop the canonical EXP panel without reading its digits."""
+        if cv2 is None or np is None or frame is None or frame.ndim != 3:
+            return None
+        templates = self._load_templates()
+        if not templates:
+            return None
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        anchor = self._find_anchor(gray, templates["anchor"])
+        if anchor is None:
+            return None
+
+        anchor_x, anchor_y, scale, anchor_score = anchor
+        left = int(round(anchor_x - 8 * scale))
+        top = int(round(anchor_y - 3 * scale))
+        width = max(1, int(round(185 * scale)))
+        height = max(1, int(round(44 * scale)))
+        right = min(frame.shape[1], left + width)
+        bottom = min(frame.shape[0], top + height)
+        left = max(0, left)
+        top = max(0, top)
+        if right <= left or bottom <= top:
+            return None
+        return frame[top:bottom, left:right].copy(), float(anchor_score), float(scale)
+
     def _load_templates(self):
         if self.templates is not None:
             return self.templates
@@ -224,15 +253,32 @@ class EXPFixedFontRecognizer:
         return loaded
 
     def _find_anchor(self, image, template):
+        search = image
+        offset_x = 0
+        offset_y = 0
+        if image.shape[1] > 300 and image.shape[0] > 120:
+            offset_x = int(image.shape[1] * 0.20)
+            offset_y = int(image.shape[0] * 0.70)
+            right = max(offset_x + 1, int(image.shape[1] * 0.80))
+            search = image[offset_y:image.shape[0], offset_x:right]
+
         best = None
         for scale in self.SCALE_CANDIDATES:
             resized = self._resize(template, scale)
-            if resized.shape[0] > image.shape[0] or resized.shape[1] > image.shape[1]:
+            if (
+                resized.shape[0] > search.shape[0]
+                or resized.shape[1] > search.shape[1]
+            ):
                 continue
-            result = cv2.matchTemplate(image, resized, cv2.TM_CCOEFF_NORMED)
+            result = cv2.matchTemplate(search, resized, cv2.TM_CCOEFF_NORMED)
             _, score, _, point = cv2.minMaxLoc(result)
             if best is None or score > best[3]:
-                best = (point[0], point[1], scale, float(score))
+                best = (
+                    offset_x + point[0],
+                    offset_y + point[1],
+                    scale,
+                    float(score),
+                )
         return best if best is not None and best[3] >= 0.68 else None
 
     @staticmethod
@@ -284,3 +330,192 @@ class EXPFixedFontRecognizer:
                 score = cv2.matchTemplate(region, template, cv2.TM_CCOEFF_NORMED)[0, 0]
                 best = max(best, float(score))
         return best
+
+
+class EXPRapidOCRRecognizer:
+    """Read an EXP row with RapidOCR after template-based panel localization."""
+
+    _PATTERNS = (
+        re.compile(
+            r"(?:[A-Z\u00c0-\u024f]*XP[\s:._-]*)?"
+            r"([0-9][0-9,]{3,})\s*[\(\[\{]\s*"
+            r"([0-9]{1,3}(?:[\.,][0-9]{1,4})?)\s*%",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"(?:[A-Z\u00c0-\u024f]*XP[\s:._-]*)?"
+            r"([0-9][0-9,]{3,})\s+"
+            r"([0-9]{1,3}(?:[\.,][0-9]{1,4})?)\s*%",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"(?:[A-Z\u00c0-\u024f]*XP[\s:._-]*)?"
+            r"([0-9][0-9,]{3,}?)\s*[\(\[\{]?\s*"
+            r"((?:100[\.,]0{1,4}|[0-9]{1,2}[\.,][0-9]{1,4}))\s*%",
+            re.IGNORECASE,
+        ),
+    )
+
+    def __init__(
+        self,
+        locator: Optional[EXPFixedFontRecognizer] = None,
+        engine_directory: Optional[str] = None,
+        minimum_confidence: float = 0.80,
+        runner: Optional[Callable] = None,
+    ):
+        base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
+        self.locator = locator or EXPFixedFontRecognizer()
+        self.engine_directory = (
+            Path(engine_directory)
+            if engine_directory
+            else base / "resources" / "rapidocr"
+        )
+        self.minimum_confidence = min(1.0, max(0.0, minimum_confidence))
+        self.runner = runner
+
+    @property
+    def is_available(self):
+        return self.runner is not None or (
+            (self.engine_directory / "RapidOCR-json.exe").is_file()
+            and (self.engine_directory / "models").is_dir()
+        )
+
+    def recognize(self, frame) -> Optional[EXPRecognitionResult]:
+        located = self.locator.locate_panel(frame)
+        if located is None:
+            return None
+        panel, anchor_confidence, _ = located
+        enlarged = cv2.resize(
+            panel,
+            (panel.shape[1] * 4, panel.shape[0] * 4),
+            interpolation=cv2.INTER_NEAREST,
+        )
+        payload = self.runner(enlarged) if self.runner else self._run_engine(enlarged)
+        parsed = self.parse_payload(payload)
+        if parsed is None:
+            return None
+        current_exp, percent, ocr_confidence = parsed
+        if ocr_confidence < self.minimum_confidence:
+            return None
+        return EXPRecognitionResult(
+            current_exp=current_exp,
+            percent=percent,
+            confidence=min(float(anchor_confidence), float(ocr_confidence)),
+        )
+
+    @classmethod
+    def parse_payload(cls, payload):
+        if not isinstance(payload, dict) or payload.get("code") != 100:
+            return None
+        blocks = payload.get("data")
+        if not isinstance(blocks, list):
+            return None
+
+        candidates = []
+        texts = []
+        scores = []
+        for block in blocks:
+            if not isinstance(block, dict):
+                continue
+            text = str(block.get("text") or "")
+            try:
+                score = float(block.get("score", 0))
+            except (TypeError, ValueError):
+                score = 0.0
+            texts.append(text)
+            scores.append(score)
+            parsed = cls.parse_text(text)
+            if parsed is not None:
+                candidates.append((*parsed, score))
+
+        if texts:
+            joined = "".join(texts)
+            parsed = cls.parse_text(joined)
+            if parsed is not None:
+                joined_score = min(scores) if scores else 0.0
+                candidates.append((*parsed, joined_score))
+        return max(candidates, key=lambda item: item[2], default=None)
+
+    @classmethod
+    def parse_text(cls, text):
+        normalized = (
+            str(text)
+            .replace("（", "(")
+            .replace("）", ")")
+            .replace("【", "[")
+            .replace("】", "]")
+            .replace("％", "%")
+        )
+        for pattern in cls._PATTERNS:
+            match = pattern.search(normalized)
+            if match is None:
+                continue
+            try:
+                current_exp = int(match.group(1).replace(",", ""))
+                percent = float(match.group(2).replace(",", "."))
+            except ValueError:
+                continue
+            if current_exp > 0 and 0 <= percent <= 100:
+                return current_exp, percent
+        return None
+
+    def _run_engine(self, image):
+        if not self.is_available:
+            return None
+        encoded, png = cv2.imencode(".png", image)
+        if not encoded:
+            return None
+
+        temp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                prefix="autobuff-exp-",
+                suffix=".png",
+                delete=False,
+            ) as temp_file:
+                temp_file.write(png.tobytes())
+                temp_path = temp_file.name
+
+            executable = self.engine_directory / "RapidOCR-json.exe"
+            models = self.engine_directory / "models"
+            command = [
+                str(executable),
+                "--models",
+                str(models),
+                "--det",
+                "ch_PP-OCRv4_det_infer.onnx",
+                "--cls",
+                "ch_ppocr_mobile_v2.0_cls_infer.onnx",
+                "--rec",
+                "rec_ch_PP-OCRv4_infer.onnx",
+                "--keys",
+                "ppocr_keys_v1.txt",
+                "--doAngle",
+                "0",
+                "--mostAngle",
+                "0",
+                "--padding",
+                "20",
+                "--image_path",
+                temp_path,
+            ]
+            creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            completed = subprocess.run(
+                command,
+                cwd=str(self.engine_directory),
+                capture_output=True,
+                timeout=8,
+                check=False,
+                creationflags=creation_flags,
+            )
+            output = completed.stdout.decode("utf-8", errors="replace")
+            match = re.search(r"\{[\s\S]*\}", output)
+            return json.loads(match.group(0)) if match else None
+        except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+            return None
+        finally:
+            if temp_path:
+                try:
+                    os.unlink(temp_path)
+                except OSError:
+                    pass

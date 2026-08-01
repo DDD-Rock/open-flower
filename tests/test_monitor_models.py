@@ -1,7 +1,9 @@
 import json
 import unittest
+from pathlib import Path
 
 from detection.exp_recognizer import (
+    EXPRapidOCRRecognizer,
     EXPRecognitionResult,
     EXPRecognitionStabilizer,
     format_percent,
@@ -173,10 +175,68 @@ class AlertStateTests(unittest.TestCase):
 
         self.assertEqual(format_percent(reading.percent), "12.34")
         self.assertIsNone(state.update(reading))
+        self.assertIsNone(state.update(reading))
         self.assertEqual(state.update(reading), reading)
         for _ in range(3):
             self.assertEqual(state.update(None), reading)
         self.assertIsNone(state.update(None))
+
+    def test_rapidocr_exp_parser_accepts_supported_row_formats(self):
+        self.assertEqual(
+            EXPRapidOCRRecognizer.parse_text("EXP 7,192,723[12.09%]"),
+            (7_192_723, 12.09),
+        )
+        self.assertEqual(
+            EXPRapidOCRRecognizer.parse_text("7192723 (12,09%)"),
+            (7_192_723, 12.09),
+        )
+        self.assertEqual(
+            EXPRapidOCRRecognizer.parse_text("EXP35801709160.72%1"),
+            (358_017_091, 60.72),
+        )
+        self.assertEqual(
+            EXPRapidOCRRecognizer.parse_text("XP223944737[37.98%]"),
+            (223_944_737, 37.98),
+        )
+        self.assertEqual(
+            EXPRapidOCRRecognizer.parse_text("223944737[37.98%"),
+            (223_944_737, 37.98),
+        )
+        self.assertEqual(
+            EXPRapidOCRRecognizer.parse_text("EXP18248207[55.19%"),
+            (18_248_207, 55.19),
+        )
+
+    def test_rapidocr_exp_parser_rejects_incomplete_or_invalid_rows(self):
+        self.assertIsNone(EXPRapidOCRRecognizer.parse_text("EXP 7192723"))
+        self.assertIsNone(EXPRapidOCRRecognizer.parse_text("7192723[120.09%]"))
+        self.assertIsNone(EXPRapidOCRRecognizer.parse_text("123[12.09%]"))
+
+    def test_rapidocr_payload_uses_confidence_from_matching_block(self):
+        parsed = EXPRapidOCRRecognizer.parse_payload(
+            {
+                "code": 100,
+                "data": [
+                    {"text": "unrelated", "score": 0.99},
+                    {"text": "EXP7192723[12.09%]", "score": 0.94},
+                ],
+            }
+        )
+        self.assertEqual(parsed, (7_192_723, 12.09, 0.94))
+
+    def test_rapidocr_runtime_resources_are_present(self):
+        root = Path(__file__).resolve().parents[1] / "resources" / "rapidocr"
+        expected = (
+            "RapidOCR-json.exe",
+            "models/ch_PP-OCRv4_det_infer.onnx",
+            "models/ch_ppocr_mobile_v2.0_cls_infer.onnx",
+            "models/rec_ch_PP-OCRv4_infer.onnx",
+            "models/ppocr_keys_v1.txt",
+            "LICENSE-RapidOCR-json.txt",
+            "LICENSE-PaddleOCR.txt",
+            "THIRD_PARTY_NOTICES.md",
+        )
+        self.assertTrue(all((root / relative).is_file() for relative in expected))
 
 
 if __name__ == "__main__":

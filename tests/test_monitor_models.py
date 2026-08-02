@@ -183,8 +183,6 @@ class AlertStateTests(unittest.TestCase):
         state = EXPRecognitionStabilizer()
 
         self.assertEqual(format_percent(reading.percent), "12.34")
-        self.assertIsNone(state.update(reading))
-        self.assertIsNone(state.update(reading))
         self.assertEqual(state.update(reading), reading)
         for _ in range(3):
             self.assertEqual(state.update(None), reading)

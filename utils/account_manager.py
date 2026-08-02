@@ -9,6 +9,8 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
+from config import APP_VERSION
+
 
 class AccountError(Exception):
     """A user-facing account authentication error."""
@@ -39,11 +41,16 @@ class AccountManager:
         token = str(response.get("accessToken") or "")
         user = response.get("user") or {}
         account = str(user.get("username") or "")
+        nickname = str(user.get("nickname") or "未设置昵称")
         if not token or not account:
             raise AccountError("监控服务器返回了无效数据")
         binding = self._bind_client(token, client_id) or {}
-        self._save(token, account, client_id, str(binding.get("name") or ""), bool(user.get("isSuperAdmin")))
-        return account
+        self._save(
+            token, account, client_id, str(binding.get("name") or ""),
+            bool(user.get("isSuperAdmin")), nickname,
+            str(binding.get("roleName") or ""),
+        )
+        return nickname
 
     def restore(self) -> Optional[str]:
         credentials = self._load()
@@ -55,11 +62,12 @@ class AccountManager:
         client_id = self._client_id_from(credentials)
         try:
             response = self._request("/api/auth/me", token=token)
-            self._validate_client(token, client_id)
+            authorization = self._validate_client(token, client_id) or {}
         except AccountError:
             self.logout()
             return None
         account = str(response.get("username") or "")
+        nickname = str(response.get("nickname") or "未设置昵称")
         if not account:
             self.logout()
             return None
@@ -69,13 +77,15 @@ class AccountManager:
             client_id,
             str(credentials.get("clientName") or ""),
             bool(response.get("isSuperAdmin")),
+            nickname,
+            str(authorization.get("roleName") or credentials.get("roleName") or ""),
         )
-        return account
+        return nickname
 
     def logout(self):
         credentials = self._load() or {}
         client_id = self._client_id_from(credentials)
-        self._save("", "", client_id, str(credentials.get("clientName") or ""), False)
+        self._save("", "", client_id, str(credentials.get("clientName") or ""), False, "", str(credentials.get("roleName") or ""))
 
     def validate_session(self):
         credentials = self._load() or {}
@@ -95,8 +105,10 @@ class AccountManager:
         return {
             "accessToken": str(credentials.get("accessToken") or ""),
             "username": str(credentials.get("username") or ""),
+            "nickname": str(credentials.get("nickname") or ""),
             "clientId": self._client_id_from(credentials, create=False),
             "clientName": str(credentials.get("clientName") or ""),
+            "roleName": str(credentials.get("roleName") or ""),
             "serverBaseURL": self.server_base_url,
             "isSuperAdmin": bool(credentials.get("isSuperAdmin")),
         }
@@ -133,6 +145,26 @@ class AccountManager:
             name.strip(),
         )
 
+    def save_role_name(self, role_name: str) -> str:
+        role_name = role_name.strip()
+        credentials = self.session_credentials()
+        response = self._request(
+            "/api/clients/role-name",
+            method="PUT",
+            body={"clientId": credentials["clientId"], "roleName": role_name},
+            token=credentials["accessToken"],
+        )
+        saved = str(response.get("roleName") or role_name)
+        current = self._load() or {}
+        self._save(
+            str(current.get("accessToken") or ""),
+            str(current.get("username") or ""),
+            self._client_id_from(current),
+            str(current.get("clientName") or ""),
+            role_name=saved,
+        )
+        return saved
+
     def _request(self, path: str, method: str = "GET", body=None, token: str = "") -> dict:
         data = json.dumps(body).encode("utf-8") if body is not None else None
         request = urllib.request.Request(
@@ -141,6 +173,8 @@ class AccountManager:
             method=method,
             headers={
                 "Accept": "application/json",
+                "X-AutoBuff-Client-Platform": "windows",
+                "X-AutoBuff-Client-Version": APP_VERSION,
                 **({"Content-Type": "application/json"} if data is not None else {}),
                 **({"Authorization": f"Bearer {token}"} if token else {}),
             },
@@ -179,7 +213,7 @@ class AccountManager:
         )
 
     def _validate_client(self, token: str, client_id: str):
-        self._request(
+        return self._request(
             f"/api/clients/authorization?client_id={client_id}",
             token=token,
         )
@@ -208,17 +242,25 @@ class AccountManager:
     def _save(
         self, token: str, username: str, client_id: str,
         client_name: str = "", is_super_admin: Optional[bool] = None,
+        nickname: Optional[str] = None, role_name: Optional[str] = None,
     ):
+        existing = self._load() or {}
         if is_super_admin is None:
-            is_super_admin = bool((self._load() or {}).get("isSuperAdmin"))
+            is_super_admin = bool(existing.get("isSuperAdmin"))
+        if nickname is None:
+            nickname = str(existing.get("nickname") or "")
+        if role_name is None:
+            role_name = str(existing.get("roleName") or "")
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         self.storage_path.write_text(
             json.dumps(
                 {
                     "accessToken": token,
                     "username": username,
+                    "nickname": nickname,
                     "clientId": client_id,
                     "clientName": client_name,
+                    "roleName": role_name,
                     "isSuperAdmin": is_super_admin,
                 },
                 ensure_ascii=False,

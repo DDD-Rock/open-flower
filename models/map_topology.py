@@ -291,10 +291,17 @@ class PlatformTraceBuilder:
         if len(merged) < 3:
             return []
         runs: list[list[tuple[float, float]]] = []
+        # 和 macOS 保持一致：允许正常移动或偶发漏检造成的短缺口，但保留上限，
+        # 避免把相邻的不同平台错误连接起来。
+        maximum_horizontal_gap = max(10.0, min(18.0, width * 0.10))
+        maximum_vertical_gap = max(8.0, min(14.0, height * 0.12))
         current = [merged[0]]
         for point in merged[1:]:
             previous = current[-1]
-            if point[0] - previous[0] <= 5 and abs(point[1] - previous[1]) <= 6:
+            if (
+                point[0] - previous[0] <= maximum_horizontal_gap
+                and abs(point[1] - previous[1]) <= maximum_vertical_gap
+            ):
                 current.append(point)
             else:
                 runs.append(current)

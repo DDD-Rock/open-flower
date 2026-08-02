@@ -2,6 +2,8 @@
 import time
 import random
 import threading
+import ctypes
+import sys
 from typing import Tuple, Optional
 from pynput.keyboard import Key, Controller as KeyboardController
 from pynput.mouse import Button, Controller as MouseController
@@ -144,6 +146,53 @@ class HumanInput:
         self._sleep(duration)
         self.keyboard.release(key)
 
+    def press_enter(self):
+        """拟人化按下并释放回车。"""
+        with self._lock:
+            self.keyboard.press(Key.enter)
+            self._sleep(random.uniform(0.05, 0.13))
+            self.keyboard.release(Key.enter)
+
+    def type_text(self, text: str, interval_range=(0.05, 0.12)):
+        """逐字输入聊天文本；Windows 使用 Unicode SendInput 支持中文角色名。"""
+        with self._lock:
+            for character in text:
+                if sys.platform == "win32":
+                    self._send_unicode_character(character)
+                else:
+                    self.keyboard.type(character)
+                self._sleep(random.uniform(*interval_range))
+
+    @staticmethod
+    def _send_unicode_character(character: str):
+        ulong_ptr = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong
+        class KEYBDINPUT(ctypes.Structure):
+            _fields_ = [
+                ("wVk", ctypes.c_ushort), ("wScan", ctypes.c_ushort),
+                ("dwFlags", ctypes.c_ulong), ("time", ctypes.c_ulong),
+                ("dwExtraInfo", ulong_ptr),
+            ]
+        class MOUSEINPUT(ctypes.Structure):
+            _fields_ = [
+                ("dx", ctypes.c_long), ("dy", ctypes.c_long),
+                ("mouseData", ctypes.c_ulong), ("dwFlags", ctypes.c_ulong),
+                ("time", ctypes.c_ulong), ("dwExtraInfo", ulong_ptr),
+            ]
+        class HARDWAREINPUT(ctypes.Structure):
+            _fields_ = [("uMsg", ctypes.c_ulong), ("wParamL", ctypes.c_ushort), ("wParamH", ctypes.c_ushort)]
+        class INPUTUNION(ctypes.Union):
+            _fields_ = [("ki", KEYBDINPUT), ("mi", MOUSEINPUT), ("hi", HARDWAREINPUT)]
+        class INPUT(ctypes.Structure):
+            _fields_ = [("type", ctypes.c_ulong), ("union", INPUTUNION)]
+        encoded = character.encode("utf-16-le")
+        units = [int.from_bytes(encoded[i:i + 2], "little")
+                 for i in range(0, len(encoded), 2)]
+        for unit in units:
+            down = INPUT(1, INPUTUNION(ki=KEYBDINPUT(0, unit, 0x0004, 0, 0)))
+            up = INPUT(1, INPUTUNION(ki=KEYBDINPUT(0, unit, 0x0004 | 0x0002, 0, 0)))
+            ctypes.windll.user32.SendInput(1, ctypes.byref(down), ctypes.sizeof(INPUT))
+            ctypes.windll.user32.SendInput(1, ctypes.byref(up), ctypes.sizeof(INPUT))
+
     def _get_key_object(self, direction: str):
         mapping = {
             'left': Key.left,
@@ -174,4 +223,3 @@ class HumanInput:
                 self.keyboard.release(Key.right)
             except:
                 pass
-

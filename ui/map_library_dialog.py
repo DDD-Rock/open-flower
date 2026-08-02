@@ -514,13 +514,16 @@ class MapLibraryDialog(QDialog):
         self.export_button = QPushButton("导出全部")
         second_row.addWidget(self.import_button)
         second_row.addWidget(self.export_button)
-        self.cloud_upload_button = QPushButton("上传云端")
+        self.cloud_upload_button = QPushButton("上传所选")
+        self.cloud_upload_all_button = QPushButton("上传全部")
         self.cloud_download_button = QPushButton("云端下载")
         if self.account_manager and self.account_manager.session_credentials()["isSuperAdmin"]:
             second_row.addWidget(self.cloud_upload_button)
+            second_row.addWidget(self.cloud_upload_all_button)
             second_row.addWidget(self.cloud_download_button)
         else:
             self.cloud_upload_button.hide()
+            self.cloud_upload_all_button.hide()
             self.cloud_download_button.hide()
         second_row.addStretch(1)
         close_button = QPushButton("完成")
@@ -535,6 +538,7 @@ class MapLibraryDialog(QDialog):
         self.import_button.clicked.connect(self._import)
         self.export_button.clicked.connect(self._export)
         self.cloud_upload_button.clicked.connect(self._cloud_upload)
+        self.cloud_upload_all_button.clicked.connect(self._cloud_upload_all)
         self.cloud_download_button.clicked.connect(self._cloud_download)
         self._reload()
 
@@ -671,11 +675,21 @@ class MapLibraryDialog(QDialog):
                 QMessageBox.warning(self, "导出失败", str(error))
 
     def _cloud_upload(self):
+        index = self._selected_index()
+        if index is None:
+            QMessageBox.information(self, "提示", "请先选择要上传的地图")
+            return
+        self._upload_maps([self.maps[index]])
+
+    def _cloud_upload_all(self):
         if not self.maps:
             QMessageBox.information(self, "提示", "当前没有可上传的地图")
             return
+        self._upload_maps(self.maps)
+
+    def _upload_maps(self, maps):
         try:
-            count = self.account_manager.upload_cloud_maps(self.maps)
+            count = self.account_manager.upload_cloud_maps(maps)
             QMessageBox.information(self, "上传完成", f"已上传 {count} 张地图到云端")
         except Exception as error:
             QMessageBox.warning(self, "上传失败", str(error))
@@ -686,17 +700,33 @@ class MapLibraryDialog(QDialog):
             if not items:
                 QMessageBox.information(self, "云端地图", "云端还没有地图")
                 return
-            labels = [
-                f"{item['name']}  ·  {item.get('uploadedBy', '')}"
-                for item in items
-            ]
-            selected, ok = QInputDialog.getItem(
-                self, "云端地图", "选择要按需下载的地图", labels, 0, False
+            dialog = QDialog(self)
+            dialog.setWindowTitle("云端地图")
+            dialog.resize(480, 360)
+            layout = QVBoxLayout(dialog)
+            layout.addWidget(QLabel("选择要按需下载的地图"))
+            cloud_list = QListWidget()
+            for item in items:
+                cloud_list.addItem(
+                    f"{item['name']}  ·  上传者：{item.get('uploadedBy', '')}"
+                )
+            cloud_list.setCurrentRow(0)
+            cloud_list.itemDoubleClicked.connect(lambda _: dialog.accept())
+            layout.addWidget(cloud_list)
+            buttons = QDialogButtonBox(
+                QDialogButtonBox.StandardButton.Cancel
+                | QDialogButtonBox.StandardButton.Ok
             )
-            if not ok:
+            buttons.accepted.connect(dialog.accept)
+            buttons.rejected.connect(dialog.reject)
+            layout.addWidget(buttons)
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+            selected_index = cloud_list.currentRow()
+            if not 0 <= selected_index < len(items):
                 return
             downloaded = self.account_manager.download_cloud_map(
-                items[labels.index(selected)]["id"]
+                items[selected_index]["id"]
             )
             self.maps, added, replaced = MapTransferService.merge(downloaded, self.maps)
             self.store.save(self.maps)

@@ -3,11 +3,13 @@
 import ctypes
 import os
 import sys
+import webbrowser
 from typing import List, Optional
 
 from PyQt6.QtCore import QEvent, Qt, QTimer
 from PyQt6.QtGui import QIcon, QIntValidator
 from PyQt6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -46,6 +48,8 @@ from ui.main_window import MainWindow as LegacyMainWindow
 from ui.virtual_keyboard import VirtualKeyboardDialog
 from utils.screen_utils import get_screen_resolution
 from workers.monitor_worker import MonitorWorker
+from workers.rope_party_worker import RopePartyWorker
+from utils.account_manager import AccountError
 
 
 def resource_path(relative_path: str) -> str:
@@ -81,6 +85,12 @@ class MainWindow(LegacyMainWindow):
         self.follow_heal_anchor_pos = None
         self.follow_heal_minimap_region = None
         self.follow_heal_adjust_hold_ms = (200, 300)
+        self.temple_function = "rope_party"
+        self.character_name = ""
+        self.rope_party_team_id = 0
+        self.rope_party_is_leader = False
+        self.rope_party_first_creation = False
+        self.rope_party_invite_role_names = []
         self.buff_rows = []
         self.buff_remove_btns = []
         self.chair_checkboxes = []
@@ -296,11 +306,12 @@ class MainWindow(LegacyMainWindow):
         header.addLayout(title_column)
         header.addStretch(1)
 
-        version = QLabel(f"v{APP_VERSION}")
+        version = QLabel(f"版本  v{APP_VERSION}")
         version.setStyleSheet(
-            "color:#747D8D;background:white;border:1px solid #E3E8F2;"
-            "border-radius:10px;padding:4px 8px;font-size:10px;"
+            "color:#286BD6;background:#ECF4FF;border:1px solid #9FC4FF;"
+            "border-radius:10px;padding:6px 10px;font-size:11px;font-weight:700;"
         )
+        version.setToolTip(f"当前客户端版本 v{APP_VERSION}")
         header.addWidget(version)
         parent_layout.addLayout(header)
 
@@ -374,11 +385,15 @@ class MainWindow(LegacyMainWindow):
         self.monitor_tab = QPushButton(
             "◉  监控模式\n    只读显示实时地图"
         )
+        self.temple_tab = QPushButton(
+            "♜  神殿模式\n    休息室 / 挂绳组队"
+        )
         for button in (
             self.dead_flower_tab,
             self.live_flower_tab,
             self.follow_heal_tab,
             self.monitor_tab,
+            self.temple_tab,
         ):
             button.setObjectName("modeCard")
             button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -386,6 +401,7 @@ class MainWindow(LegacyMainWindow):
         grid.addWidget(self.live_flower_tab, 0, 1)
         grid.addWidget(self.follow_heal_tab, 1, 0)
         grid.addWidget(self.monitor_tab, 1, 1)
+        grid.addWidget(self.temple_tab, 2, 0, 1, 2)
         self.dead_flower_tab.clicked.connect(
             lambda: self._switch_mode_tab("dead")
         )
@@ -397,6 +413,9 @@ class MainWindow(LegacyMainWindow):
         )
         self.monitor_tab.clicked.connect(
             lambda: self._switch_mode_tab("monitor")
+        )
+        self.temple_tab.clicked.connect(
+            lambda: self._switch_mode_tab("temple")
         )
         parent_layout.addLayout(grid)
         self._update_mode_tab_style()
@@ -422,6 +441,7 @@ class MainWindow(LegacyMainWindow):
             "live": "活花模式",
             "follow_heal": "跟补模式",
             "monitor": "监控模式",
+            "temple": "神殿模式",
         }.get(mode, "活花模式")
 
     def _update_mode_tab_style(self):
@@ -444,6 +464,7 @@ class MainWindow(LegacyMainWindow):
             selected if self.mode == "follow_heal" else normal
         )
         self.monitor_tab.setStyleSheet(selected if self.mode == "monitor" else normal)
+        self.temple_tab.setStyleSheet(selected if self.mode == "temple" else normal)
 
     def create_settings_section(self, parent_layout):
         card = QFrame()
@@ -486,6 +507,7 @@ class MainWindow(LegacyMainWindow):
         self.movement_stack.addWidget(self._create_live_options())
         self.movement_stack.addWidget(self._create_dead_options())
         self.movement_stack.addWidget(self._create_follow_heal_options())
+        self.movement_stack.addWidget(self._create_temple_options())
         layout.addWidget(self.movement_stack)
 
         divider = QFrame()
@@ -509,6 +531,30 @@ class MainWindow(LegacyMainWindow):
         )
         party_row.addWidget(self.party_invite_checkbox)
         layout.addLayout(party_row)
+
+        role_row = QHBoxLayout()
+        role_row.addWidget(QLabel("游戏角色名"))
+        self.character_name_input = QLineEdit()
+        self.character_name_input.setPlaceholderText("用于网页组队邀请")
+        self.character_name_input.setMaxLength(24)
+        self.character_name_input.setMinimumWidth(200)
+        self.character_name_input.setMaximumWidth(230)
+        self.character_name_input.textChanged.connect(self._schedule_save)
+        role_row.addWidget(self.character_name_input, 1)
+        save_role_btn = QPushButton("保存")
+        save_role_btn.clicked.connect(self._save_character_name)
+        role_row.addWidget(save_role_btn)
+        layout.addLayout(role_row)
+
+        role_actions_row = QHBoxLayout()
+        role_actions_row.addStretch(1)
+        clients_btn = QPushButton("客户端管理")
+        clients_btn.clicked.connect(self._open_clients_page)
+        role_actions_row.addWidget(clients_btn)
+        copy_btn = QPushButton("复制链接")
+        copy_btn.clicked.connect(self._copy_clients_page)
+        role_actions_row.addWidget(copy_btn)
+        layout.addLayout(role_actions_row)
         self.settings_card = card
         parent_layout.addWidget(card)
         self.monitor_panel = MonitorPanel()
@@ -522,6 +568,54 @@ class MainWindow(LegacyMainWindow):
         self.monitor_panel.zone_height.valueChanged.connect(self._update_monitor_zone_size)
         self.monitor_panel.setVisible(False)
         parent_layout.addWidget(self.monitor_panel)
+
+    def _create_temple_options(self):
+        panel = QWidget()
+        row = QHBoxLayout(panel)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(QLabel("神殿功能"))
+        self.temple_function_combo = QComboBox()
+        self.temple_function_combo.addItem("挂绳组队", "rope_party")
+        self.temple_function_combo.addItem("休息室（Windows 待补齐）", "lounge")
+        self.temple_function_combo.addItem("进出自由（Windows 待补齐）", "free_entry")
+        self.temple_function_combo.currentIndexChanged.connect(self._on_temple_function_changed)
+        row.addWidget(self.temple_function_combo, 1)
+        return panel
+
+    def _on_temple_function_changed(self):
+        self.temple_function = self.temple_function_combo.currentData() or "rope_party"
+        self._schedule_save()
+
+    def _clients_url(self):
+        if not self.account_manager:
+            return ""
+        return f"{self.account_manager.server_base_url}/clients"
+
+    def _open_clients_page(self):
+        url = self._clients_url()
+        if url:
+            webbrowser.open(url)
+
+    def _copy_clients_page(self):
+        url = self._clients_url()
+        if url:
+            QApplication.clipboard().setText(url)
+            self.logger.log("已复制客户端管理链接")
+            self.update_log_display()
+
+    def _save_character_name(self):
+        name = self.character_name_input.text().strip()
+        if not name:
+            QMessageBox.warning(self, "角色名称", "请输入角色名称")
+            return
+        try:
+            self.character_name = self.account_manager.save_role_name(name)
+            self.character_name_input.setText(self.character_name)
+            self.logger.log("角色名称已保存")
+            self.update_log_display()
+            self._schedule_save()
+        except AccountError as error:
+            QMessageBox.warning(self, "保存失败", str(error))
 
     def _create_live_options(self):
         panel = QWidget()
@@ -949,6 +1043,13 @@ class MainWindow(LegacyMainWindow):
         self.auto_accept_party_invite = settings.get(
             "auto_accept_party_invite", False
         )
+        self.temple_function = settings.get("temple_function", "rope_party")
+        self.character_name = settings.get("character_name", "")
+        if self.account_manager:
+            self.character_name = self.account_manager.session_credentials().get("roleName") or self.character_name
+        self.rope_party_team_id = settings.get("rope_party_team_id", 0)
+        self.rope_party_is_leader = settings.get("rope_party_is_leader", False)
+        self.rope_party_invite_role_names = settings.get("rope_party_invite_role_names", [])
         self.monitor_safe_zone = (
             MonitorSafeZone.from_dict(settings["monitor_safe_zone"])
             if settings.get("monitor_safe_zone")
@@ -987,6 +1088,9 @@ class MainWindow(LegacyMainWindow):
         self.party_invite_checkbox.blockSignals(True)
         self.party_invite_checkbox.setChecked(self.auto_accept_party_invite)
         self.party_invite_checkbox.blockSignals(False)
+        self.character_name_input.setText(self.character_name)
+        index = self.temple_function_combo.findData(self.temple_function)
+        self.temple_function_combo.setCurrentIndex(max(0, index))
         display_mode = settings.get(
             "monitor_display_mode",
             "minimap_with_annotations",
@@ -1015,6 +1119,11 @@ class MainWindow(LegacyMainWindow):
         self.selected_chair_key = "="
         self.manual_portal_pos = None
         self.auto_accept_party_invite = False
+        self.temple_function = "rope_party"
+        self.character_name = self.account_manager.session_credentials().get("roleName", "") if self.account_manager else ""
+        self.rope_party_team_id = 0
+        self.rope_party_is_leader = False
+        self.rope_party_invite_role_names = []
         self.monitor_safe_zone = None
         self.monitor_zone_stabilizer.reset()
         self.game_config.random_behavior_enabled = True
@@ -1038,6 +1147,8 @@ class MainWindow(LegacyMainWindow):
         self.party_invite_checkbox.blockSignals(True)
         self.party_invite_checkbox.setChecked(False)
         self.party_invite_checkbox.blockSignals(False)
+        self.character_name_input.setText(self.character_name)
+        self.temple_function_combo.setCurrentIndex(0)
 
     def _persist_settings(self):
         if self._loading_settings:
@@ -1064,6 +1175,11 @@ class MainWindow(LegacyMainWindow):
             movement_mode=self.movement_mode,
             pre_skill_move_mode=self.pre_skill_move_mode,
             auto_accept_party_invite=self.auto_accept_party_invite,
+            temple_function=self.temple_function,
+            character_name=self.character_name_input.text().strip(),
+            rope_party_team_id=self.rope_party_team_id,
+            rope_party_is_leader=self.rope_party_is_leader,
+            rope_party_invite_role_names=self.rope_party_invite_role_names,
             manual_portal_pos=self.manual_portal_pos,
             monitor_display_mode=self.monitor_panel.display_mode.currentData(),
             monitor_safe_zone=(
@@ -1193,6 +1309,8 @@ class MainWindow(LegacyMainWindow):
             self.movement_stack.setCurrentIndex(1)
         elif self.mode == "follow_heal":
             self.movement_stack.setCurrentIndex(2)
+        elif self.mode == "temple":
+            self.movement_stack.setCurrentIndex(3)
         else:
             self.movement_stack.setCurrentIndex(0)
         is_monitor = self.mode == "monitor"
@@ -1238,6 +1356,9 @@ class MainWindow(LegacyMainWindow):
         if self.mode == "monitor":
             self._start_monitor_worker()
             return
+        if self.mode == "temple":
+            self._start_temple_worker()
+            return
         self._sync_buff_values_from_inputs()
         self.follow_heal_adjust_hold_ms = self._read_follow_adjust_hold_ms()
         errors = []
@@ -1266,7 +1387,40 @@ class MainWindow(LegacyMainWindow):
             return
         self._persist_settings()
         super().start_worker()
+        self.temple_tab.setEnabled(False)
         if self.is_worker_running and self.remote_monitor_client:
+            self.remote_monitor_client.publish_client_state(self.mode, True)
+        self._refresh_primary_action()
+
+    def _start_temple_worker(self):
+        if self.temple_function != "rope_party":
+            QMessageBox.information(self, "神殿模式", "Windows 当前先实现挂绳组队；该功能将在后续补齐。")
+            return
+        if not self.character_name_input.text().strip():
+            QMessageBox.warning(self, "挂绳组队", "请先填写并保存角色名称")
+            return
+        if not self.is_window_identified:
+            self.auto_identify_on_startup()
+        if not self.is_window_identified or not self.game_window_hwnd:
+            QMessageBox.warning(self, "挂绳组队", "未找到游戏窗口")
+            return
+        self._persist_settings()
+        worker = RopePartyWorker(
+            self.game_window_hwnd,
+            self.rope_party_is_leader,
+            self.rope_party_first_creation,
+            self.rope_party_invite_role_names,
+        )
+        worker.log_update.connect(self.on_status_update)
+        worker.error_signal.connect(self.on_error)
+        worker.finished_signal.connect(self.on_worker_finished)
+        self.worker = worker
+        self.is_worker_running = True
+        worker.start()
+        self.rope_party_first_creation = False
+        for tab in (self.dead_flower_tab, self.live_flower_tab, self.follow_heal_tab, self.monitor_tab, self.temple_tab):
+            tab.setEnabled(False)
+        if self.remote_monitor_client:
             self.remote_monitor_client.publish_client_state(self.mode, True)
         self._refresh_primary_action()
 
@@ -1278,6 +1432,8 @@ class MainWindow(LegacyMainWindow):
         super().stop_worker()
         if hasattr(self, "monitor_tab"):
             self.monitor_tab.setEnabled(True)
+        if hasattr(self, "temple_tab"):
+            self.temple_tab.setEnabled(True)
         if hasattr(self, "monitor_panel") and self.mode == "monitor":
             self.monitor_panel.reset()
         if self.remote_monitor_client:
@@ -1459,6 +1615,7 @@ class MainWindow(LegacyMainWindow):
         self.dead_flower_tab.setEnabled(True)
         self.live_flower_tab.setEnabled(True)
         self.follow_heal_tab.setEnabled(True)
+        self.temple_tab.setEnabled(True)
         self.monitor_panel.manage_maps_button.setEnabled(True)
         self.monitor_panel.action_test_button.setEnabled(True)
         self.monitor_panel.route_test_button.setEnabled(True)
@@ -1467,7 +1624,8 @@ class MainWindow(LegacyMainWindow):
         self._sync_party_invite_worker()
         self._refresh_primary_action()
 
-    def handle_remote_command(self, action):
+    def handle_remote_command(self, command):
+        action = command.get("action") if isinstance(command, dict) else command
         if action == "start" and not self.is_worker_running:
             self.logger.log("收到网页远程开始指令")
             self.update_log_display()
@@ -1476,6 +1634,69 @@ class MainWindow(LegacyMainWindow):
             self.logger.log("收到网页远程停止指令")
             self.update_log_display()
             self.stop_worker()
+        elif action == "configure_rope_party":
+            team_id = int(command.get("teamId") or 0)
+            if team_id <= 0:
+                self.logger.log("收到的挂绳组队配置缺少队伍编号")
+                self.update_log_display()
+                return
+            if self.is_worker_running:
+                self.stop_worker()
+            self.mode = "temple"
+            self.temple_function = "rope_party"
+            self.rope_party_team_id = team_id
+            self.rope_party_is_leader = bool(command.get("isLeader"))
+            self.rope_party_first_creation = bool(command.get("firstCreation"))
+            self.rope_party_invite_role_names = list(command.get("inviteRoleNames") or [])
+            self.character_name = str(command.get("roleName") or self.character_name).strip()
+            self.character_name_input.setText(self.character_name)
+            self.temple_function_combo.setCurrentIndex(max(0, self.temple_function_combo.findData("rope_party")))
+            self.auto_accept_party_invite = True
+            self.party_invite_checkbox.setChecked(True)
+            self._update_mode_tab_style()
+            self._update_movement_mode_visibility()
+            self._persist_settings()
+            self._sync_party_invite_worker(log_missing_requirements=True)
+            self.logger.log("已切换为神殿模式 · 挂绳组队，并开启自动同意组队")
+            self.update_log_display()
+            self.start_worker()
+        elif action == "disband_rope_party":
+            self.logger.log("收到网页解散队伍指令，正在停止当前模式")
+            if self.is_worker_running:
+                self.stop_worker()
+            self.auto_accept_party_invite = False
+            self.party_invite_checkbox.setChecked(False)
+            self.rope_party_team_id = 0
+            self.rope_party_is_leader = False
+            self.rope_party_invite_role_names = []
+            self._persist_settings()
+            self._start_rope_party_disband()
+
+    def _start_rope_party_disband(self):
+        if not self.is_window_identified:
+            self.auto_identify_on_startup()
+        if not self.is_window_identified or not self.game_window_hwnd:
+            self.logger.log("游戏窗口未识别，无法发送 /退出隊伍")
+            self.update_log_display()
+            return
+        worker = RopePartyWorker(self.game_window_hwnd, False, False, [], disband_only=True)
+        worker.log_update.connect(self.on_status_update)
+        worker.error_signal.connect(self.on_error)
+        worker.finished_signal.connect(self.on_worker_finished)
+        self.worker = worker
+        self.is_worker_running = True
+        worker.start()
+        if self.remote_monitor_client:
+            self.remote_monitor_client.publish_client_state(self.mode, True)
+        self._refresh_primary_action()
+
+    def _on_party_invite_accepted(self):
+        if self.mode == "temple" and self.temple_function == "rope_party" and self.rope_party_team_id > 0:
+            role_name = self.character_name_input.text().strip()
+            if self.remote_monitor_client and role_name:
+                self.remote_monitor_client.publish_team_joined(self.rope_party_team_id, role_name)
+                self.logger.log("已向服务器上报成功进队")
+                self.update_log_display()
 
     def on_manage_maps(self):
         from ui.map_library_dialog import MapLibraryDialog

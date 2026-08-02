@@ -16,6 +16,7 @@ class PartyInviteWorker(QThread):
     log_update = pyqtSignal(str)
     error_signal = pyqtSignal(str)
     finished_signal = pyqtSignal()
+    invite_accepted = pyqtSignal()
 
     def __init__(self, hwnd: int):
         super().__init__()
@@ -76,6 +77,7 @@ class PartyInviteWorker(QThread):
             self._sleep(0.3)
             if self.detector.find_accept_button() is None:
                 self.log_update.emit("已同意队伍邀请")
+                self.invite_accepted.emit()
                 return
 
     def _sleep(self, seconds: float):

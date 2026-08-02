@@ -25,7 +25,7 @@ class RemoteMonitorClient:
     def __init__(
         self,
         account_manager,
-        on_command: Optional[Callable[[str], None]] = None,
+        on_command: Optional[Callable[[dict], None]] = None,
         on_identity: Optional[Callable[[str], None]] = None,
         on_status: Optional[Callable[[str], None]] = None,
     ):
@@ -96,6 +96,10 @@ class RemoteMonitorClient:
 
     def publish_status(self, online: bool, message: str):
         self._enqueue("status", {"online": bool(online), "message": message})
+
+    def publish_team_joined(self, team_id: int, role_name: str):
+        if int(team_id) > 0 and role_name.strip():
+            self._enqueue("team_joined", {"teamId": int(team_id), "roleName": role_name.strip()})
 
     def publish_map(self, topology: MapTopology, content_size: tuple[int, int]):
         map_id = topology.map_name or f"map-{content_size[0]}x{content_size[1]}"
@@ -258,8 +262,8 @@ class RemoteMonitorClient:
                     self.on_identity(name)
         elif payload.get("type") == "command":
             action = str(payload.get("action") or "")
-            if action in {"start", "stop"} and self.on_command:
-                self.on_command(action)
+            if action in {"start", "stop", "configure_rope_party", "disband_rope_party"} and self.on_command:
+                self.on_command(payload)
 
     def _on_close(self, app, _status_code, _message):
         if app is self._socket_app:

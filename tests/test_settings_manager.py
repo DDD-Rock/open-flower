@@ -161,6 +161,26 @@ class SettingsManagerTests(unittest.TestCase):
 
             self.assertTrue(settings["auto_accept_party_invite"])
 
+    def test_rope_party_settings_round_trip(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.ini"
+            manager = SettingsManager(str(path))
+            self.assertTrue(manager.save_settings(
+                buffs=[BuffConfig(), BuffConfig(), BuffConfig()],
+                mode="temple",
+                temple_function="rope_party",
+                character_name="测试队长",
+                rope_party_team_id=12,
+                rope_party_is_leader=True,
+                rope_party_invite_role_names=["队员甲", "队员乙"],
+            ))
+            settings = manager.load_settings()
+            self.assertEqual(settings["mode"], "temple")
+            self.assertEqual(settings["character_name"], "测试队长")
+            self.assertEqual(settings["rope_party_team_id"], 12)
+            self.assertTrue(settings["rope_party_is_leader"])
+            self.assertEqual(settings["rope_party_invite_role_names"], ["队员甲", "队员乙"])
+
 
 if __name__ == "__main__":
     unittest.main()

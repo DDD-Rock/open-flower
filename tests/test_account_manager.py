@@ -1,6 +1,7 @@
 import importlib.util
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,17 +24,29 @@ class StubAccountManager(AccountManager):
         if path == "/api/auth/login":
             return {
                 "accessToken": "account-token",
-                "user": {"username": body["username"]},
+                "user": {"username": body["username"], "nickname": "爱丽丝"},
             }
         if path == "/api/clients/bind":
             self.bound_client_ids.append(body["clientId"])
             return {"id": "session-1", "clientId": body["clientId"], "name": "测试电脑"}
         if path.startswith("/api/clients/authorization"):
             return {}
-        return {"id": 1, "username": "alice"}
+        return {"id": 1, "username": "alice", "nickname": "爱丽丝"}
 
 
 class AccountManagerTests(unittest.TestCase):
+    def test_requests_report_windows_client_version(self):
+        manager = AccountManager(server_base_url="http://example.test")
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = b"{}"
+        response.__exit__.return_value = False
+        with mock.patch.object(ACCOUNT_MODULE.urllib.request, "urlopen", return_value=response) as urlopen:
+            manager._request("/api/auth/me")
+
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.get_header("X-autobuff-client-platform"), "windows")
+        self.assertEqual(request.get_header("X-autobuff-client-version"), "2.0.2")
+
     def test_login_token_is_reused_for_startup_restore(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             storage = Path(temp_dir) / "account.json"
@@ -42,8 +55,8 @@ class AccountManagerTests(unittest.TestCase):
                 server_base_url="http://example.test/",
             )
 
-            self.assertEqual(manager.authenticate(" alice ", "password"), "alice")
-            self.assertEqual(manager.restore(), "alice")
+            self.assertEqual(manager.authenticate(" alice ", "password"), "爱丽丝")
+            self.assertEqual(manager.restore(), "爱丽丝")
             manager.validate_session()
             self.assertEqual(manager.registration_url, "http://example.test/register")
             self.assertEqual(len(set(manager.bound_client_ids)), 1)
@@ -54,7 +67,7 @@ class AccountManagerTests(unittest.TestCase):
             self.assertEqual(credentials["clientId"], manager.bound_client_ids[0])
             self.assertEqual(credentials["accessToken"], "")
 
-            self.assertEqual(manager.authenticate("alice", "password"), "alice")
+            self.assertEqual(manager.authenticate("alice", "password"), "爱丽丝")
             self.assertEqual(len(set(manager.bound_client_ids)), 1)
 
     def test_client_limit_failure_does_not_persist_login_token(self):

@@ -53,6 +53,11 @@ class SettingsManager:
                       movement_mode: str = "none",
                       pre_skill_move_mode: str = "right_only",
                       auto_accept_party_invite: bool = False,
+                      temple_function: str = "rope_party",
+                      character_name: str = "",
+                      rope_party_team_id: int = 0,
+                      rope_party_is_leader: bool = False,
+                      rope_party_invite_role_names: Optional[list] = None,
                       manual_portal_pos: Optional[Tuple[int, int]] = None,
                       monitor_display_mode: str = "minimap_with_annotations",
                       monitor_safe_zone: Optional[dict] = None):
@@ -111,6 +116,11 @@ class SettingsManager:
             "movement_mode": movement_mode,
             "pre_skill_move_mode": pre_skill_move_mode,
             "auto_accept_party_invite": str(auto_accept_party_invite),
+            "temple_function": temple_function,
+            "character_name": character_name,
+            "rope_party_team_id": str(rope_party_team_id),
+            "rope_party_is_leader": str(rope_party_is_leader),
+            "rope_party_invite_role_names": json.dumps(rope_party_invite_role_names or [], ensure_ascii=False),
             "manual_portal_x": "" if manual_portal_pos is None else str(manual_portal_pos[0]),
             "manual_portal_y": "" if manual_portal_pos is None else str(manual_portal_pos[1]),
             "monitor_display_mode": monitor_display_mode,
@@ -169,7 +179,7 @@ class SettingsManager:
                 "mode",
                 fallback=("dead" if return_to_market else "live"),
             )
-            if mode not in {"dead", "live", "follow_heal", "monitor"}:
+            if mode not in {"dead", "live", "follow_heal", "monitor", "temple"}:
                 mode = "dead" if return_to_market else "live"
             settings = {
                 "mode": mode,
@@ -196,6 +206,11 @@ class SettingsManager:
                 "auto_accept_party_invite": self.config.getboolean(
                     "General", "auto_accept_party_invite", fallback=False
                 ),
+                "temple_function": self.config.get("General", "temple_function", fallback="rope_party"),
+                "character_name": self.config.get("General", "character_name", fallback=""),
+                "rope_party_team_id": self.config.getint("General", "rope_party_team_id", fallback=0),
+                "rope_party_is_leader": self.config.getboolean("General", "rope_party_is_leader", fallback=False),
+                "rope_party_invite_role_names": self._load_json_list("rope_party_invite_role_names"),
                 "manual_portal_pos": self._load_manual_portal_pos(),
                 "monitor_display_mode": self.config.get(
                     "General",
@@ -256,6 +271,14 @@ class SettingsManager:
             return value if isinstance(value, dict) else None
         except ValueError:
             return None
+
+    def _load_json_list(self, key: str):
+        raw = self.config.get("General", key, fallback="[]").strip()
+        try:
+            value = json.loads(raw)
+            return [str(item) for item in value] if isinstance(value, list) else []
+        except ValueError:
+            return []
 
     def _load_adjust_hold_ms(self):
         default_min, default_max = DEFAULT_FOLLOW_HEAL_ADJUST_HOLD_MS

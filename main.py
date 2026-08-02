@@ -78,6 +78,7 @@ class ClientAuthorizationWatcher(QObject):
                 "client_unbound",
                 "invalid_token",
                 "account_disabled",
+                "client_version_disabled",
             }:
                 self.authorization_lost.emit(str(error))
         finally:
@@ -85,7 +86,7 @@ class ClientAuthorizationWatcher(QObject):
 
 
 class ApplicationController(QObject):
-    remote_command_received = pyqtSignal(str)
+    remote_command_received = pyqtSignal(object)
     remote_identity_received = pyqtSignal(str)
     remote_status_received = pyqtSignal(str)
 
@@ -132,9 +133,9 @@ class ApplicationController(QObject):
         self.remote_monitor_client.start()
         self.remote_monitor_client.publish_client_state(self.window.mode, False)
 
-    def _handle_remote_command(self, action: str):
+    def _handle_remote_command(self, command: dict):
         if self.window is not None:
-            self.window.handle_remote_command(action)
+            self.window.handle_remote_command(command)
 
     def _handle_remote_status(self, message: str):
         if self.window is not None:
@@ -156,7 +157,7 @@ class ApplicationController(QObject):
                 previous_window._stop_party_invite_worker()
             previous_window.hide()
         self.account_manager.logout()
-        QMessageBox.warning(None, "客户端已解绑", message)
+        QMessageBox.warning(None, "客户端登录已失效", message)
         if self._show_login():
             self._show_main_window()
             if previous_window is not None:

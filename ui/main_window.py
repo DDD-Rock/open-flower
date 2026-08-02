@@ -312,8 +312,13 @@ class MainWindow(QMainWindow):
         title.setStyleSheet("font-size: 16px; font-weight: bold; color: #ffffff;")
         title_row.addWidget(title)
         title_row.addStretch()
-        ver = QLabel(f"v{APP_VERSION}")
-        ver.setStyleSheet("font-size: 11px; color: #7a7aaa;")
+        ver = QLabel(f"版本  v{APP_VERSION}")
+        ver.setStyleSheet(
+            "font-size: 11px; font-weight: bold; color: #ffffff;"
+            "background: #286bd6; border: 1px solid #70a7ff;"
+            "border-radius: 8px; padding: 4px 8px;"
+        )
+        ver.setToolTip(f"当前客户端版本 v{APP_VERSION}")
         title_row.addWidget(ver)
         author = QLabel("by 小新")
         author.setStyleSheet("font-size: 10px; color: #5a5a7a;")
@@ -1256,6 +1261,8 @@ class MainWindow(QMainWindow):
         worker = PartyInviteWorker(self.game_window_hwnd)
         worker.log_update.connect(self._on_party_invite_log)
         worker.error_signal.connect(self._on_party_invite_error)
+        if hasattr(self, "_on_party_invite_accepted"):
+            worker.invite_accepted.connect(self._on_party_invite_accepted)
         worker.finished_signal.connect(
             lambda current=worker: self._on_party_invite_finished(current)
         )

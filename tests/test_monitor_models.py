@@ -89,6 +89,15 @@ class MapTopologyTests(unittest.TestCase):
         self.assertGreater(points[-1].x, 0.8)
         self.assertGreater(points[-1].y, points[0].y)
 
+    def test_platform_trace_bridges_a_short_detection_gap(self):
+        samples = [(x, 42) for x in range(8, 51, 2)]
+        samples += [(x, 42.5) for x in range(62, 113, 2)]
+
+        points = PlatformTraceBuilder.build_polyline(samples, (120, 90))
+
+        self.assertLess(points[0].x, 0.1)
+        self.assertGreater(points[-1].x, 0.9)
+
     def test_rope_trace_discards_outliers_and_builds_vertical_range(self):
         samples = [
             (50 + index % 3, y)
@@ -206,11 +215,19 @@ class AlertStateTests(unittest.TestCase):
             EXPRapidOCRRecognizer.parse_text("EXP18248207[55.19%"),
             (18_248_207, 55.19),
         )
+        self.assertEqual(
+            EXPRapidOCRRecognizer.parse_text("EXP 0 (0.0%)"),
+            (0, 0.0),
+        )
+        self.assertEqual(
+            EXPRapidOCRRecognizer.parse_text("EXP 123 (12.09%)"),
+            (123, 12.09),
+        )
 
     def test_rapidocr_exp_parser_rejects_incomplete_or_invalid_rows(self):
         self.assertIsNone(EXPRapidOCRRecognizer.parse_text("EXP 7192723"))
         self.assertIsNone(EXPRapidOCRRecognizer.parse_text("7192723[120.09%]"))
-        self.assertIsNone(EXPRapidOCRRecognizer.parse_text("123[12.09%]"))
+        self.assertIsNone(EXPRapidOCRRecognizer.parse_text("123"))
 
     def test_rapidocr_payload_uses_confidence_from_matching_block(self):
         parsed = EXPRapidOCRRecognizer.parse_payload(

@@ -337,20 +337,20 @@ class EXPRapidOCRRecognizer:
 
     _PATTERNS = (
         re.compile(
-            r"(?:[A-Z\u00c0-\u024f]*XP[\s:._-]*)?"
-            r"([0-9][0-9,]{3,})\s*[\(\[\{]\s*"
+            r"(?<![0-9,])(?:[A-Z\u00c0-\u024f]*XP[\s:._-]*)?"
+            r"([0-9][0-9,]*)\s*[\(\[\{]\s*"
             r"([0-9]{1,3}(?:[\.,][0-9]{1,4})?)\s*%",
             re.IGNORECASE,
         ),
         re.compile(
-            r"(?:[A-Z\u00c0-\u024f]*XP[\s:._-]*)?"
-            r"([0-9][0-9,]{3,})\s+"
+            r"(?<![0-9,])(?:[A-Z\u00c0-\u024f]*XP[\s:._-]*)?"
+            r"([0-9][0-9,]*)\s+"
             r"([0-9]{1,3}(?:[\.,][0-9]{1,4})?)\s*%",
             re.IGNORECASE,
         ),
         re.compile(
-            r"(?:[A-Z\u00c0-\u024f]*XP[\s:._-]*)?"
-            r"([0-9][0-9,]{3,}?)\s*[\(\[\{]?\s*"
+            r"(?<![0-9,])(?:[A-Z\u00c0-\u024f]*XP[\s:._-]*)"
+            r"([0-9][0-9,]*?)\s*[\(\[\{]?\s*"
             r"((?:100[\.,]0{1,4}|[0-9]{1,2}[\.,][0-9]{1,4}))\s*%",
             re.IGNORECASE,
         ),
@@ -455,7 +455,7 @@ class EXPRapidOCRRecognizer:
                 percent = float(match.group(2).replace(",", "."))
             except ValueError:
                 continue
-            if current_exp > 0 and 0 <= percent <= 100:
+            if current_exp >= 0 and 0 <= percent <= 100:
                 return current_exp, percent
         return None
 

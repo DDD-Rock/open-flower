@@ -181,6 +181,22 @@ class SettingsManagerTests(unittest.TestCase):
             self.assertTrue(settings["rope_party_is_leader"])
             self.assertEqual(settings["rope_party_invite_role_names"], ["队员甲", "队员乙"])
 
+    def test_lounge_settings_round_trip(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.ini"
+            manager = SettingsManager(str(path))
+            self.assertTrue(manager.save_settings(
+                buffs=[BuffConfig(True, "1", 0), BuffConfig(), BuffConfig()],
+                mode="temple",
+                temple_function="lounge",
+                lounge_move_min_minutes=12,
+                lounge_move_max_minutes=28,
+            ))
+            settings = manager.load_settings()
+            self.assertEqual(settings["temple_function"], "lounge")
+            self.assertEqual(settings["lounge_move_min_minutes"], 12)
+            self.assertEqual(settings["lounge_move_max_minutes"], 28)
+
 
 if __name__ == "__main__":
     unittest.main()

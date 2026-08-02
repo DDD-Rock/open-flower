@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QSpinBox,
     QStackedWidget,
     QTextEdit,
     QVBoxLayout,
@@ -49,6 +50,7 @@ from ui.virtual_keyboard import VirtualKeyboardDialog
 from utils.screen_utils import get_screen_resolution
 from workers.monitor_worker import MonitorWorker
 from workers.rope_party_worker import RopePartyWorker
+from workers.lounge_worker import LoungeWorker
 from utils.account_manager import AccountError
 
 
@@ -86,6 +88,8 @@ class MainWindow(LegacyMainWindow):
         self.follow_heal_minimap_region = None
         self.follow_heal_adjust_hold_ms = (200, 300)
         self.temple_function = "rope_party"
+        self.lounge_move_min_minutes = 15
+        self.lounge_move_max_minutes = 30
         self.character_name = ""
         self.rope_party_team_id = 0
         self.rope_party_is_leader = False
@@ -503,11 +507,14 @@ class MainWindow(LegacyMainWindow):
         divider.setStyleSheet("color:#E7EBF2;")
         layout.addWidget(divider)
 
+        self.temple_function_widget = self._create_temple_function_selector()
+        layout.addWidget(self.temple_function_widget)
         self.movement_stack = QStackedWidget()
         self.movement_stack.addWidget(self._create_live_options())
         self.movement_stack.addWidget(self._create_dead_options())
         self.movement_stack.addWidget(self._create_follow_heal_options())
         self.movement_stack.addWidget(self._create_temple_options())
+        self.movement_stack.addWidget(self._create_rope_party_options())
         layout.addWidget(self.movement_stack)
 
         divider = QFrame()
@@ -569,21 +576,58 @@ class MainWindow(LegacyMainWindow):
         self.monitor_panel.setVisible(False)
         parent_layout.addWidget(self.monitor_panel)
 
-    def _create_temple_options(self):
+    def _create_temple_function_selector(self):
         panel = QWidget()
         row = QHBoxLayout(panel)
         row.setContentsMargins(0, 0, 0, 0)
         row.addWidget(QLabel("神殿功能"))
         self.temple_function_combo = QComboBox()
+        self.temple_function_combo.addItem("休息室", "lounge")
         self.temple_function_combo.addItem("挂绳组队", "rope_party")
-        self.temple_function_combo.addItem("休息室（Windows 待补齐）", "lounge")
-        self.temple_function_combo.addItem("进出自由（Windows 待补齐）", "free_entry")
+        self.temple_function_combo.addItem("进出自由", "free_entry")
         self.temple_function_combo.currentIndexChanged.connect(self._on_temple_function_changed)
         row.addWidget(self.temple_function_combo, 1)
         return panel
 
+    def _create_temple_options(self):
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
+        row = QHBoxLayout()
+        row.addWidget(QLabel("防卡移动间隔"))
+        row.addStretch(1)
+        self.lounge_move_min_input = QSpinBox()
+        self.lounge_move_min_input.setRange(1, 1440)
+        self.lounge_move_min_input.setSuffix(" 分钟")
+        self.lounge_move_min_input.valueChanged.connect(self._on_lounge_interval_changed)
+        row.addWidget(self.lounge_move_min_input)
+        row.addWidget(QLabel("至"))
+        self.lounge_move_max_input = QSpinBox()
+        self.lounge_move_max_input.setRange(1, 1440)
+        self.lounge_move_max_input.setSuffix(" 分钟")
+        self.lounge_move_max_input.valueChanged.connect(self._on_lounge_interval_changed)
+        row.addWidget(self.lounge_move_max_input)
+        layout.addLayout(row)
+        note = QLabel("启动、人数增加或自动接受组队后释放全部 BUFF；倒计时结束不会释放。")
+        note.setWordWrap(True)
+        note.setStyleSheet("color:#747D8D;font-size:9px;")
+        layout.addWidget(note)
+        return panel
+
+    def _create_rope_party_options(self):
+        note = QLabel("队伍由客户端管理网页统一创建；保存后会自动切换模式并开始运行。")
+        note.setWordWrap(True)
+        note.setStyleSheet("color:#747D8D;font-size:9px;")
+        return note
+
     def _on_temple_function_changed(self):
         self.temple_function = self.temple_function_combo.currentData() or "rope_party"
+        self._update_movement_mode_visibility()
+        self._schedule_save()
+
+    def _on_lounge_interval_changed(self):
+        self.lounge_move_min_minutes = self.lounge_move_min_input.value()
+        self.lounge_move_max_minutes = self.lounge_move_max_input.value()
         self._schedule_save()
 
     def _clients_url(self):
@@ -1044,6 +1088,8 @@ class MainWindow(LegacyMainWindow):
             "auto_accept_party_invite", False
         )
         self.temple_function = settings.get("temple_function", "rope_party")
+        self.lounge_move_min_minutes = settings.get("lounge_move_min_minutes", 15)
+        self.lounge_move_max_minutes = settings.get("lounge_move_max_minutes", 30)
         self.character_name = settings.get("character_name", "")
         if self.account_manager:
             self.character_name = self.account_manager.session_credentials().get("roleName") or self.character_name
@@ -1091,6 +1137,8 @@ class MainWindow(LegacyMainWindow):
         self.character_name_input.setText(self.character_name)
         index = self.temple_function_combo.findData(self.temple_function)
         self.temple_function_combo.setCurrentIndex(max(0, index))
+        self.lounge_move_min_input.setValue(self.lounge_move_min_minutes)
+        self.lounge_move_max_input.setValue(self.lounge_move_max_minutes)
         display_mode = settings.get(
             "monitor_display_mode",
             "minimap_with_annotations",
@@ -1120,6 +1168,8 @@ class MainWindow(LegacyMainWindow):
         self.manual_portal_pos = None
         self.auto_accept_party_invite = False
         self.temple_function = "rope_party"
+        self.lounge_move_min_minutes = 15
+        self.lounge_move_max_minutes = 30
         self.character_name = self.account_manager.session_credentials().get("roleName", "") if self.account_manager else ""
         self.rope_party_team_id = 0
         self.rope_party_is_leader = False
@@ -1148,7 +1198,9 @@ class MainWindow(LegacyMainWindow):
         self.party_invite_checkbox.setChecked(False)
         self.party_invite_checkbox.blockSignals(False)
         self.character_name_input.setText(self.character_name)
-        self.temple_function_combo.setCurrentIndex(0)
+        self.temple_function_combo.setCurrentIndex(max(0, self.temple_function_combo.findData("rope_party")))
+        self.lounge_move_min_input.setValue(15)
+        self.lounge_move_max_input.setValue(30)
 
     def _persist_settings(self):
         if self._loading_settings:
@@ -1176,6 +1228,8 @@ class MainWindow(LegacyMainWindow):
             pre_skill_move_mode=self.pre_skill_move_mode,
             auto_accept_party_invite=self.auto_accept_party_invite,
             temple_function=self.temple_function,
+            lounge_move_min_minutes=self.lounge_move_min_input.value(),
+            lounge_move_max_minutes=self.lounge_move_max_input.value(),
             character_name=self.character_name_input.text().strip(),
             rope_party_team_id=self.rope_party_team_id,
             rope_party_is_leader=self.rope_party_is_leader,
@@ -1305,18 +1359,27 @@ class MainWindow(LegacyMainWindow):
             self.follow_anchor_label.setText("未标记")
 
     def _update_movement_mode_visibility(self):
+        is_temple = self.mode == "temple"
+        self.temple_function_widget.setVisible(is_temple)
         if self.mode == "dead":
             self.movement_stack.setCurrentIndex(1)
         elif self.mode == "follow_heal":
             self.movement_stack.setCurrentIndex(2)
         elif self.mode == "temple":
-            self.movement_stack.setCurrentIndex(3)
+            self.movement_stack.setCurrentIndex({
+                "free_entry": 1,
+                "lounge": 3,
+                "rope_party": 4,
+            }.get(self.temple_function, 4))
         else:
             self.movement_stack.setCurrentIndex(0)
         is_monitor = self.mode == "monitor"
         self.settings_card.setVisible(not is_monitor)
         self.monitor_panel.setVisible(is_monitor)
-        self.portal_marker_btn.setVisible(self.mode == "dead")
+        self.portal_marker_btn.setVisible(
+            self.mode == "dead"
+            or (self.mode == "temple" and self.temple_function == "free_entry")
+        )
 
     def update_window_status_display(
         self, status_text: Optional[str] = None, success: bool = False
@@ -1393,18 +1456,44 @@ class MainWindow(LegacyMainWindow):
         self._refresh_primary_action()
 
     def _start_temple_worker(self):
-        if self.temple_function != "rope_party":
-            QMessageBox.information(self, "神殿模式", "Windows 当前先实现挂绳组队；该功能将在后续补齐。")
-            return
-        if not self.character_name_input.text().strip():
-            QMessageBox.warning(self, "挂绳组队", "请先填写并保存角色名称")
+        self._sync_buff_values_from_inputs()
+        enabled = [buff for buff in self.buffs if buff.enabled]
+        errors = []
+        if self.temple_function != "rope_party" and not enabled:
+            errors.append("请至少启用一个 BUFF")
+        for index, buff in enumerate(self.buffs):
+            if not buff.enabled:
+                continue
+            if not buff.key:
+                errors.append(f"BUFF {index + 1} 尚未选择按键")
+            if self.temple_function != "lounge" and buff.duration <= 0:
+                errors.append(f"BUFF {index + 1} 的持续时间必须大于 0")
+        keys = [buff.key.lower() for buff in enabled if buff.key]
+        if len(keys) != len(set(keys)):
+            errors.append("启用的 BUFF 按键不能重复")
+        if self.temple_function == "lounge":
+            if self.lounge_move_min_input.value() > self.lounge_move_max_input.value():
+                errors.append("休息室防卡最短间隔不能大于最长间隔")
+        elif self.temple_function == "rope_party" and not self.character_name_input.text().strip():
+            errors.append("挂绳组队需要先填写并保存角色名称")
+        if errors:
+            QMessageBox.warning(self, "配置有误", "\n".join(errors))
             return
         if not self.is_window_identified:
             self.auto_identify_on_startup()
         if not self.is_window_identified or not self.game_window_hwnd:
-            QMessageBox.warning(self, "挂绳组队", "未找到游戏窗口")
+            QMessageBox.warning(self, "神殿模式", "未找到游戏窗口")
             return
         self._persist_settings()
+
+        if self.temple_function == "free_entry":
+            self._start_temple_free_entry()
+        elif self.temple_function == "lounge":
+            self._start_lounge_worker()
+        else:
+            self._start_rope_party_worker()
+
+    def _start_rope_party_worker(self):
         worker = RopePartyWorker(
             self.game_window_hwnd,
             self.rope_party_is_leader,
@@ -1418,6 +1507,43 @@ class MainWindow(LegacyMainWindow):
         self.is_worker_running = True
         worker.start()
         self.rope_party_first_creation = False
+        self._set_temple_running_ui()
+
+    def _start_lounge_worker(self):
+        worker = LoungeWorker(
+            self.game_window_hwnd,
+            self.buffs,
+            self.lounge_move_min_input.value(),
+            self.lounge_move_max_input.value(),
+        )
+        worker.log_update.connect(self.on_status_update)
+        worker.error_signal.connect(self.on_error)
+        worker.finished_signal.connect(self.on_worker_finished)
+        self.worker = worker
+        self.is_worker_running = True
+        worker.start()
+        self._set_temple_running_ui()
+
+    def _start_temple_free_entry(self):
+        original_mode = self.mode
+        original_return = self.return_to_market
+        self.mode = "dead"
+        self.return_to_market = True
+        super().start_worker()
+        self.mode = original_mode
+        self.return_to_market = original_return
+        self._update_mode_tab_style()
+        self._update_movement_mode_visibility()
+        if self.is_worker_running:
+            self.logger.log("神殿模式 · 进出自由已启动")
+            self.update_log_display()
+            self._set_temple_running_ui()
+
+    def _set_temple_running_ui(self):
+        self._set_buff_settings_enabled(False)
+        self.temple_function_combo.setEnabled(False)
+        self.lounge_move_min_input.setEnabled(False)
+        self.lounge_move_max_input.setEnabled(False)
         for tab in (self.dead_flower_tab, self.live_flower_tab, self.follow_heal_tab, self.monitor_tab, self.temple_tab):
             tab.setEnabled(False)
         if self.remote_monitor_client:
@@ -1434,6 +1560,10 @@ class MainWindow(LegacyMainWindow):
             self.monitor_tab.setEnabled(True)
         if hasattr(self, "temple_tab"):
             self.temple_tab.setEnabled(True)
+        if hasattr(self, "temple_function_combo"):
+            self.temple_function_combo.setEnabled(True)
+            self.lounge_move_min_input.setEnabled(True)
+            self.lounge_move_max_input.setEnabled(True)
         if hasattr(self, "monitor_panel") and self.mode == "monitor":
             self.monitor_panel.reset()
         if self.remote_monitor_client:
@@ -1691,7 +1821,9 @@ class MainWindow(LegacyMainWindow):
         self._refresh_primary_action()
 
     def _on_party_invite_accepted(self):
-        if self.mode == "temple" and self.temple_function == "rope_party" and self.rope_party_team_id > 0:
+        if self.mode == "temple" and self.temple_function == "lounge" and isinstance(self.worker, LoungeWorker):
+            self.worker.party_invite_accepted()
+        elif self.mode == "temple" and self.temple_function == "rope_party" and self.rope_party_team_id > 0:
             role_name = self.character_name_input.text().strip()
             if self.remote_monitor_client and role_name:
                 self.remote_monitor_client.publish_team_joined(self.rope_party_team_id, role_name)

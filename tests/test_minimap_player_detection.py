@@ -74,6 +74,15 @@ class MinimapPlayerDetectionTests(unittest.TestCase):
         self.assertIsNone(point)
         self.assertIn("候选过多", summary)
 
+    def test_counts_multiple_valid_yellow_candidates_for_lounge(self):
+        minimap = np.full((120, 260, 3), 30, dtype=np.uint8)
+        cv2.circle(minimap, (50, 40), 3, (8, 252, 255), -1)
+        cv2.circle(minimap, (150, 80), 3, (8, 252, 255), -1)
+
+        count = MinimapMonitor.count_player_marker_candidates_in_image(minimap)
+
+        self.assertEqual(count, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

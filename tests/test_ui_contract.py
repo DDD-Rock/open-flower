@@ -24,6 +24,9 @@ class ModernUIContractTests(unittest.TestCase):
             "修正按住",
             "空闲时坐椅子",
             "自动同意组队",
+            "休息室",
+            "进出自由",
+            "防卡移动间隔",
             "运行日志",
             "开始运行",
         ):

@@ -377,6 +377,45 @@ class MinimapMonitor:
         return MinimapMonitor._compact_marker_points(mask)
 
     @staticmethod
+    def count_player_marker_candidates_in_image(minimap: np.ndarray) -> int:
+        """统计有效黄点候选，阈值与玩家定位保持一致。"""
+        if minimap is None or minimap.ndim != 3 or minimap.size == 0:
+            return 0
+        strict_mask = cv2.inRange(
+            minimap,
+            np.array([0, 240, 240], dtype=np.uint8),
+            np.array([30, 255, 255], dtype=np.uint8),
+        )
+        hsv = cv2.cvtColor(minimap, cv2.COLOR_BGR2HSV)
+        hsv_mask = cv2.inRange(
+            hsv,
+            np.array([18, 135, 165], dtype=np.uint8),
+            np.array([38, 255, 255], dtype=np.uint8),
+        )
+        blue, green, red = cv2.split(minimap)
+        channel_mask = (
+            (red >= 170) & (green >= 165) & (blue <= 115)
+            & ((red.astype(np.int16) - blue.astype(np.int16)) >= 75)
+            & ((green.astype(np.int16) - blue.astype(np.int16)) >= 70)
+            & (np.abs(red.astype(np.int16) - green.astype(np.int16)) <= 75)
+        ).astype(np.uint8) * 255
+        tolerant_mask = cv2.bitwise_or(hsv_mask, channel_mask)
+        for source, mask in (("strict", strict_mask), ("tolerant", tolerant_mask)):
+            count, _, stats, _ = cv2.connectedComponentsWithStats(mask, 8)
+            candidates = 0
+            for index in range(1, count):
+                _, _, width, height, area = stats[index]
+                if area < 6 or area > 180 or width < 2 or height < 2 or width > 18 or height > 18:
+                    continue
+                aspect = width / height
+                fill = area / (width * height)
+                if 0.5 <= aspect <= 2.0 and fill >= (0.30 if source == "strict" else 0.35):
+                    candidates += 1
+            if candidates:
+                return 0 if source == "tolerant" and candidates > 5 else candidates
+        return 0
+
+    @staticmethod
     def find_other_player_positions_in_image(minimap: np.ndarray) -> list:
         """识别一个或多个其他玩家红点，过滤细线和大块红色 UI。"""
         if minimap is None or minimap.ndim != 3 or minimap.size == 0:

@@ -134,13 +134,13 @@ class HumanInput:
         self._sleep(duration)
         self.keyboard.release(Key.up)
 
-    def tap_direction(self, direction: str):
+    def tap_direction(self, direction: str, duration_range: Optional[Tuple[int, int]] = None):
         """轻点方向键微调"""
         # 确保无其他方向键按下
         self.stop_move()
         self._sleep(0.05)
         
-        duration = self._random_duration(self.direction_tap_duration)
+        duration = self._random_duration(duration_range or self.direction_tap_duration)
         key = self._get_key_object(direction)
         self.keyboard.press(key)
         self._sleep(duration)

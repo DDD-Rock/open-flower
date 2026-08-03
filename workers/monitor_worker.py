@@ -9,6 +9,10 @@ from PyQt6.QtCore import QThread, pyqtSignal
 
 from detection.exp_recognizer import EXPRapidOCRRecognizer, EXPRecognitionStabilizer
 from detection.minimap_monitor import MinimapMonitor
+from detection.mouse_follow_verification_detector import (
+    MouseFollowVerificationDetector,
+    MouseFollowVerificationStabilizer,
+)
 from detection.rune_alert_detector import RuneAlertDetector, RuneAlertStabilizer
 from models.map_topology import MinimapVisualMatcher
 
@@ -17,6 +21,7 @@ class MonitorWorker(QThread):
     frame_ready = pyqtSignal(object)
     status_update = pyqtSignal(str)
     rune_update = pyqtSignal(bool, object)
+    verification_update = pyqtSignal(bool, object)
     exp_update = pyqtSignal(object, str)
     error_signal = pyqtSignal(str)
     stopped = pyqtSignal()
@@ -24,6 +29,7 @@ class MonitorWorker(QThread):
     TARGET_INTERVAL = 1 / 30
     MAP_MATCH_INTERVAL_FRAMES = 6
     RUNE_INTERVAL_FRAMES = 30
+    VERIFICATION_INTERVAL_FRAMES = 15
     EXP_INTERVAL_FRAMES = 15
     WINDOW_CHECK_INTERVAL_FRAMES = 30
     MAP_MISS_LIMIT = 5
@@ -48,6 +54,7 @@ class MonitorWorker(QThread):
     def run(self):
         self._running = True
         rune_state = RuneAlertStabilizer()
+        verification_state = MouseFollowVerificationStabilizer()
         exp_recognizer = EXPRapidOCRRecognizer()
         exp_state = EXPRecognitionStabilizer()
         exp_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="exp-ocr")
@@ -110,6 +117,7 @@ class MonitorWorker(QThread):
                 if (
                     frame_index % self.RUNE_INTERVAL_FRAMES == 0
                     or frame_index % self.EXP_INTERVAL_FRAMES == 0
+                    or frame_index % self.VERIFICATION_INTERVAL_FRAMES == 0
                 ):
                     full_image = self.monitor.capture_game_screen()
                 else:
@@ -143,6 +151,18 @@ class MonitorWorker(QThread):
                     changed = rune_state.update(detection)
                     if changed or rune_state.is_present:
                         self.rune_update.emit(rune_state.is_present, rune_state.latest_detection)
+                if frame_index % self.VERIFICATION_INTERVAL_FRAMES == 0:
+                    detection = (
+                        MouseFollowVerificationDetector.detect(full_image)
+                        if full_image is not None
+                        else None
+                    )
+                    changed = verification_state.update(detection)
+                    if changed or verification_state.is_present:
+                        self.verification_update.emit(
+                            verification_state.is_present,
+                            verification_state.latest_detection,
+                        )
 
                 frame_index += 1
                 remaining = self.TARGET_INTERVAL - (time.monotonic() - started)

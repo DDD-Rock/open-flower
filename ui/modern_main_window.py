@@ -76,6 +76,7 @@ class MainWindow(LegacyMainWindow):
         self.monitor_matched_topology = None
         self.monitor_safe_zone = None
         self.monitor_zone_stabilizer = SafeZoneStabilizer()
+        self._monitor_verification_present = False
         super().__init__()
 
     def init_ui(self):
@@ -1647,6 +1648,7 @@ class MainWindow(LegacyMainWindow):
         worker.frame_ready.connect(self._on_monitor_frame)
         worker.status_update.connect(self._on_monitor_status)
         worker.rune_update.connect(self._on_monitor_rune)
+        worker.verification_update.connect(self._on_monitor_verification)
         worker.exp_update.connect(self._on_monitor_exp)
         worker.error_signal.connect(self._on_monitor_error)
         worker.stopped.connect(lambda current=worker: self._on_monitor_stopped(current))
@@ -1719,6 +1721,20 @@ class MainWindow(LegacyMainWindow):
             confidence = detection.confidence if detection is not None else None
             self.remote_monitor_client.publish_rune(present, confidence)
 
+    def _on_monitor_verification(self, present, detection):
+        self.monitor_panel.set_verification(present, detection)
+        if present != self._monitor_verification_present:
+            self.logger.log(
+                "检测到鼠标跟随验证，请立即人工处理"
+                if present
+                else "鼠标跟随验证已解除"
+            )
+            self.update_log_display()
+        self._monitor_verification_present = present
+        if self.remote_monitor_client:
+            confidence = detection.confidence if detection is not None else None
+            self.remote_monitor_client.publish_verification(present, confidence)
+
     def _on_monitor_exp(self, reading, status):
         self.monitor_panel.set_exp(reading, status)
         if self.remote_monitor_client:
@@ -1742,7 +1758,10 @@ class MainWindow(LegacyMainWindow):
         self.monitor_panel.manage_maps_button.setEnabled(True)
         self.monitor_panel.action_test_button.setEnabled(True)
         self.monitor_panel.route_test_button.setEnabled(True)
+        self.monitor_panel.set_verification(False)
+        self._monitor_verification_present = False
         if self.remote_monitor_client:
+            self.remote_monitor_client.publish_verification(False)
             self.remote_monitor_client.publish_client_state("monitor", False)
         self._sync_party_invite_worker()
         self._refresh_primary_action()

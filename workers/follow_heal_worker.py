@@ -13,7 +13,7 @@ from detection.minimap_monitor import MinimapMonitor
 from models.buff_config import BuffConfig
 from utils.countdown import format_release_time, next_release_time, remaining_seconds
 from utils.follow_heal_navigation import (
-    is_outside_anchor_band,
+    TeleportExcursionGuard,
     next_center_adjust_interval,
     teleport_direction_to_base,
 )
@@ -32,6 +32,7 @@ class FollowHealWorker(QThread):
     HEAL_GAP_RANGE = (0.18, 0.45)
     BUFF_RECOVERY_GAP_RANGE = (0.18, 0.42)
     MARKER_SETTLE_RANGE = (0.50, 0.80)
+    POSITION_POLL_RANGE = (0.035, 0.065)
 
     SPECIAL_KEY_MAP = {
         "shift": Key.shift, "ctrl": Key.ctrl, "control": Key.ctrl,
@@ -116,7 +117,7 @@ class FollowHealWorker(QThread):
                 self.log_update.emit("未保存小地图区域，将在补血后再识别，避免开局空等")
 
             next_adjust_at = time.time() + next_center_adjust_interval()
-            handled_current_excursion = False
+            excursion_guard = TeleportExcursionGuard()
             self.buff_next_cast.clear()
 
             while self.is_running:
@@ -138,9 +139,9 @@ class FollowHealWorker(QThread):
                     self._random_sleep(*self.BUFF_RECOVERY_GAP_RANGE)
                     continue
 
-                next_adjust_at, handled_current_excursion = self._continuous_heal_cycle(
+                next_adjust_at = self._continuous_heal_cycle(
                     next_adjust_at,
-                    handled_current_excursion,
+                    excursion_guard,
                 )
 
                 if self.monitor.get_minimap_size() is None and self.is_running:
@@ -162,10 +163,10 @@ class FollowHealWorker(QThread):
     def _continuous_heal_cycle(
         self,
         next_adjust_at: float,
-        handled_current_excursion: bool,
-    ) -> Tuple[float, bool]:
+        excursion_guard: TeleportExcursionGuard,
+    ) -> float:
         if not self._ensure_game_focus("持续释放加血技能"):
-            return next_adjust_at, handled_current_excursion
+            return next_adjust_at
 
         heal_key = self._resolve_key(self.heal_key)
         try:
@@ -173,7 +174,7 @@ class FollowHealWorker(QThread):
             self._held_heal_key = heal_key
         except Exception as exc:
             self.error_signal.emit(f"加血键错误: {exc}")
-            return next_adjust_at, handled_current_excursion
+            return next_adjust_at
 
         end_at = time.time() + random.uniform(*self.HEAL_HOLD_RANGE)
         missing_player_count = 0
@@ -181,38 +182,35 @@ class FollowHealWorker(QThread):
             if self._get_buffs_to_cast(include_upcoming=False):
                 self._release_held_heal_key()
                 self._cast_if_buff_due()
-                return next_adjust_at, handled_current_excursion
+                return next_adjust_at
             if (
                 not self.window_selector.is_window_valid(self.hwnd)
                 or not self.window_selector.is_window_foreground(self.hwnd)
             ):
                 self._release_held_heal_key()
-                return next_adjust_at, handled_current_excursion
+                return next_adjust_at
 
             if self.monitor.get_minimap_size() is not None:
                 player = self.monitor.find_player_position()
                 if player:
                     missing_player_count = 0
                     player_x = float(player[0])
-                    outside = is_outside_anchor_band(
+                    is_new_excursion = excursion_guard.should_correct(
                         player_x,
                         self.base_x,
                         self.boundary_tolerance,
                     )
-                    if not outside:
-                        handled_current_excursion = False
-                    is_new_excursion = outside and not handled_current_excursion
                     is_scheduled = time.time() >= next_adjust_at
                     if is_new_excursion or is_scheduled:
                         direction = teleport_direction_to_base(player_x, self.base_x)
                         if direction:
-                            self._teleport_toward_base(
+                            teleported = self._teleport_toward_base(
                                 direction,
                                 player_x,
                                 urgent=is_new_excursion,
                             )
-                        # 一次事件只瞬移一次；跨过基准点也不能立即反向瞬移。
-                        handled_current_excursion = True
+                            if teleported:
+                                excursion_guard.record_teleport(direction)
                         next_adjust_at = time.time() + next_center_adjust_interval()
                 else:
                     missing_player_count += 1
@@ -220,12 +218,12 @@ class FollowHealWorker(QThread):
                         self.log_update.emit(
                             f"⚠️ 暂时丢失玩家黄点 {missing_player_count} 次"
                         )
-            self._random_sleep(0.10, 0.16)
+            self._random_sleep(*self.POSITION_POLL_RANGE)
 
         self._release_held_heal_key()
         if self.is_running:
             self._random_sleep(*self.HEAL_GAP_RANGE)
-        return next_adjust_at, handled_current_excursion
+        return next_adjust_at
 
     def _teleport_toward_base(self, direction: str, player_x: float, urgent: bool):
         direction_text = "左" if direction == "left" else "右"
@@ -240,8 +238,10 @@ class FollowHealWorker(QThread):
             )
             # 等黄点稳定；新位置不会触发立即反向瞬移。
             self._random_sleep(*self.MARKER_SETTLE_RANGE)
+            return True
         except Exception as exc:
             self.error_signal.emit(f"瞬移键错误: {exc}")
+            return False
 
     def _resolve_key(self, key_str: str):
         normalized_key = normalize_key_name(key_str)

@@ -12,6 +12,7 @@ SPEC.loader.exec_module(NAVIGATION_MODULE)
 is_outside_anchor_band = NAVIGATION_MODULE.is_outside_anchor_band
 next_center_adjust_interval = NAVIGATION_MODULE.next_center_adjust_interval
 teleport_direction_to_base = NAVIGATION_MODULE.teleport_direction_to_base
+TeleportExcursionGuard = NAVIGATION_MODULE.TeleportExcursionGuard
 
 
 class FollowHealNavigationTests(unittest.TestCase):
@@ -31,6 +32,39 @@ class FollowHealNavigationTests(unittest.TestCase):
             interval = next_center_adjust_interval()
             self.assertGreaterEqual(interval, 10)
             self.assertLessEqual(interval, 13)
+
+    def test_new_excursion_is_corrected_immediately(self):
+        guard = TeleportExcursionGuard()
+
+        self.assertTrue(guard.should_correct(108, 100, 6))
+
+    def test_crossing_anchor_does_not_immediately_reverse(self):
+        guard = TeleportExcursionGuard()
+        guard.record_teleport("right")
+
+        self.assertFalse(guard.should_correct(108, 100, 6))
+        self.assertFalse(guard.should_correct(108.5, 100, 6))
+
+    def test_new_collision_breaks_reverse_guard_immediately(self):
+        guard = TeleportExcursionGuard()
+        guard.record_teleport("right")
+        self.assertFalse(guard.should_correct(108, 100, 6))
+
+        self.assertTrue(guard.should_correct(109.1, 100, 6))
+
+    def test_same_direction_can_retry_after_marker_settles(self):
+        guard = TeleportExcursionGuard()
+        guard.record_teleport("right")
+
+        self.assertTrue(guard.should_correct(92, 100, 6))
+
+    def test_returning_inside_resets_reverse_guard(self):
+        guard = TeleportExcursionGuard()
+        guard.record_teleport("right")
+        self.assertFalse(guard.should_correct(108, 100, 6))
+        self.assertFalse(guard.should_correct(104, 100, 6))
+
+        self.assertTrue(guard.should_correct(108, 100, 6))
 
 
 if __name__ == "__main__":

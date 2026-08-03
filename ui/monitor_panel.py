@@ -201,6 +201,10 @@ class MonitorPanel(QFrame):
         self.rune_label.setStyleSheet("color:#747D8D;")
         layout.addWidget(self.rune_label)
 
+        self.verification_label = QLabel("鼠标跟随验证：未检测")
+        self.verification_label.setStyleSheet("color:#747D8D;")
+        layout.addWidget(self.verification_label)
+
         self.exp_label = QLabel("EXP：尚未识别")
         self.exp_label.setStyleSheet("color:#747D8D;")
         layout.addWidget(self.exp_label)
@@ -239,6 +243,14 @@ class MonitorPanel(QFrame):
             "color:#E9404A;font-weight:700;" if present else "color:#747D8D;"
         )
 
+    def set_verification(self, present, detection=None):
+        self.verification_label.setText(
+            "鼠标跟随验证：请立即人工处理" if present else "鼠标跟随验证：未检测"
+        )
+        self.verification_label.setStyleSheet(
+            "color:#E9404A;font-weight:700;" if present else "color:#747D8D;"
+        )
+
     def set_exp(self, reading, status):
         self.exp_label.setText(f"EXP：{status}")
 
@@ -246,5 +258,6 @@ class MonitorPanel(QFrame):
         self.status_label.setText("尚未开始监控")
         self.metrics_label.setText("X -- · Y -- · 队友 0 · 其他玩家 0 · 0 FPS")
         self.set_rune(False)
+        self.set_verification(False)
         self.set_exp(None, "尚未识别")
         self.canvas.clear_frame()

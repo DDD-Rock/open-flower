@@ -21,7 +21,7 @@ class RemoteMonitorClient:
     MAX_MESSAGE_BYTES = 16 * 1024
     FRAME_INTERVAL_SECONDS = 0.05
     STATE_HEARTBEAT_SECONDS = 3.0
-    SEND_PRIORITY = ("rune", "zone", "frame", "exp")
+    SEND_PRIORITY = ("verification", "rune", "zone", "frame", "exp")
 
     def __init__(
         self,
@@ -48,8 +48,8 @@ class RemoteMonitorClient:
         self._last_frame_at = 0.0
         self._last_map_id = None
         self._last_state = {"mode": "dead", "running": False}
-        self._last_boolean_state = {"rune": None, "zone": None}
-        self._last_boolean_sent_at = {"rune": 0.0, "zone": 0.0}
+        self._last_boolean_state = {"verification": None, "rune": None, "zone": None}
+        self._last_boolean_sent_at = {"verification": 0.0, "rune": 0.0, "zone": 0.0}
 
     @property
     def is_connected(self):
@@ -175,6 +175,18 @@ class RemoteMonitorClient:
             },
         )
 
+    def publish_verification(self, detected: bool, confidence: Optional[float] = None):
+        if not self._should_publish_boolean("verification", detected):
+            return
+        self._enqueue(
+            "verification",
+            {
+                "detected": bool(detected),
+                "confidence": float(confidence) if detected and confidence is not None else None,
+                "detectedAt": int(time.time() * 1000),
+            },
+        )
+
     def publish_zone(self, outside: bool, zone=None):
         if not self._should_publish_boolean("zone", outside):
             return
@@ -280,7 +292,7 @@ class RemoteMonitorClient:
             self._notify(f"{message_type} 消息超过 16KB，已停止发送该条数据")
             return False
         with self._condition:
-            if message_type in {"frame", "exp", "rune", "zone"}:
+            if message_type in {"frame", "exp", "verification", "rune", "zone"}:
                 self._latest_messages[message_type] = encoded
             else:
                 self._control_messages.append(encoded)
@@ -327,7 +339,12 @@ class RemoteMonitorClient:
         with self._condition:
             self._control_messages.clear()
             self._latest_messages.clear()
-            self._last_boolean_state = {"rune": None, "zone": None}
+            self._last_boolean_state = {"verification": None, "rune": None, "zone": None}
+            self._last_boolean_sent_at = {
+                "verification": 0.0,
+                "rune": 0.0,
+                "zone": 0.0,
+            }
             self._condition.notify_all()
 
     @staticmethod

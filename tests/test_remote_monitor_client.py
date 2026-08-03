@@ -68,8 +68,25 @@ class RemoteMonitorClientTests(unittest.TestCase):
         self.assertEqual(RemoteMonitorClient.FRAME_INTERVAL_SECONDS, 0.05)
         self.assertEqual(
             RemoteMonitorClient.SEND_PRIORITY,
-            ("rune", "zone", "frame", "exp"),
+            ("verification", "rune", "zone", "frame", "exp"),
         )
+
+    def test_mouse_follow_verification_payload_matches_server_contract(self):
+        with tempfile.TemporaryDirectory() as directory:
+            client = RemoteMonitorClient(self._manager(directory))
+            client._enabled = True
+
+            client.publish_verification(True, 0.91)
+            envelope = json.loads(client._latest_messages["verification"])
+            self.assertEqual(envelope["type"], "verification")
+            self.assertTrue(envelope["payload"]["detected"])
+            self.assertEqual(envelope["payload"]["confidence"], 0.91)
+            self.assertGreater(envelope["payload"]["detectedAt"], 0)
+
+            client.publish_verification(False, 0.91)
+            cleared = json.loads(client._latest_messages["verification"])["payload"]
+            self.assertFalse(cleared["detected"])
+            self.assertIsNone(cleared["confidence"])
 
     def test_map_payload_matches_server_contract(self):
         with tempfile.TemporaryDirectory() as directory:

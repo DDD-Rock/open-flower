@@ -30,8 +30,8 @@ class FollowHealNavigationTests(unittest.TestCase):
     def test_center_adjust_interval_is_frequent(self):
         for _ in range(20):
             interval = next_center_adjust_interval()
-            self.assertGreaterEqual(interval, 10)
-            self.assertLessEqual(interval, 13)
+            self.assertGreaterEqual(interval, 7)
+            self.assertLessEqual(interval, 10)
 
     def test_new_excursion_is_corrected_immediately(self):
         guard = TeleportExcursionGuard()

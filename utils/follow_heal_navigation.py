@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 
-CENTER_ADJUST_INTERVAL_RANGE = (7.0, 10.0)
+CENTER_ADJUST_INTERVAL_RANGE = (4.0, 7.0)
 NEW_COLLISION_DISTANCE = 1.0
 
 

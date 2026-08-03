@@ -146,6 +146,42 @@ class HumanInput:
         self._sleep(duration)
         self.keyboard.release(key)
 
+    def perform_directional_skill(
+        self,
+        direction: str,
+        skill_key,
+        direction_lead_range: Tuple[float, float] = (0.035, 0.075),
+        skill_hold_range: Tuple[float, float] = (0.050, 0.110),
+        direction_release_range: Tuple[float, float] = (0.025, 0.065),
+    ):
+        """按方向、点技能、松技能、松方向；不影响已按住的其它技能键。"""
+        direction_key = self._get_key_object(direction)
+        if direction_key is None:
+            raise ValueError(f"不支持的方向: {direction}")
+        skill_pressed = False
+        with self._lock:
+            self.keyboard.press(direction_key)
+            self.current_direction = direction
+            try:
+                self._sleep(random.uniform(*direction_lead_range))
+                self.keyboard.press(skill_key)
+                skill_pressed = True
+                self._sleep(random.uniform(*skill_hold_range))
+                self.keyboard.release(skill_key)
+                skill_pressed = False
+                self._sleep(random.uniform(*direction_release_range))
+            finally:
+                if skill_pressed:
+                    try:
+                        self.keyboard.release(skill_key)
+                    except Exception:
+                        pass
+                try:
+                    self.keyboard.release(direction_key)
+                finally:
+                    if self.current_direction == direction:
+                        self.current_direction = None
+
     def press_enter(self):
         """拟人化按下并释放回车。"""
         with self._lock:

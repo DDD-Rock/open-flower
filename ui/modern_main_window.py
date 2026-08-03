@@ -84,9 +84,10 @@ class MainWindow(LegacyMainWindow):
         self.mode = "dead"
         self.pre_skill_move_mode = "right_only"
         self.follow_heal_key = ""
+        self.follow_heal_teleport_key = ""
         self.follow_heal_anchor_pos = None
         self.follow_heal_minimap_region = None
-        self.follow_heal_adjust_hold_ms = (200, 300)
+        self.follow_heal_boundary_tolerance = 6.0
         self.temple_function = "rope_party"
         self.lounge_move_min_minutes = 15
         self.lounge_move_max_minutes = 30
@@ -743,6 +744,11 @@ class MainWindow(LegacyMainWindow):
         self.heal_key_btn.clicked.connect(self.on_select_heal_key)
         row.addWidget(self._option_column("加血技能键", self.heal_key_btn), 1)
 
+        self.teleport_key_btn = QPushButton("选键")
+        self.teleport_key_btn.setFixedWidth(54)
+        self.teleport_key_btn.clicked.connect(self.on_select_teleport_key)
+        row.addWidget(self._option_column("瞬移技能键", self.teleport_key_btn), 1)
+
         anchor_row = QWidget()
         anchor_layout = QHBoxLayout(anchor_row)
         anchor_layout.setContentsMargins(0, 0, 0, 0)
@@ -754,26 +760,6 @@ class MainWindow(LegacyMainWindow):
         anchor_layout.addWidget(self.follow_anchor_btn)
         anchor_layout.addWidget(self.follow_anchor_label, 1)
         row.addWidget(self._option_column("跟补基准点", anchor_row), 2)
-
-        adjust_row = QWidget()
-        adjust_layout = QHBoxLayout(adjust_row)
-        adjust_layout.setContentsMargins(0, 0, 0, 0)
-        adjust_layout.setSpacing(4)
-        self.follow_adjust_min_input = QLineEdit("200")
-        self.follow_adjust_min_input.setValidator(QIntValidator(50, 1000, self))
-        self.follow_adjust_min_input.setAlignment(Qt.AlignmentFlag.AlignRight)
-        self.follow_adjust_min_input.setFixedWidth(42)
-        self.follow_adjust_min_input.textChanged.connect(self._schedule_save)
-        self.follow_adjust_max_input = QLineEdit("300")
-        self.follow_adjust_max_input.setValidator(QIntValidator(50, 1000, self))
-        self.follow_adjust_max_input.setAlignment(Qt.AlignmentFlag.AlignRight)
-        self.follow_adjust_max_input.setFixedWidth(42)
-        self.follow_adjust_max_input.textChanged.connect(self._schedule_save)
-        adjust_layout.addWidget(self.follow_adjust_min_input)
-        adjust_layout.addWidget(QLabel("-"))
-        adjust_layout.addWidget(self.follow_adjust_max_input)
-        adjust_layout.addWidget(QLabel("ms"))
-        row.addWidget(self._option_column("修正按住", adjust_row), 1)
 
         return panel
 
@@ -928,24 +914,6 @@ class MainWindow(LegacyMainWindow):
             text = self.buff_duration_inputs[index].text().strip()
             buff.duration = float(text) if text else 0.0
 
-    def _read_follow_adjust_hold_ms(self):
-        try:
-            min_ms = int(self.follow_adjust_min_input.text() or "200")
-        except ValueError:
-            min_ms = 200
-        try:
-            max_ms = int(self.follow_adjust_max_input.text() or "300")
-        except ValueError:
-            max_ms = 300
-        min_ms = max(50, min(1000, min_ms))
-        max_ms = max(50, min(1000, max_ms))
-        return (min_ms, max_ms)
-
-    def _update_follow_adjust_inputs(self):
-        min_ms, max_ms = self.follow_heal_adjust_hold_ms
-        self.follow_adjust_min_input.setText(str(min_ms))
-        self.follow_adjust_max_input.setText(str(max_ms))
-
     def create_log_section(self, parent_layout):
         card = QFrame()
         card.setObjectName("card")
@@ -1071,11 +1039,11 @@ class MainWindow(LegacyMainWindow):
         self.return_to_market = self.mode == "dead"
         self.selected_jump_key = settings.get("jump_key", "Alt")
         self.follow_heal_key = settings.get("heal_skill_key", "")
+        self.follow_heal_teleport_key = settings.get("teleport_skill_key", "")
         self.follow_heal_anchor_pos = settings.get("follow_heal_anchor_pos")
         self.follow_heal_minimap_region = settings.get("follow_heal_minimap_region")
-        self.follow_heal_adjust_hold_ms = settings.get(
-            "follow_heal_adjust_hold_ms",
-            (200, 300),
+        self.follow_heal_boundary_tolerance = settings.get(
+            "follow_heal_boundary_tolerance", 6.0
         )
         self.sit_chair_enabled = settings.get("sit_chair_enabled", False)
         self.selected_chair_key = settings.get("chair_key", "=")
@@ -1119,8 +1087,8 @@ class MainWindow(LegacyMainWindow):
 
         self.jump_key_btn.setText(self.selected_jump_key)
         self.heal_key_btn.setText(self.follow_heal_key or "选键")
+        self.teleport_key_btn.setText(self.follow_heal_teleport_key or "选键")
         self._update_follow_heal_anchor_label()
-        self._update_follow_adjust_inputs()
         self._sync_chair_controls()
         self.random_behavior_checkbox.setChecked(
             self.game_config.random_behavior_enabled
@@ -1160,9 +1128,10 @@ class MainWindow(LegacyMainWindow):
         self.pre_skill_move_mode = "right_only"
         self.selected_jump_key = "Alt"
         self.follow_heal_key = ""
+        self.follow_heal_teleport_key = ""
         self.follow_heal_anchor_pos = None
         self.follow_heal_minimap_region = None
-        self.follow_heal_adjust_hold_ms = (200, 300)
+        self.follow_heal_boundary_tolerance = 6.0
         self.sit_chair_enabled = False
         self.selected_chair_key = "="
         self.manual_portal_pos = None
@@ -1186,8 +1155,8 @@ class MainWindow(LegacyMainWindow):
         self._rebuild_buff_rows()
         self.jump_key_btn.setText("Alt")
         self.heal_key_btn.setText("选键")
+        self.teleport_key_btn.setText("选键")
         self._update_follow_heal_anchor_label()
-        self._update_follow_adjust_inputs()
         self._sync_chair_controls()
         self.random_behavior_checkbox.setChecked(True)
         self.random_behavior_input.setText("20")
@@ -1210,16 +1179,16 @@ class MainWindow(LegacyMainWindow):
             random_value = int(self.random_behavior_input.text() or "20")
         except ValueError:
             random_value = 20
-        self.follow_heal_adjust_hold_ms = self._read_follow_adjust_hold_ms()
         self.settings_manager.save_settings(
             buffs=self.buffs,
             mode=self.mode,
             return_to_market=self.return_to_market,
             jump_key=self.selected_jump_key,
             heal_skill_key=self.follow_heal_key,
+            teleport_skill_key=self.follow_heal_teleport_key,
             follow_heal_anchor_pos=self.follow_heal_anchor_pos,
             follow_heal_minimap_region=self.follow_heal_minimap_region,
-            follow_heal_adjust_hold_ms=self.follow_heal_adjust_hold_ms,
+            follow_heal_boundary_tolerance=self.follow_heal_boundary_tolerance,
             sit_chair_enabled=self.sit_chair_enabled,
             chair_key=self.selected_chair_key,
             random_behavior_enabled=self.random_behavior_checkbox.isChecked(),
@@ -1338,13 +1307,24 @@ class MainWindow(LegacyMainWindow):
             self.heal_key_btn.setText(self.follow_heal_key or "选键")
             self._schedule_save()
 
+    def on_select_teleport_key(self):
+        previous = self.follow_heal_teleport_key
+        super().on_select_teleport_key()
+        if self.follow_heal_teleport_key != previous:
+            self.teleport_key_btn.setText(
+                self.follow_heal_teleport_key or "选键"
+            )
+            self._schedule_save()
+
     def on_mark_follow_anchor(self):
         previous_anchor = self.follow_heal_anchor_pos
         previous_region = self.follow_heal_minimap_region
+        previous_tolerance = self.follow_heal_boundary_tolerance
         super().on_mark_follow_anchor()
         if (
             self.follow_heal_anchor_pos != previous_anchor
             or self.follow_heal_minimap_region != previous_region
+            or self.follow_heal_boundary_tolerance != previous_tolerance
         ):
             self._update_follow_heal_anchor_label()
             self._schedule_save()
@@ -1354,7 +1334,8 @@ class MainWindow(LegacyMainWindow):
             return
         if self.follow_heal_anchor_pos:
             x, _ = self.follow_heal_anchor_pos
-            self.follow_anchor_label.setText(f"X={x} · ±7")
+            tolerance = f"{self.follow_heal_boundary_tolerance:g}"
+            self.follow_anchor_label.setText(f"X={x} · ±{tolerance}")
         else:
             self.follow_anchor_label.setText("未标记")
 
@@ -1423,10 +1404,9 @@ class MainWindow(LegacyMainWindow):
             self._start_temple_worker()
             return
         self._sync_buff_values_from_inputs()
-        self.follow_heal_adjust_hold_ms = self._read_follow_adjust_hold_ms()
         errors = []
         enabled = [buff for buff in self.buffs if buff.enabled]
-        if not enabled:
+        if not enabled and self.mode != "follow_heal":
             errors.append("请至少启用一个 BUFF")
         for index, buff in enumerate(self.buffs):
             if not buff.enabled:
@@ -1443,8 +1423,20 @@ class MainWindow(LegacyMainWindow):
                 errors.append("请设置加血技能键")
             elif self.follow_heal_key.lower() in keys:
                 errors.append("加血技能键不能和 BUFF 按键重复")
+            if not self.follow_heal_teleport_key:
+                errors.append("请设置瞬移技能键")
+            elif self.follow_heal_teleport_key.lower() in keys:
+                errors.append("瞬移技能键不能和 BUFF 按键重复")
+            elif (
+                self.follow_heal_key
+                and self.follow_heal_teleport_key.lower()
+                == self.follow_heal_key.lower()
+            ):
+                errors.append("瞬移技能键不能和加血技能键重复")
             if not self.follow_heal_anchor_pos:
                 errors.append("请先标记跟补基准点")
+            if not 1.0 <= self.follow_heal_boundary_tolerance <= 50.0:
+                errors.append("跟补左右界限值必须在 1 到 50 之间")
         if errors:
             QMessageBox.warning(self, "配置有误", "\n".join(errors))
             return
@@ -1629,6 +1621,7 @@ class MainWindow(LegacyMainWindow):
         self.pre_skill_combo.setEnabled(enabled)
         self.jump_key_btn.setEnabled(enabled)
         self.heal_key_btn.setEnabled(enabled)
+        self.teleport_key_btn.setEnabled(enabled)
         self.follow_anchor_btn.setEnabled(enabled)
 
     def _start_monitor_worker(self):

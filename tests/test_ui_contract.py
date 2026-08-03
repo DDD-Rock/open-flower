@@ -20,8 +20,8 @@ class ModernUIContractTests(unittest.TestCase):
             "只向右（骨龙）",
             "跟补模式",
             "加血技能键",
+            "瞬移技能键",
             "跟补基准点",
-            "修正按住",
             "空闲时坐椅子",
             "自动同意组队",
             "休息室",
@@ -31,6 +31,7 @@ class ModernUIContractTests(unittest.TestCase):
             "开始运行",
         ):
             self.assertIn(text, source)
+        self.assertNotIn("修正按住", source)
 
     def test_entrypoint_uses_modern_window(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")

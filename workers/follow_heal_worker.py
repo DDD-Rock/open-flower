@@ -1,15 +1,10 @@
-"""跟补模式 Worker。
-
-运行时持续释放加血技能；Buff 到期时优先释放 Buff，随后继续补血。
-小地图只使用手动标记点的 X 坐标作为基准，角色横向离开区域时持续按
-方向键回到 baseX +/- 6 内。
-"""
+"""Windows 跟补模式：持续加血，并在加血不中断时用瞬移修正横向位置。"""
 
 import random
 import time
-import win32gui
 from typing import Dict, List, Optional, Tuple
 
+import win32gui
 from PyQt6.QtCore import QThread, pyqtSignal
 from pynput.keyboard import Key
 
@@ -18,13 +13,9 @@ from detection.minimap_monitor import MinimapMonitor
 from models.buff_config import BuffConfig
 from utils.countdown import format_release_time, next_release_time, remaining_seconds
 from utils.follow_heal_navigation import (
-    MOVEMENT_OBSERVED_TOLERANCE,
-    DEFAULT_CENTER_ADJUST_HOLD_MS,
-    direction_for_center_adjustment,
-    direction_to_base,
     is_outside_anchor_band,
     next_center_adjust_interval,
-    normalize_center_adjust_hold_ms,
+    teleport_direction_to_base,
 )
 from utils.key_names import normalize_key_name
 from utils.window_selector import WindowSelector
@@ -37,37 +28,21 @@ class FollowHealWorker(QThread):
     countdown_update = pyqtSignal(dict)
 
     BATCH_CAST_WINDOW = 10.0
-    RETURN_TIMEOUT = 5.0
+    HEAL_HOLD_RANGE = (10.0, 15.0)
+    HEAL_GAP_RANGE = (0.18, 0.45)
+    BUFF_RECOVERY_GAP_RANGE = (0.18, 0.42)
+    MARKER_SETTLE_RANGE = (0.50, 0.80)
 
     SPECIAL_KEY_MAP = {
-        "shift": Key.shift,
-        "ctrl": Key.ctrl,
-        "control": Key.ctrl,
-        "alt": Key.alt,
-        "tab": Key.tab,
-        "space": Key.space,
-        "enter": Key.enter,
-        "backspace": Key.backspace,
-        "delete": Key.delete,
-        "insert": Key.insert,
-        "home": Key.home,
-        "end": Key.end,
-        "page_up": Key.page_up,
-        "pageup": Key.page_up,
-        "page_down": Key.page_down,
-        "pagedown": Key.page_down,
-        "f1": Key.f1,
-        "f2": Key.f2,
-        "f3": Key.f3,
-        "f4": Key.f4,
-        "f5": Key.f5,
-        "f6": Key.f6,
-        "f7": Key.f7,
-        "f8": Key.f8,
-        "f9": Key.f9,
-        "f10": Key.f10,
-        "f11": Key.f11,
-        "f12": Key.f12,
+        "shift": Key.shift, "ctrl": Key.ctrl, "control": Key.ctrl,
+        "alt": Key.alt, "tab": Key.tab, "space": Key.space,
+        "enter": Key.enter, "backspace": Key.backspace,
+        "delete": Key.delete, "insert": Key.insert, "home": Key.home,
+        "end": Key.end, "page_up": Key.page_up, "pageup": Key.page_up,
+        "page_down": Key.page_down, "pagedown": Key.page_down,
+        "f1": Key.f1, "f2": Key.f2, "f3": Key.f3, "f4": Key.f4,
+        "f5": Key.f5, "f6": Key.f6, "f7": Key.f7, "f8": Key.f8,
+        "f9": Key.f9, "f10": Key.f10, "f11": Key.f11, "f12": Key.f12,
     }
 
     def __init__(
@@ -75,22 +50,23 @@ class FollowHealWorker(QThread):
         hwnd: int,
         buffs: List[BuffConfig],
         heal_key: str,
+        teleport_key: str,
         anchor_pos: Tuple[int, int],
         minimap_region: Optional[Tuple[int, int, int, int]] = None,
-        adjust_hold_ms: Tuple[int, int] = DEFAULT_CENTER_ADJUST_HOLD_MS,
+        boundary_tolerance: float = 6.0,
     ):
         super().__init__()
         self.hwnd = hwnd
         self.buffs = [
-            buff
-            for buff in buffs
+            buff for buff in buffs
             if buff.enabled and buff.key and buff.duration > 0
         ]
         self.heal_key = heal_key
+        self.teleport_key = teleport_key
         self.anchor_pos = anchor_pos
         self.base_x = float(anchor_pos[0])
         self.minimap_region = minimap_region
-        self.adjust_hold_ms = normalize_center_adjust_hold_ms(*adjust_hold_ms)
+        self.boundary_tolerance = max(1.0, min(50.0, float(boundary_tolerance)))
 
         self.is_running = True
         self.human = HumanInput()
@@ -108,21 +84,28 @@ class FollowHealWorker(QThread):
     def run(self):
         try:
             self.log_update.emit("跟补模式启动...")
-            if not self.buffs:
-                self.error_signal.emit("没有可运行的 BUFF 配置")
-                return
             if not self.heal_key:
                 self.error_signal.emit("请先设置加血技能键")
+                return
+            if not self.teleport_key:
+                self.error_signal.emit("请先设置瞬移技能键")
+                return
+            if self.teleport_key.lower() == self.heal_key.lower():
+                self.error_signal.emit("瞬移技能键不能和加血技能键重复")
                 return
             if not self.anchor_pos:
                 self.error_signal.emit("请先标记跟补基准点")
                 return
-
+            if not self.buffs:
+                self.log_update.emit("未启用 BUFF，将只执行补血和瞬移修正")
             if not self._ensure_game_focus("跟补启动"):
                 self.error_signal.emit("无法将游戏窗口置于前台")
                 return
 
-            self.log_update.emit(f"使用手动跟补基准点 X={self.base_x:.1f}")
+            self.log_update.emit(
+                f"使用手动跟补基准点 X={self.base_x:.1f}，"
+                f"左右界限 ±{self.boundary_tolerance:.1f}"
+            )
             if self.minimap_region:
                 self.monitor.set_minimap_region(*self.minimap_region)
                 self.log_update.emit(
@@ -132,16 +115,14 @@ class FollowHealWorker(QThread):
             else:
                 self.log_update.emit("未保存小地图区域，将在补血后再识别，避免开局空等")
 
-            next_center_adjust_at = time.time() + next_center_adjust_interval()
-            last_known_x = self.base_x
-            missing_player_count = 0
+            next_adjust_at = time.time() + next_center_adjust_interval()
+            handled_current_excursion = False
             self.buff_next_cast.clear()
 
             while self.is_running:
                 if not self.window_selector.is_window_valid(self.hwnd):
                     self.error_signal.emit("游戏窗口已关闭或不可见")
                     break
-
                 if not self.window_selector.is_window_foreground(self.hwnd):
                     self._release_held_heal_key()
                     self.human.release_all()
@@ -154,47 +135,20 @@ class FollowHealWorker(QThread):
                     self._cast_all_ready_buffs(
                         self._get_buffs_to_cast(include_upcoming=True)
                     )
-                    self._random_sleep(0.8, 1.2)
+                    self._random_sleep(*self.BUFF_RECOVERY_GAP_RANGE)
                     continue
 
-                if self.monitor.get_minimap_size() is None:
-                    self._perform_heal_cycle()
+                next_adjust_at, handled_current_excursion = self._continuous_heal_cycle(
+                    next_adjust_at,
+                    handled_current_excursion,
+                )
+
+                if self.monitor.get_minimap_size() is None and self.is_running:
                     rect = self.monitor.auto_detect_dark_region()
                     if rect:
                         self.log_update.emit(f"小地图识别完成：{rect[2]}x{rect[3]}")
                     else:
                         self.log_update.emit("⚠️ 暂未识别到小地图")
-                    continue
-
-                player = self.monitor.find_player_position()
-                if player:
-                    missing_player_count = 0
-                    player_x = float(player[0])
-                    if abs(player_x - last_known_x) > MOVEMENT_OBSERVED_TOLERANCE:
-                        last_known_x = player_x
-
-                    if is_outside_anchor_band(player_x, self.base_x):
-                        self.log_update.emit(
-                            f"检测到离开基准区域：当前X={player_x:.1f}，"
-                            f"基准X={self.base_x:.1f}"
-                        )
-                        self._return_to_base(player_x)
-                        continue
-
-                    now = time.time()
-                    if now >= next_center_adjust_at:
-                        self._center_adjust_step(player_x)
-                        next_center_adjust_at = time.time() + next_center_adjust_interval()
-                        continue
-                else:
-                    missing_player_count += 1
-                    self.human.stop_move()
-                    if missing_player_count == 1 or missing_player_count % 8 == 0:
-                        self.log_update.emit(
-                            f"⚠️ 暂时丢失玩家黄点 {missing_player_count} 次"
-                        )
-
-                self._perform_heal_cycle()
         except Exception as exc:
             self.error_signal.emit(f"跟补模式运行错误: {exc}")
         finally:
@@ -204,6 +158,90 @@ class FollowHealWorker(QThread):
             self.countdown_update.emit({})
             self.log_update.emit("跟补模式已停止")
             self.finished_signal.emit()
+
+    def _continuous_heal_cycle(
+        self,
+        next_adjust_at: float,
+        handled_current_excursion: bool,
+    ) -> Tuple[float, bool]:
+        if not self._ensure_game_focus("持续释放加血技能"):
+            return next_adjust_at, handled_current_excursion
+
+        heal_key = self._resolve_key(self.heal_key)
+        try:
+            self.human.keyboard.press(heal_key)
+            self._held_heal_key = heal_key
+        except Exception as exc:
+            self.error_signal.emit(f"加血键错误: {exc}")
+            return next_adjust_at, handled_current_excursion
+
+        end_at = time.time() + random.uniform(*self.HEAL_HOLD_RANGE)
+        missing_player_count = 0
+        while self.is_running and time.time() < end_at:
+            if self._get_buffs_to_cast(include_upcoming=False):
+                self._release_held_heal_key()
+                self._cast_if_buff_due()
+                return next_adjust_at, handled_current_excursion
+            if (
+                not self.window_selector.is_window_valid(self.hwnd)
+                or not self.window_selector.is_window_foreground(self.hwnd)
+            ):
+                self._release_held_heal_key()
+                return next_adjust_at, handled_current_excursion
+
+            if self.monitor.get_minimap_size() is not None:
+                player = self.monitor.find_player_position()
+                if player:
+                    missing_player_count = 0
+                    player_x = float(player[0])
+                    outside = is_outside_anchor_band(
+                        player_x,
+                        self.base_x,
+                        self.boundary_tolerance,
+                    )
+                    if not outside:
+                        handled_current_excursion = False
+                    is_new_excursion = outside and not handled_current_excursion
+                    is_scheduled = time.time() >= next_adjust_at
+                    if is_new_excursion or is_scheduled:
+                        direction = teleport_direction_to_base(player_x, self.base_x)
+                        if direction:
+                            self._teleport_toward_base(
+                                direction,
+                                player_x,
+                                urgent=is_new_excursion,
+                            )
+                        # 一次事件只瞬移一次；跨过基准点也不能立即反向瞬移。
+                        handled_current_excursion = True
+                        next_adjust_at = time.time() + next_center_adjust_interval()
+                else:
+                    missing_player_count += 1
+                    if missing_player_count == 1 or missing_player_count % 8 == 0:
+                        self.log_update.emit(
+                            f"⚠️ 暂时丢失玩家黄点 {missing_player_count} 次"
+                        )
+            self._random_sleep(0.10, 0.16)
+
+        self._release_held_heal_key()
+        if self.is_running:
+            self._random_sleep(*self.HEAL_GAP_RANGE)
+        return next_adjust_at, handled_current_excursion
+
+    def _teleport_toward_base(self, direction: str, player_x: float, urgent: bool):
+        direction_text = "左" if direction == "left" else "右"
+        phase = "快速回位" if urgent else "跟补修正"
+        self.log_update.emit(
+            f"{phase}：当前X={player_x:.1f}，按住{direction_text}方向并短按瞬移"
+        )
+        try:
+            self.human.perform_directional_skill(
+                direction,
+                self._resolve_key(self.teleport_key),
+            )
+            # 等黄点稳定；新位置不会触发立即反向瞬移。
+            self._random_sleep(*self.MARKER_SETTLE_RANGE)
+        except Exception as exc:
+            self.error_signal.emit(f"瞬移键错误: {exc}")
 
     def _resolve_key(self, key_str: str):
         normalized_key = normalize_key_name(key_str)
@@ -227,7 +265,9 @@ class FollowHealWorker(QThread):
                 return True
             foreground = win32gui.GetForegroundWindow()
             title = win32gui.GetWindowText(foreground) if foreground else "未知"
-            self.log_update.emit(f"❌ {reason}：无法恢复游戏窗口焦点，当前前台窗口为 {title}")
+            self.log_update.emit(
+                f"❌ {reason}：无法恢复游戏窗口焦点，当前前台窗口为 {title}"
+            )
             return False
         except Exception as exc:
             self.log_update.emit(f"❌ {reason}：恢复游戏焦点失败：{exc}")
@@ -237,21 +277,19 @@ class FollowHealWorker(QThread):
         now = time.time()
         window = self.BATCH_CAST_WINDOW if include_upcoming else 0
         return [
-            buff
-            for buff in self.buffs
+            buff for buff in self.buffs
             if self.buff_next_cast.get(buff.key, 0) - now <= window
         ]
 
     def _update_countdown_display(self, now: Optional[float] = None):
         current_time = time.time() if now is None else now
-        countdown_info = {
+        self.countdown_update.emit({
             buff.key: remaining_seconds(self.buff_next_cast[buff.key], current_time)
             for buff in self.buffs
             if buff.key in self.buff_next_cast
-        }
-        self.countdown_update.emit(countdown_info)
+        })
 
-    def _tap_named_key(self, key_str: str, hold_range: Tuple[float, float]) -> Optional[float]:
+    def _tap_named_key(self, key_str: str, hold_range: Tuple[float, float]):
         key = self._resolve_key(key_str)
         pressed_at = None
         try:
@@ -273,11 +311,9 @@ class FollowHealWorker(QThread):
         pressed_at = self._tap_named_key(buff.key, (0.05, 0.15))
         self._random_sleep(0.1, 0.3)
         final_pressed_at = self._tap_named_key(buff.key, (0.05, 0.15))
-        if final_pressed_at is None:
-            final_pressed_at = pressed_at
+        final_pressed_at = final_pressed_at or pressed_at
         if final_pressed_at is None:
             return
-
         release_at = next_release_time(final_pressed_at, buff.duration)
         self.buff_next_cast[buff.key] = release_at
         self._update_countdown_display(now=final_pressed_at)
@@ -294,7 +330,6 @@ class FollowHealWorker(QThread):
         self.human.stop_move()
         self.log_update.emit(f"准备释放 {len(buffs)} 个 BUFF")
         if not self._ensure_game_focus("释放 BUFF"):
-            self.log_update.emit("❌ 释放 BUFF 前无法确认游戏窗口焦点")
             return False
         for index, buff in enumerate(buffs):
             if not self.is_running:
@@ -305,62 +340,11 @@ class FollowHealWorker(QThread):
         return True
 
     def _cast_if_buff_due(self) -> bool:
-        due = self._get_buffs_to_cast(include_upcoming=False)
-        if not due:
+        if not self._get_buffs_to_cast(include_upcoming=False):
             return False
         self._cast_all_ready_buffs(self._get_buffs_to_cast(include_upcoming=True))
-        self._random_sleep(0.8, 1.2)
+        self._random_sleep(*self.BUFF_RECOVERY_GAP_RANGE)
         return True
-
-    def _perform_heal_cycle(self):
-        if self._cast_if_buff_due():
-            return
-        if not self._ensure_game_focus("释放加血技能"):
-            return
-
-        roll = random.randint(1, 100)
-        if roll <= 25:
-            self._burst_heal()
-        elif roll <= 45:
-            self._timed_heal_tap((0.18, 0.42), (0.12, 0.30))
-        else:
-            self._interruptible_heal_hold((0.65, 1.40))
-            self._random_sleep(0.16, 0.36)
-
-    def _burst_heal(self):
-        count = random.randint(2, 4)
-        for index in range(count):
-            if not self.is_running or self._cast_if_buff_due():
-                return
-            self._timed_heal_tap((0.045, 0.120), (0.06, 0.18))
-            if index == count - 1:
-                self._random_sleep(0.12, 0.35)
-
-    def _timed_heal_tap(
-        self,
-        hold_range: Tuple[float, float],
-        after_delay: Tuple[float, float],
-    ):
-        self._tap_named_key(self.heal_key, hold_range)
-        self._random_sleep(*after_delay)
-
-    def _interruptible_heal_hold(self, hold_range: Tuple[float, float]):
-        key = self._resolve_key(self.heal_key)
-        try:
-            self.human.keyboard.press(key)
-            self._held_heal_key = key
-        except Exception as exc:
-            self.error_signal.emit(f"加血键错误: {exc}")
-            return
-
-        end_at = time.time() + random.uniform(*hold_range)
-        while self.is_running and time.time() < end_at:
-            if self._get_buffs_to_cast(include_upcoming=False):
-                self._release_held_heal_key()
-                self._cast_if_buff_due()
-                return
-            self._random_sleep(0.10, 0.15)
-        self._release_held_heal_key()
 
     def _release_held_heal_key(self):
         if self._held_heal_key is None:
@@ -370,67 +354,3 @@ class FollowHealWorker(QThread):
         except Exception:
             pass
         self._held_heal_key = None
-
-    def _move_direction(self, direction: str):
-        if direction == "left":
-            self.human.move_left()
-        else:
-            self.human.move_right()
-
-    def _return_to_base(self, start_x: float):
-        current_x = start_x
-        current_direction = direction_to_base(current_x, self.base_x)
-        if current_direction is None:
-            self.human.stop_move()
-            return
-        if not self._ensure_game_focus("回基准区域"):
-            return
-
-        self._move_direction(current_direction)
-        started_at = time.time()
-        while self.is_running:
-            if self._cast_if_buff_due():
-                return
-            self._random_sleep(0.08, 0.14)
-            player = self.monitor.find_player_position()
-            if not player:
-                self.human.stop_move()
-                self.log_update.emit("⚠️ 回基准区域时丢失玩家黄点，停止移动")
-                return
-            current_x = float(player[0])
-            if not is_outside_anchor_band(current_x, self.base_x):
-                self.human.stop_move()
-                self.log_update.emit(
-                    f"已回到基准区域：当前X={current_x:.1f}，基准X={self.base_x:.1f}"
-                )
-                return
-            needed_direction = direction_to_base(current_x, self.base_x)
-            if needed_direction is None:
-                self.human.stop_move()
-                return
-            if needed_direction != current_direction:
-                self.human.stop_move()
-                self._random_sleep(0.08, 0.18)
-                self._move_direction(needed_direction)
-                current_direction = needed_direction
-            if time.time() - started_at > self.RETURN_TIMEOUT:
-                self.human.stop_move()
-                self.log_update.emit("⚠️ 回基准区域超时，停止移动等待下轮检测")
-                return
-        self.human.stop_move()
-
-    def _center_adjust_step(self, current_x: float):
-        direction = direction_for_center_adjustment(current_x, self.base_x)
-        direction_text = "左" if direction == "left" else "右"
-        self.log_update.emit(
-            f"跟补修正：当前X={current_x:.1f}，向{direction_text}小走后继续补血"
-        )
-        if self._cast_if_buff_due():
-            return
-        if not self._ensure_game_focus("跟补修正"):
-            return
-        self._move_direction(direction)
-        hold_min, hold_max = self.adjust_hold_ms
-        self._interruptible_sleep(random.uniform(hold_min, hold_max) / 1000.0)
-        self.human.stop_move()
-        self._random_sleep(0.22, 0.75)

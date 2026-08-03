@@ -11,9 +11,6 @@ from typing import Optional, Tuple
 
 from config import DEFAULT_BUFF_SLOT_COUNT, MAX_BUFF_SLOT_COUNT
 
-DEFAULT_FOLLOW_HEAL_ADJUST_HOLD_MS = (200, 300)
-
-
 class SettingsManager:
     """设置管理器，负责保存和加载用户配置"""
     
@@ -43,9 +40,10 @@ class SettingsManager:
                       return_to_market: bool = False,
                       jump_key: str = "Alt",
                       heal_skill_key: str = "",
+                      teleport_skill_key: str = "",
                       follow_heal_anchor_pos: Optional[Tuple[int, int]] = None,
                       follow_heal_minimap_region: Optional[Tuple[int, int, int, int]] = None,
-                      follow_heal_adjust_hold_ms: Tuple[int, int] = DEFAULT_FOLLOW_HEAL_ADJUST_HOLD_MS,
+                      follow_heal_boundary_tolerance: float = 6.0,
                       sit_chair_enabled: bool = False,
                       chair_key: str = "=",
                       random_behavior_enabled: bool = True,
@@ -72,9 +70,10 @@ class SettingsManager:
             return_to_market: 是否释放后回到市场
             jump_key: 跳跃键
             heal_skill_key: 跟补模式加血技能键
+            teleport_skill_key: 跟补模式瞬移技能键
             follow_heal_anchor_pos: 跟补基准点小地图坐标
             follow_heal_minimap_region: 标记基准点时保存的小地图区域
-            follow_heal_adjust_hold_ms: 跟补周期修正方向键按住时长，单位毫秒
+            follow_heal_boundary_tolerance: 跟补基准点左右允许范围
             sit_chair_enabled: 是否空闲时坐椅子
             chair_key: 椅子按键
             random_behavior_enabled: 是否启用随机提前释放
@@ -103,14 +102,14 @@ class SettingsManager:
             "return_to_market": str(return_to_market),
             "jump_key": jump_key,
             "heal_skill_key": heal_skill_key,
+            "teleport_skill_key": teleport_skill_key,
             "follow_heal_anchor_x": anchor_x,
             "follow_heal_anchor_y": anchor_y,
             "follow_heal_minimap_x": region_x,
             "follow_heal_minimap_y": region_y,
             "follow_heal_minimap_width": region_w,
             "follow_heal_minimap_height": region_h,
-            "follow_heal_adjust_min_ms": str(follow_heal_adjust_hold_ms[0]),
-            "follow_heal_adjust_max_ms": str(follow_heal_adjust_hold_ms[1]),
+            "follow_heal_boundary_tolerance": str(follow_heal_boundary_tolerance),
             "sit_chair_enabled": str(sit_chair_enabled),
             "chair_key": chair_key,
             "random_behavior_enabled": str(random_behavior_enabled),
@@ -190,6 +189,7 @@ class SettingsManager:
                 "return_to_market": mode == "dead",
                 "jump_key": self.config.get("General", "jump_key", fallback="Alt"),
                 "heal_skill_key": self.config.get("General", "heal_skill_key", fallback=""),
+                "teleport_skill_key": self.config.get("General", "teleport_skill_key", fallback=""),
                 "follow_heal_anchor_pos": self._load_optional_pair(
                     "follow_heal_anchor_x",
                     "follow_heal_anchor_y",
@@ -200,7 +200,7 @@ class SettingsManager:
                     "follow_heal_minimap_width",
                     "follow_heal_minimap_height",
                 ),
-                "follow_heal_adjust_hold_ms": self._load_adjust_hold_ms(),
+                "follow_heal_boundary_tolerance": self._load_follow_heal_boundary_tolerance(),
                 "sit_chair_enabled": self.config.getboolean("General", "sit_chair_enabled", fallback=False),
                 "chair_key": self.config.get("General", "chair_key", fallback="="),
                 "random_behavior_enabled": self.config.getboolean("General", "random_behavior_enabled", fallback=True),
@@ -286,19 +286,13 @@ class SettingsManager:
         except ValueError:
             return []
 
-    def _load_adjust_hold_ms(self):
-        default_min, default_max = DEFAULT_FOLLOW_HEAL_ADJUST_HOLD_MS
-        min_ms = self.config.getint(
+    def _load_follow_heal_boundary_tolerance(self):
+        value = self.config.getfloat(
             "General",
-            "follow_heal_adjust_min_ms",
-            fallback=default_min,
+            "follow_heal_boundary_tolerance",
+            fallback=6.0,
         )
-        max_ms = self.config.getint(
-            "General",
-            "follow_heal_adjust_max_ms",
-            fallback=default_max,
-        )
-        return (min_ms, max_ms)
+        return max(1.0, min(50.0, value))
 
     def _load_optional_pair(self, x_key: str, y_key: str):
         x = self.config.get("General", x_key, fallback="").strip()

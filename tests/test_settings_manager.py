@@ -132,9 +132,10 @@ class SettingsManagerTests(unittest.TestCase):
                     buffs=buffs,
                     mode="follow_heal",
                     heal_skill_key="Q",
+                    teleport_skill_key="W",
                     follow_heal_anchor_pos=(74, 58),
                     follow_heal_minimap_region=(6, 122, 164, 86),
-                    follow_heal_adjust_hold_ms=(220, 330),
+                    follow_heal_boundary_tolerance=9.5,
                 )
             )
             settings = SettingsManager(str(path)).load_settings()
@@ -142,9 +143,10 @@ class SettingsManagerTests(unittest.TestCase):
             self.assertEqual(settings["mode"], "follow_heal")
             self.assertFalse(settings["return_to_market"])
             self.assertEqual(settings["heal_skill_key"], "Q")
+            self.assertEqual(settings["teleport_skill_key"], "W")
             self.assertEqual(settings["follow_heal_anchor_pos"], (74, 58))
             self.assertEqual(settings["follow_heal_minimap_region"], (6, 122, 164, 86))
-            self.assertEqual(settings["follow_heal_adjust_hold_ms"], (220, 330))
+            self.assertEqual(settings["follow_heal_boundary_tolerance"], 9.5)
 
     def test_auto_accept_party_invite_round_trip(self):
         with tempfile.TemporaryDirectory() as directory:

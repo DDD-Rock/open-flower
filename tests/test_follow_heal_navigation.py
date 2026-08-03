@@ -9,40 +9,28 @@ SPEC = importlib.util.spec_from_file_location(
 )
 NAVIGATION_MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(NAVIGATION_MODULE)
-direction_for_center_adjustment = NAVIGATION_MODULE.direction_for_center_adjustment
-direction_to_base = NAVIGATION_MODULE.direction_to_base
 is_outside_anchor_band = NAVIGATION_MODULE.is_outside_anchor_band
 next_center_adjust_interval = NAVIGATION_MODULE.next_center_adjust_interval
-normalize_center_adjust_hold_ms = NAVIGATION_MODULE.normalize_center_adjust_hold_ms
+teleport_direction_to_base = NAVIGATION_MODULE.teleport_direction_to_base
 
 
 class FollowHealNavigationTests(unittest.TestCase):
-    def test_direction_to_base_matches_anchor_center(self):
-        self.assertEqual(direction_to_base(104, 100), "left")
-        self.assertEqual(direction_to_base(96, 100), "right")
-        self.assertIsNone(direction_to_base(102.5, 100))
+    def test_teleport_always_points_toward_exact_anchor(self):
+        self.assertEqual(teleport_direction_to_base(104, 100), "left")
+        self.assertEqual(teleport_direction_to_base(96, 100), "right")
+        self.assertIsNone(teleport_direction_to_base(100, 100))
 
-    def test_anchor_band_allows_plus_minus_six(self):
-        self.assertFalse(is_outside_anchor_band(106, 100))
-        self.assertFalse(is_outside_anchor_band(94, 100))
-        self.assertTrue(is_outside_anchor_band(106.5, 100))
-        self.assertTrue(is_outside_anchor_band(93.5, 100))
-
-    def test_center_adjust_moves_toward_base_or_right_when_centered(self):
-        self.assertEqual(direction_for_center_adjustment(104, 100), "left")
-        self.assertEqual(direction_for_center_adjustment(96, 100), "right")
-        self.assertEqual(direction_for_center_adjustment(102.5, 100), "right")
+    def test_anchor_band_uses_configured_tolerance(self):
+        self.assertFalse(is_outside_anchor_band(109.5, 100, 9.5))
+        self.assertFalse(is_outside_anchor_band(90.5, 100, 9.5))
+        self.assertTrue(is_outside_anchor_band(109.6, 100, 9.5))
+        self.assertTrue(is_outside_anchor_band(90.4, 100, 9.5))
 
     def test_center_adjust_interval_is_frequent(self):
         for _ in range(20):
             interval = next_center_adjust_interval()
-            self.assertGreaterEqual(interval, 12)
-            self.assertLessEqual(interval, 15)
-
-    def test_center_adjust_hold_ms_is_normalized(self):
-        self.assertEqual(normalize_center_adjust_hold_ms(200, 300), (200, 300))
-        self.assertEqual(normalize_center_adjust_hold_ms(300, 200), (200, 300))
-        self.assertEqual(normalize_center_adjust_hold_ms(10, 1200), (50, 1000))
+            self.assertGreaterEqual(interval, 10)
+            self.assertLessEqual(interval, 13)
 
 
 if __name__ == "__main__":

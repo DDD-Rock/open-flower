@@ -54,9 +54,10 @@ class MainWindow(QMainWindow):
         self.pre_skill_move_mode = "right_left"  # 死花出市场后移动: "right_left" 或 "left_only"
         self.manual_portal_pos = None  # 手动标记的传送门位置 (x, y) 或 None
         self.follow_heal_key = ""
+        self.follow_heal_teleport_key = ""
         self.follow_heal_anchor_pos = None
         self.follow_heal_minimap_region = None
-        self.follow_heal_adjust_hold_ms = (200, 300)
+        self.follow_heal_boundary_tolerance = 6.0
         self.auto_accept_party_invite = False
         
         # 初始化窗口选择器
@@ -113,11 +114,11 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'jump_key_btn'):
             self.jump_key_btn.setText(self.selected_jump_key)
         self.follow_heal_key = settings.get("heal_skill_key", "")
+        self.follow_heal_teleport_key = settings.get("teleport_skill_key", "")
         self.follow_heal_anchor_pos = settings.get("follow_heal_anchor_pos")
         self.follow_heal_minimap_region = settings.get("follow_heal_minimap_region")
-        self.follow_heal_adjust_hold_ms = settings.get(
-            "follow_heal_adjust_hold_ms",
-            (200, 300),
+        self.follow_heal_boundary_tolerance = settings.get(
+            "follow_heal_boundary_tolerance", 6.0
         )
         self.auto_accept_party_invite = settings.get(
             "auto_accept_party_invite", False
@@ -128,6 +129,8 @@ class MainWindow(QMainWindow):
             self.party_invite_checkbox.blockSignals(False)
         if hasattr(self, "heal_key_btn"):
             self.heal_key_btn.setText(self.follow_heal_key or "选择按键")
+        if hasattr(self, "teleport_key_btn"):
+            self.teleport_key_btn.setText(self.follow_heal_teleport_key or "选择按键")
         if hasattr(self, "_update_follow_heal_anchor_label"):
             self._update_follow_heal_anchor_label()
             
@@ -189,9 +192,10 @@ class MainWindow(QMainWindow):
         # 默认跳跃键
         self.mode = "dead"
         self.follow_heal_key = ""
+        self.follow_heal_teleport_key = ""
         self.follow_heal_anchor_pos = None
         self.follow_heal_minimap_region = None
-        self.follow_heal_adjust_hold_ms = (200, 300)
+        self.follow_heal_boundary_tolerance = 6.0
         self.auto_accept_party_invite = False
         if hasattr(self, 'selected_jump_key'):
             self.selected_jump_key = "Alt"
@@ -199,6 +203,8 @@ class MainWindow(QMainWindow):
             self.jump_key_btn.setText("Alt")
         if hasattr(self, "heal_key_btn"):
             self.heal_key_btn.setText("选择按键")
+        if hasattr(self, "teleport_key_btn"):
+            self.teleport_key_btn.setText("选择按键")
         if hasattr(self, "_update_follow_heal_anchor_label"):
             self._update_follow_heal_anchor_label()
             
@@ -229,12 +235,11 @@ class MainWindow(QMainWindow):
             return_to_market=self.return_to_market,
             jump_key=getattr(self, 'selected_jump_key', 'Alt'),
             heal_skill_key=getattr(self, "follow_heal_key", ""),
+            teleport_skill_key=getattr(self, "follow_heal_teleport_key", ""),
             follow_heal_anchor_pos=getattr(self, "follow_heal_anchor_pos", None),
             follow_heal_minimap_region=getattr(self, "follow_heal_minimap_region", None),
-            follow_heal_adjust_hold_ms=getattr(
-                self,
-                "follow_heal_adjust_hold_ms",
-                (200, 300),
+            follow_heal_boundary_tolerance=getattr(
+                self, "follow_heal_boundary_tolerance", 6.0
             ),
             sit_chair_enabled=getattr(self, 'sit_chair_enabled', False),
             chair_key=getattr(self, 'selected_chair_key', '='),
@@ -838,6 +843,17 @@ class MainWindow(QMainWindow):
             self.logger.log(f"加血技能键已设置为: {self.follow_heal_key}")
             self.update_log_display()
 
+    def on_select_teleport_key(self):
+        """弹出虚拟键盘选择跟补瞬移键。"""
+        current = getattr(self, "follow_heal_teleport_key", "") or "Shift"
+        dialog = VirtualKeyboardDialog(self, current)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.follow_heal_teleport_key = dialog.get_selected_key()
+            if hasattr(self, "teleport_key_btn"):
+                self.teleport_key_btn.setText(self.follow_heal_teleport_key)
+            self.logger.log(f"瞬移技能键已设置为: {self.follow_heal_teleport_key}")
+            self.update_log_display()
+
     def on_mark_follow_anchor(self):
         """手动标记跟补基准点，并保存当时的小地图区域"""
         if not self.game_window_hwnd:
@@ -870,15 +886,22 @@ class MainWindow(QMainWindow):
                 show_auto_portal=False,
                 confirm_button_text="使用此基准点",
                 clear_button_text="清除基准点",
+                boundary_tolerance=getattr(
+                    self, "follow_heal_boundary_tolerance", 6.0
+                ),
             )
 
             if dialog.exec() == QDialog.DialogCode.Accepted:
                 self.follow_heal_anchor_pos = dialog.get_marked_position()
+                self.follow_heal_boundary_tolerance = dialog.get_boundary_tolerance()
                 self.follow_heal_minimap_region = region if self.follow_heal_anchor_pos else None
                 if hasattr(self, "_update_follow_heal_anchor_label"):
                     self._update_follow_heal_anchor_label()
                 if self.follow_heal_anchor_pos:
-                    self.logger.log(f"跟补基准点已标记: {self.follow_heal_anchor_pos}")
+                    self.logger.log(
+                        f"跟补基准点已标记: {self.follow_heal_anchor_pos}，"
+                        f"左右界限 ±{self.follow_heal_boundary_tolerance:.1f}"
+                    )
                 else:
                     self.logger.log("已清除跟补基准点")
                 self.update_log_display()
@@ -990,7 +1013,8 @@ class MainWindow(QMainWindow):
         
         # 收集启用的buff
         enabled_buffs = [buff for buff in self.buffs if buff.enabled and buff.key]
-        if not enabled_buffs:
+        mode = getattr(self, "mode", "dead" if self.return_to_market else "live")
+        if not enabled_buffs and mode != "follow_heal":
             QMessageBox.warning(self, "警告", "请至少启用一个buff并设置按键！")
             return
         
@@ -998,8 +1022,6 @@ class MainWindow(QMainWindow):
         if self.worker:
             self.worker.stop()
         
-        mode = getattr(self, "mode", "dead" if self.return_to_market else "live")
-
         # 根据当前模式启动不同的 worker
         if mode == "dead":
             # 需要回到市场模式（原死花模式逻辑）
@@ -1026,6 +1048,12 @@ class MainWindow(QMainWindow):
             if not getattr(self, "follow_heal_key", ""):
                 QMessageBox.warning(self, "警告", "请先设置加血技能键！")
                 return
+            if not getattr(self, "follow_heal_teleport_key", ""):
+                QMessageBox.warning(self, "警告", "请先设置瞬移技能键！")
+                return
+            if self.follow_heal_teleport_key.lower() == self.follow_heal_key.lower():
+                QMessageBox.warning(self, "警告", "瞬移技能键不能和加血技能键重复！")
+                return
             if not getattr(self, "follow_heal_anchor_pos", None):
                 QMessageBox.warning(self, "警告", "请先标记跟补基准点！")
                 return
@@ -1037,9 +1065,10 @@ class MainWindow(QMainWindow):
                 self.game_window_hwnd,
                 self.buffs,
                 self.follow_heal_key,
+                self.follow_heal_teleport_key,
                 self.follow_heal_anchor_pos,
                 self.follow_heal_minimap_region,
-                getattr(self, "follow_heal_adjust_hold_ms", (200, 300)),
+                getattr(self, "follow_heal_boundary_tolerance", 6.0),
             )
             self.worker.log_update.connect(self.on_status_update)
             self.worker.finished_signal.connect(self.on_worker_finished)

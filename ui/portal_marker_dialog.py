@@ -13,7 +13,8 @@ import numpy as np
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QImage, QPixmap, QPainter, QPen, QColor, QFont
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QMessageBox
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QMessageBox,
+    QDoubleSpinBox,
 )
 
 
@@ -45,6 +46,8 @@ class PortalMarkerDialog(QDialog):
         show_auto_portal: bool = True,
         confirm_button_text: str = "使用此位置",
         clear_button_text: str = "清除标记（恢复自动）",
+        boundary_tolerance: float = None,
+        boundary_title: str = "左右界限值（基准点 ±）",
     ):
         """
         Args:
@@ -63,6 +66,10 @@ class PortalMarkerDialog(QDialog):
         self.show_auto_portal = show_auto_portal
         self.confirm_button_text = confirm_button_text
         self.clear_button_text = clear_button_text
+        self.boundary_tolerance = (
+            None if boundary_tolerance is None else float(boundary_tolerance)
+        )
+        self.boundary_title = boundary_title
         
         self._init_ui()
         self._update_image()
@@ -90,6 +97,21 @@ class PortalMarkerDialog(QDialog):
         self.info_label.setStyleSheet("font-size: 11px; color: #666; padding: 3px;")
         layout.addWidget(self.info_label)
         self._update_info_text()
+
+        if self.boundary_tolerance is not None:
+            boundary_layout = QHBoxLayout()
+            boundary_layout.addWidget(QLabel(self.boundary_title))
+            boundary_layout.addStretch(1)
+            self.boundary_input = QDoubleSpinBox()
+            self.boundary_input.setRange(1.0, 50.0)
+            self.boundary_input.setSingleStep(0.5)
+            self.boundary_input.setDecimals(1)
+            self.boundary_input.setValue(self.boundary_tolerance)
+            self.boundary_input.setSuffix(" 点")
+            self.boundary_input.setObjectName("followHealBoundaryTolerance")
+            self.boundary_input.valueChanged.connect(self._on_boundary_changed)
+            boundary_layout.addWidget(self.boundary_input)
+            layout.addLayout(boundary_layout)
         
         # 按钮区域
         btn_layout = QHBoxLayout()
@@ -139,6 +161,8 @@ class PortalMarkerDialog(QDialog):
         
         if self.manual_pos:
             parts.append(f"手动标记: ({self.manual_pos[0]}, {self.manual_pos[1]})")
+            if self.boundary_tolerance is not None:
+                parts.append(f"允许范围: ±{self.boundary_tolerance:.1f}")
         else:
             parts.append("手动标记: 未设置")
         
@@ -164,6 +188,18 @@ class PortalMarkerDialog(QDialog):
         if self.manual_pos:
             mx, my = self.manual_pos
             cx, cy = int(mx * self.SCALE + self.SCALE // 2), int(my * self.SCALE + self.SCALE // 2)
+            if self.boundary_tolerance is not None:
+                display_h, display_w = display_img.shape[:2]
+                left = max(0, int((mx - self.boundary_tolerance) * self.SCALE))
+                right = min(
+                    display_w - 1,
+                    int((mx + self.boundary_tolerance) * self.SCALE),
+                )
+                overlay = display_img.copy()
+                cv2.rectangle(overlay, (left, 0), (right, display_h - 1), (0, 0, 255), -1)
+                cv2.addWeighted(overlay, 0.16, display_img, 0.84, 0, display_img)
+                cv2.line(display_img, (left, 0), (left, display_h - 1), (0, 0, 255), 2)
+                cv2.line(display_img, (right, 0), (right, display_h - 1), (0, 0, 255), 2)
             cv2.circle(display_img, (cx, cy), 8, (0, 0, 255), 2)         # 红色空心圆
             cv2.circle(display_img, (cx, cy), 3, (0, 0, 255), -1)        # 红色实心小点
         
@@ -179,6 +215,11 @@ class PortalMarkerDialog(QDialog):
         if self.manual_pos:
             self.result_pos = self.manual_pos
             self.accept()
+
+    def _on_boundary_changed(self, value: float):
+        self.boundary_tolerance = float(value)
+        self._update_image()
+        self._update_info_text()
     
     def _on_clear(self):
         """清除手动标记，恢复自动检测"""
@@ -192,3 +233,7 @@ class PortalMarkerDialog(QDialog):
     def get_marked_position(self):
         """获取最终标记的位置，None 表示使用自动检测"""
         return self.result_pos
+
+    def get_boundary_tolerance(self) -> float:
+        """获取跟补基准点的左右允许范围。"""
+        return 6.0 if self.boundary_tolerance is None else self.boundary_tolerance

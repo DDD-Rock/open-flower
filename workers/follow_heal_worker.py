@@ -13,9 +13,12 @@ from detection.minimap_monitor import MinimapMonitor
 from models.buff_config import BuffConfig
 from utils.countdown import format_release_time, next_release_time, remaining_seconds
 from utils.follow_heal_navigation import (
+    HEAL_GAP_RANGE as FOLLOW_HEAL_GAP_RANGE,
+    HEAL_HOLD_RANGE as FOLLOW_HEAL_HOLD_RANGE,
     TeleportExcursionGuard,
     next_center_adjust_interval,
     teleport_direction_to_base,
+    updated_center_adjust_deadline,
 )
 from utils.key_names import normalize_key_name
 from utils.window_selector import WindowSelector
@@ -28,8 +31,8 @@ class FollowHealWorker(QThread):
     countdown_update = pyqtSignal(dict)
 
     BATCH_CAST_WINDOW = 10.0
-    HEAL_HOLD_RANGE = (10.0, 15.0)
-    HEAL_GAP_RANGE = (0.18, 0.45)
+    HEAL_HOLD_RANGE = FOLLOW_HEAL_HOLD_RANGE
+    HEAL_GAP_RANGE = FOLLOW_HEAL_GAP_RANGE
     BUFF_RECOVERY_GAP_RANGE = (0.18, 0.42)
     MARKER_SETTLE_RANGE = (0.50, 0.80)
     POSITION_POLL_RANGE = (0.035, 0.065)
@@ -200,7 +203,8 @@ class FollowHealWorker(QThread):
                         self.base_x,
                         self.boundary_tolerance,
                     )
-                    is_scheduled = time.time() >= next_adjust_at
+                    now = time.time()
+                    is_scheduled = now >= next_adjust_at
                     if is_new_excursion or is_scheduled:
                         direction = teleport_direction_to_base(player_x, self.base_x)
                         if direction:
@@ -211,7 +215,11 @@ class FollowHealWorker(QThread):
                             )
                             if teleported:
                                 excursion_guard.record_teleport(direction)
-                        next_adjust_at = time.time() + next_center_adjust_interval()
+                        next_adjust_at = updated_center_adjust_deadline(
+                            next_adjust_at,
+                            now,
+                            is_scheduled,
+                        )
                 else:
                     missing_player_count += 1
                     if missing_player_count == 1 or missing_player_count % 8 == 0:

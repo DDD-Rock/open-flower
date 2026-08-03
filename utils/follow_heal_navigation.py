@@ -9,6 +9,8 @@ from typing import Optional
 
 
 CENTER_ADJUST_INTERVAL_RANGE = (4.0, 7.0)
+HEAL_HOLD_RANGE = (8.0, 12.0)
+HEAL_GAP_RANGE = (0.25, 0.60)
 NEW_COLLISION_DISTANCE = 1.0
 
 
@@ -29,6 +31,17 @@ def is_outside_anchor_band(current_x: float, base_x: float, tolerance: float) ->
 def next_center_adjust_interval() -> float:
     """下一次瞬移修正的随机间隔。"""
     return random.uniform(*CENTER_ADJUST_INTERVAL_RANGE)
+
+
+def updated_center_adjust_deadline(
+    current_deadline: float,
+    now: float,
+    scheduled_triggered: bool,
+) -> float:
+    """只有定时事件本身才能推进定时器；越界回位不影响原定时间。"""
+    if not scheduled_triggered:
+        return current_deadline
+    return now + next_center_adjust_interval()
 
 
 @dataclass

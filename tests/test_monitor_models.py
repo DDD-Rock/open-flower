@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 
 from detection.exp_recognizer import (
+    EXPFixedFontRecognizer,
     EXPRapidOCRRecognizer,
     EXPRecognitionResult,
     EXPRecognitionStabilizer,
@@ -252,6 +253,73 @@ class AlertStateTests(unittest.TestCase):
             "THIRD_PARTY_NOTICES.md",
         )
         self.assertTrue(all((root / relative).is_file() for relative in expected))
+
+
+@unittest.skipIf(cv2 is None, "OpenCV is not installed")
+class EXPPanelLocatorTests(unittest.TestCase):
+    class TrackingLocator(EXPFixedFontRecognizer):
+        def __init__(self):
+            super().__init__()
+            self.full_searches = 0
+
+        def _find_anchor(self, image, template):
+            self.full_searches += 1
+            return super()._find_anchor(image, template)
+
+    def setUp(self):
+        self.locator = self.TrackingLocator()
+        self.templates = self.locator._load_templates()
+
+    def test_cached_anchor_is_reused_until_window_size_changes(self):
+        first = self._frame(900, 500, anchor_x=358, anchor_y=443, bracket_x=500)
+        self.assertIsNotNone(self.locator.locate_panel(first))
+        self.assertEqual(self.locator.full_searches, 1)
+
+        self.assertIsNotNone(self.locator.locate_panel(first.copy()))
+        self.assertEqual(self.locator.full_searches, 1)
+
+        resized = self._frame(1000, 600, anchor_x=410, anchor_y=543, bracket_x=565)
+        self.assertIsNotNone(self.locator.locate_panel(resized))
+        self.assertEqual(self.locator.full_searches, 2)
+
+    def test_line_end_expands_crop_beyond_canonical_width(self):
+        anchor_x = 358
+        bracket_x = anchor_x + 210
+        frame = self._frame(
+            900,
+            500,
+            anchor_x=anchor_x,
+            anchor_y=443,
+            bracket_x=bracket_x,
+        )
+
+        panel, _, _ = self.locator.locate_panel(frame)
+
+        self.assertGreater(panel.shape[1], self.locator.CANONICAL_PANEL_WIDTH)
+        self.assertGreaterEqual(panel.shape[1], bracket_x + 3 + 8 - (anchor_x - 8))
+
+    def test_missing_line_end_uses_conservative_maximum_width(self):
+        frame = np.full((500, 900, 3), 18, dtype=np.uint8)
+        self._paste(frame, self.templates["anchor"], 358, 443)
+
+        panel, _, _ = self.locator.locate_panel(frame)
+
+        self.assertGreaterEqual(
+            panel.shape[1],
+            self.locator.MAXIMUM_PANEL_SEARCH_WIDTH,
+        )
+
+    def _frame(self, width, height, anchor_x, anchor_y, bracket_x):
+        frame = np.full((height, width, 3), 18, dtype=np.uint8)
+        self._paste(frame, self.templates["anchor"], anchor_x, anchor_y)
+        self._paste(frame, self.templates["percent"], bracket_x - 16, anchor_y)
+        self._paste(frame, self.templates["right_parenthesis"], bracket_x, anchor_y)
+        return frame
+
+    @staticmethod
+    def _paste(frame, template, x, y):
+        region = frame[y:y + template.shape[0], x:x + template.shape[1]]
+        region[:] = cv2.cvtColor(template, cv2.COLOR_GRAY2BGR)
 
 
 if __name__ == "__main__":

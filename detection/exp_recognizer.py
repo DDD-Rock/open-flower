@@ -72,6 +72,9 @@ class EXPFixedFontRecognizer:
     """识别游戏窗口中的 ``当前经验 (百分比%)`` 固定字体面板。"""
 
     SCALE_CANDIDATES = (0.75, 0.875, 1.0, 1.125, 1.25, 1.5, 1.75, 2.0)
+    CANONICAL_PANEL_WIDTH = 185
+    CANONICAL_PANEL_HEIGHT = 44
+    MAXIMUM_PANEL_SEARCH_WIDTH = 260
 
     def __init__(self, template_directory: Optional[str] = None):
         base = Path(
@@ -83,6 +86,14 @@ class EXPFixedFontRecognizer:
         )
         self.template_directory = Path(template_directory) if template_directory else base / "templates" / "exp"
         self.templates = None
+        self._cached_frame_size = None
+        self._cached_anchor = None
+        self._maximum_panel_width = 0
+
+    def reset_panel_cache(self):
+        self._cached_frame_size = None
+        self._cached_anchor = None
+        self._maximum_panel_width = 0
 
     def recognize(self, frame) -> Optional[EXPRecognitionResult]:
         if cv2 is None or np is None or frame is None or frame.ndim != 3:
@@ -206,22 +217,50 @@ class EXPFixedFontRecognizer:
         )
 
     def locate_panel(self, frame):
-        """Locate and crop the canonical EXP panel without reading its digits."""
+        """Locate and crop the complete EXP row without reading its digits.
+
+        The stable ``EXP`` anchor is cached while the window size is unchanged.
+        The right edge is still detected in the original full frame on every
+        call, so a value that grows from ``0`` to a longer number is not clipped.
+        """
         if cv2 is None or np is None or frame is None or frame.ndim != 3:
             return None
         templates = self._load_templates()
         if not templates:
             return None
+        frame_size = (int(frame.shape[1]), int(frame.shape[0]))
+        if self._cached_frame_size != frame_size:
+            self.reset_panel_cache()
+            self._cached_frame_size = frame_size
+
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        anchor = self._find_anchor(gray, templates["anchor"])
+        anchor = self._find_cached_anchor(gray, templates["anchor"])
         if anchor is None:
+            anchor = self._find_anchor(gray, templates["anchor"])
+        if anchor is None:
+            self._cached_anchor = None
             return None
 
         anchor_x, anchor_y, scale, anchor_score = anchor
+        self._cached_anchor = anchor
         left = int(round(anchor_x - 8 * scale))
         top = int(round(anchor_y - 3 * scale))
-        width = max(1, int(round(185 * scale)))
-        height = max(1, int(round(44 * scale)))
+        canonical_width = max(1, int(round(self.CANONICAL_PANEL_WIDTH * scale)))
+        right_edge = self._find_line_end(gray, templates, anchor)
+        detected_width = canonical_width
+        if right_edge is not None:
+            detected_width = max(
+                canonical_width,
+                right_edge - left + max(4, int(round(8 * scale))),
+            )
+        else:
+            detected_width = max(
+                canonical_width,
+                int(round(self.MAXIMUM_PANEL_SEARCH_WIDTH * scale)),
+            )
+        self._maximum_panel_width = max(self._maximum_panel_width, detected_width)
+        width = max(canonical_width, self._maximum_panel_width)
+        height = max(1, int(round(self.CANONICAL_PANEL_HEIGHT * scale)))
         right = min(frame.shape[1], left + width)
         bottom = min(frame.shape[0], top + height)
         left = max(0, left)
@@ -229,6 +268,76 @@ class EXPFixedFontRecognizer:
         if right <= left or bottom <= top:
             return None
         return frame[top:bottom, left:right].copy(), float(anchor_score), float(scale)
+
+    def _find_cached_anchor(self, image, template):
+        if self._cached_anchor is None:
+            return None
+        anchor_x, anchor_y, scale, _ = self._cached_anchor
+        resized = self._resize(template, scale)
+        radius = max(4, int(round(8 * scale)))
+        left = max(0, anchor_x - radius)
+        top = max(0, anchor_y - radius)
+        right = min(image.shape[1], anchor_x + resized.shape[1] + radius)
+        bottom = min(image.shape[0], anchor_y + resized.shape[0] + radius)
+        search = image[top:bottom, left:right]
+        if search.shape[0] < resized.shape[0] or search.shape[1] < resized.shape[1]:
+            return None
+        result = cv2.matchTemplate(search, resized, cv2.TM_CCOEFF_NORMED)
+        _, score, _, point = cv2.minMaxLoc(result)
+        if score < 0.60:
+            return None
+        return left + point[0], top + point[1], scale, float(score)
+
+    def _find_line_end(self, image, templates, anchor):
+        anchor_x, anchor_y, scale, _ = anchor
+        percent = self._resize(templates["percent"], scale)
+        right_bracket = self._resize(templates["right_parenthesis"], scale)
+        panel_left = int(round(anchor_x - 8 * scale))
+        minimum_x = max(0, anchor_x + int(round(55 * scale)))
+        maximum_x = min(
+            image.shape[1] - right_bracket.shape[1],
+            panel_left + int(round(self.MAXIMUM_PANEL_SEARCH_WIDTH * scale)),
+        )
+        y_radius = max(2, int(round(3 * scale)))
+        minimum_y = max(0, anchor_y - y_radius)
+        maximum_y = min(
+            image.shape[0] - right_bracket.shape[0],
+            anchor_y + y_radius,
+        )
+        if minimum_x > maximum_x or minimum_y > maximum_y:
+            return None
+
+        search = image[
+            minimum_y:maximum_y + right_bracket.shape[0],
+            minimum_x:maximum_x + right_bracket.shape[1],
+        ]
+        result = cv2.matchTemplate(search, right_bracket, cv2.TM_CCOEFF_NORMED)
+        flat = result.reshape(-1)
+        candidate_count = min(64, flat.size)
+        if candidate_count <= 0:
+            return None
+        indices = np.argpartition(flat, -candidate_count)[-candidate_count:]
+        indices = indices[np.argsort(flat[indices])[::-1]]
+        percent_offset = int(round(16 * scale))
+        best = None
+        for index in indices:
+            bracket_score = float(flat[index])
+            if bracket_score < 0.45:
+                break
+            y, x = np.unravel_index(int(index), result.shape)
+            bracket_x = minimum_x + int(x)
+            percent_score = self._score_at(
+                image,
+                percent,
+                bracket_x - percent_offset,
+                anchor_y,
+            )
+            if percent_score < 0.40:
+                continue
+            score = min(bracket_score, percent_score)
+            if best is None or score > best[1]:
+                best = (bracket_x + right_bracket.shape[1], score)
+        return best[0] if best is not None else None
 
     def _load_templates(self):
         if self.templates is not None:

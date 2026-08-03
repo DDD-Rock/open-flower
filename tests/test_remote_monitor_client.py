@@ -64,6 +64,13 @@ class RemoteMonitorClientTests(unittest.TestCase):
             self.assertEqual(payload["player"], {"x": 0.5, "y": 0.5})
             self.assertEqual(payload["teammates"], [{"x": 0.1, "y": 0.1}])
 
+    def test_realtime_publish_policy_prioritizes_frames_over_exp(self):
+        self.assertEqual(RemoteMonitorClient.FRAME_INTERVAL_SECONDS, 0.05)
+        self.assertEqual(
+            RemoteMonitorClient.SEND_PRIORITY,
+            ("rune", "zone", "frame", "exp"),
+        )
+
     def test_map_payload_matches_server_contract(self):
         with tempfile.TemporaryDirectory() as directory:
             client = RemoteMonitorClient(self._manager(directory))

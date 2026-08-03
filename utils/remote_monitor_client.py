@@ -19,8 +19,9 @@ from models.map_topology import MapTopology, NormalizedMapPoint
 
 class RemoteMonitorClient:
     MAX_MESSAGE_BYTES = 16 * 1024
-    FRAME_INTERVAL_SECONDS = 0.1
+    FRAME_INTERVAL_SECONDS = 0.05
     STATE_HEARTBEAT_SECONDS = 3.0
+    SEND_PRIORITY = ("rune", "zone", "frame", "exp")
 
     def __init__(
         self,
@@ -297,14 +298,17 @@ class RemoteMonitorClient:
         )
 
     def _sender_loop(self, app):
-        priority = ("rune", "zone", "exp", "frame")
         while self._enabled and self._connected and app is self._socket_app:
             with self._condition:
                 if self._control_messages:
                     message = self._control_messages.popleft()
                 else:
                     message = next(
-                        (self._latest_messages.pop(kind) for kind in priority if kind in self._latest_messages),
+                        (
+                            self._latest_messages.pop(kind)
+                            for kind in self.SEND_PRIORITY
+                            if kind in self._latest_messages
+                        ),
                         None,
                     )
                 if message is None:

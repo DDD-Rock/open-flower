@@ -14,6 +14,8 @@ next_center_adjust_interval = NAVIGATION_MODULE.next_center_adjust_interval
 teleport_direction_to_base = NAVIGATION_MODULE.teleport_direction_to_base
 TeleportExcursionGuard = NAVIGATION_MODULE.TeleportExcursionGuard
 updated_center_adjust_deadline = NAVIGATION_MODULE.updated_center_adjust_deadline
+protective_anchor_tolerance = NAVIGATION_MODULE.protective_anchor_tolerance
+requires_immediate_left_recovery = NAVIGATION_MODULE.requires_immediate_left_recovery
 
 
 class FollowHealNavigationTests(unittest.TestCase):
@@ -48,6 +50,15 @@ class FollowHealNavigationTests(unittest.TestCase):
     def test_heal_hold_and_gap_ranges_match_follow_policy(self):
         self.assertEqual(NAVIGATION_MODULE.HEAL_HOLD_RANGE, (8.0, 12.0))
         self.assertEqual(NAVIGATION_MODULE.HEAL_GAP_RANGE, (0.25, 0.60))
+
+    def test_protective_boundary_triggers_before_hard_boundary(self):
+        self.assertEqual(protective_anchor_tolerance(6), 4.5)
+        self.assertEqual(protective_anchor_tolerance(10), 7.5)
+
+    def test_left_hard_boundary_forces_immediate_recovery(self):
+        self.assertTrue(requires_immediate_left_recovery(93.9, 100, 6))
+        self.assertFalse(requires_immediate_left_recovery(94, 100, 6))
+        self.assertFalse(requires_immediate_left_recovery(108, 100, 6))
 
     def test_new_excursion_is_corrected_immediately(self):
         guard = TeleportExcursionGuard()

@@ -17,6 +17,8 @@ from utils.follow_heal_navigation import (
     HEAL_HOLD_RANGE as FOLLOW_HEAL_HOLD_RANGE,
     TeleportExcursionGuard,
     next_center_adjust_interval,
+    protective_anchor_tolerance,
+    requires_immediate_left_recovery,
     teleport_direction_to_base,
     updated_center_adjust_deadline,
 )
@@ -35,6 +37,10 @@ class FollowHealWorker(QThread):
     HEAL_GAP_RANGE = FOLLOW_HEAL_GAP_RANGE
     BUFF_RECOVERY_GAP_RANGE = (0.18, 0.42)
     MARKER_SETTLE_RANGE = (0.50, 0.80)
+    EMERGENCY_MIN_SETTLE_RANGE = (0.15, 0.25)
+    EMERGENCY_MAX_SETTLE = 0.40
+    STABILITY_POLL_RANGE = (0.03, 0.05)
+    STABLE_MARKER_DELTA = 0.75
     POSITION_POLL_RANGE = (0.035, 0.065)
 
     SPECIAL_KEY_MAP = {
@@ -71,6 +77,9 @@ class FollowHealWorker(QThread):
         self.base_x = float(anchor_pos[0])
         self.minimap_region = minimap_region
         self.boundary_tolerance = max(1.0, min(50.0, float(boundary_tolerance)))
+        self.protective_tolerance = protective_anchor_tolerance(
+            self.boundary_tolerance
+        )
 
         self.is_running = True
         self.human = HumanInput()
@@ -108,7 +117,8 @@ class FollowHealWorker(QThread):
 
             self.log_update.emit(
                 f"使用手动跟补基准点 X={self.base_x:.1f}，"
-                f"左右界限 ±{self.boundary_tolerance:.1f}"
+                f"左右界限 ±{self.boundary_tolerance:.1f}，"
+                f"提前保护 ±{self.protective_tolerance:.1f}"
             )
             if self.minimap_region:
                 self.monitor.set_minimap_region(*self.minimap_region)
@@ -201,8 +211,14 @@ class FollowHealWorker(QThread):
                     is_new_excursion = excursion_guard.should_correct(
                         player_x,
                         self.base_x,
+                        self.protective_tolerance,
+                    )
+                    force_left_recovery = requires_immediate_left_recovery(
+                        player_x,
+                        self.base_x,
                         self.boundary_tolerance,
                     )
+                    is_new_excursion = is_new_excursion or force_left_recovery
                     now = time.time()
                     is_scheduled = now >= next_adjust_at
                     if is_new_excursion or is_scheduled:
@@ -244,12 +260,42 @@ class FollowHealWorker(QThread):
                 direction,
                 self._resolve_key(self.teleport_key),
             )
-            # 等黄点稳定；新位置不会触发立即反向瞬移。
-            self._random_sleep(*self.MARKER_SETTLE_RANGE)
+            if urgent:
+                self._wait_for_player_marker_stability()
+            else:
+                # 定时修正保持较自然的稳定等待。
+                self._random_sleep(*self.MARKER_SETTLE_RANGE)
             return True
         except Exception as exc:
             self.error_signal.emit(f"瞬移键错误: {exc}")
             return False
+
+    def _wait_for_player_marker_stability(self):
+        """紧急回位后高频采样，黄点连续两帧稳定即可继续判断。"""
+        started_at = time.time()
+        minimum_end = started_at + random.uniform(*self.EMERGENCY_MIN_SETTLE_RANGE)
+        deadline = started_at + self.EMERGENCY_MAX_SETTLE
+        previous_x = None
+        stable_frames = 0
+
+        while self.is_running and time.time() < deadline:
+            player = self.monitor.find_player_position()
+            if player:
+                current_x = float(player[0])
+                if (
+                    previous_x is not None
+                    and abs(current_x - previous_x) <= self.STABLE_MARKER_DELTA
+                ):
+                    stable_frames += 1
+                else:
+                    stable_frames = 1
+                previous_x = current_x
+                if time.time() >= minimum_end and stable_frames >= 2:
+                    return
+            else:
+                previous_x = None
+                stable_frames = 0
+            self._random_sleep(*self.STABILITY_POLL_RANGE)
 
     def _resolve_key(self, key_str: str):
         normalized_key = normalize_key_name(key_str)

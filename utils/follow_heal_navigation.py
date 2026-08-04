@@ -12,6 +12,7 @@ CENTER_ADJUST_INTERVAL_RANGE = (4.0, 7.0)
 HEAL_HOLD_RANGE = (8.0, 12.0)
 HEAL_GAP_RANGE = (0.25, 0.60)
 NEW_COLLISION_DISTANCE = 1.0
+PROTECTIVE_BOUNDARY_RATIO = 0.75
 
 
 def teleport_direction_to_base(current_x: float, base_x: float) -> Optional[str]:
@@ -26,6 +27,20 @@ def teleport_direction_to_base(current_x: float, base_x: float) -> Optional[str]
 def is_outside_anchor_band(current_x: float, base_x: float, tolerance: float) -> bool:
     """是否走出了用户配置的 base_x +/- tolerance 允许区域。"""
     return abs(current_x - base_x) > max(0.0, float(tolerance))
+
+
+def protective_anchor_tolerance(boundary_tolerance: float) -> float:
+    """在硬边界内提前触发回位，给连续撞击预留缓冲距离。"""
+    return max(0.5, float(boundary_tolerance) * PROTECTIVE_BOUNDARY_RATIO)
+
+
+def requires_immediate_left_recovery(
+    current_x: float,
+    base_x: float,
+    boundary_tolerance: float,
+) -> bool:
+    """左侧硬越界属于掉层风险，必须绕过其它间隔和反向保护。"""
+    return current_x < base_x - max(0.0, float(boundary_tolerance))
 
 
 def next_center_adjust_interval() -> float:

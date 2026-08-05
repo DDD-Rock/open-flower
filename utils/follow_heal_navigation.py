@@ -39,8 +39,8 @@ def requires_immediate_left_recovery(
     base_x: float,
     boundary_tolerance: float,
 ) -> bool:
-    """左侧硬越界属于掉层风险，必须绕过其它间隔和反向保护。"""
-    return current_x < base_x - max(0.0, float(boundary_tolerance))
+    """左侧达到保护线即有掉层风险，必须绕过其它间隔和反向保护。"""
+    return current_x <= base_x - max(0.0, float(boundary_tolerance))
 
 
 def next_center_adjust_interval() -> float:
@@ -79,7 +79,20 @@ class TeleportExcursionGuard:
         current_x: float,
         base_x: float,
         tolerance: float,
+        priority_left_recovery_tolerance: Optional[float] = None,
     ) -> bool:
+        # 左侧几乎没有缓冲空间，向右回位不能被当作瞬移后的反向抖动拦截。
+        if (
+            priority_left_recovery_tolerance is not None
+            and requires_immediate_left_recovery(
+                current_x,
+                base_x,
+                priority_left_recovery_tolerance,
+            )
+        ):
+            self._clear_guard()
+            return True
+
         if not is_outside_anchor_band(current_x, base_x, tolerance):
             self._clear_guard()
             return False

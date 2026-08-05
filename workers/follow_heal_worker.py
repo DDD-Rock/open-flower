@@ -212,13 +212,8 @@ class FollowHealWorker(QThread):
                         player_x,
                         self.base_x,
                         self.protective_tolerance,
+                        priority_left_recovery_tolerance=self.protective_tolerance,
                     )
-                    force_left_recovery = requires_immediate_left_recovery(
-                        player_x,
-                        self.base_x,
-                        self.boundary_tolerance,
-                    )
-                    is_new_excursion = is_new_excursion or force_left_recovery
                     now = time.time()
                     is_scheduled = now >= next_adjust_at
                     if is_new_excursion or is_scheduled:
@@ -261,7 +256,10 @@ class FollowHealWorker(QThread):
                 self._resolve_key(self.teleport_key),
             )
             if urgent:
-                self._wait_for_player_marker_stability()
+                self._wait_for_player_marker_stability(
+                    self.base_x,
+                    self.protective_tolerance,
+                )
             else:
                 # 定时修正保持较自然的稳定等待。
                 self._random_sleep(*self.MARKER_SETTLE_RANGE)
@@ -270,7 +268,11 @@ class FollowHealWorker(QThread):
             self.error_signal.emit(f"瞬移键错误: {exc}")
             return False
 
-    def _wait_for_player_marker_stability(self):
+    def _wait_for_player_marker_stability(
+        self,
+        base_x: float,
+        left_recovery_tolerance: float,
+    ):
         """紧急回位后高频采样，黄点连续两帧稳定即可继续判断。"""
         started_at = time.time()
         minimum_end = started_at + random.uniform(*self.EMERGENCY_MIN_SETTLE_RANGE)
@@ -282,6 +284,13 @@ class FollowHealWorker(QThread):
             player = self.monitor.find_player_position()
             if player:
                 current_x = float(player[0])
+                # 首帧发现左侧危险落点就结束等待，让主循环立即向右回位。
+                if requires_immediate_left_recovery(
+                    current_x,
+                    base_x,
+                    left_recovery_tolerance,
+                ):
+                    return
                 if (
                     previous_x is not None
                     and abs(current_x - previous_x) <= self.STABLE_MARKER_DELTA

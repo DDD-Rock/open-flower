@@ -55,10 +55,23 @@ class FollowHealNavigationTests(unittest.TestCase):
         self.assertEqual(protective_anchor_tolerance(6), 4.5)
         self.assertEqual(protective_anchor_tolerance(10), 7.5)
 
-    def test_left_hard_boundary_forces_immediate_recovery(self):
+    def test_left_protective_boundary_forces_immediate_recovery(self):
         self.assertTrue(requires_immediate_left_recovery(93.9, 100, 6))
-        self.assertFalse(requires_immediate_left_recovery(94, 100, 6))
+        self.assertTrue(requires_immediate_left_recovery(94, 100, 6))
         self.assertFalse(requires_immediate_left_recovery(108, 100, 6))
+
+    def test_left_risk_bypasses_reverse_teleport_guard(self):
+        guard = TeleportExcursionGuard()
+        guard.record_teleport("left")
+
+        self.assertTrue(
+            guard.should_correct(
+                95.5,
+                100,
+                4.5,
+                priority_left_recovery_tolerance=4.5,
+            )
+        )
 
     def test_new_excursion_is_corrected_immediately(self):
         guard = TeleportExcursionGuard()

@@ -1813,6 +1813,23 @@ class MainWindow(LegacyMainWindow):
             self.rope_party_invite_role_names = []
             self._persist_settings()
             self._start_rope_party_disband()
+        elif action == "remove_rope_party_member":
+            role_name = str(command.get("targetRoleName") or "").strip()
+            if not role_name:
+                self.logger.log("收到的移除成员指令缺少角色名称")
+                self.update_log_display()
+                return
+            self.logger.log(f"收到网页移除成员指令：{role_name}")
+            self.update_log_display()
+            if (self.mode == "temple" and self.temple_function == "rope_party"
+                    and isinstance(self.worker, RopePartyWorker) and self.worker.isRunning()):
+                self.worker.enqueue_remove_member(role_name)
+                self.logger.log(f"移除成员指令已加入发送队列：{role_name}")
+                self.update_log_display()
+                return
+            if self.is_worker_running:
+                self.stop_worker()
+            self._start_rope_party_remove_member(role_name)
 
     def _start_rope_party_disband(self):
         if not self.is_window_identified:
@@ -1822,6 +1839,24 @@ class MainWindow(LegacyMainWindow):
             self.update_log_display()
             return
         worker = RopePartyWorker(self.game_window_hwnd, False, False, [], disband_only=True)
+        worker.log_update.connect(self.on_status_update)
+        worker.error_signal.connect(self.on_error)
+        worker.finished_signal.connect(self.on_worker_finished)
+        self.worker = worker
+        self.is_worker_running = True
+        worker.start()
+        if self.remote_monitor_client:
+            self.remote_monitor_client.publish_client_state(self.mode, True)
+        self._refresh_primary_action()
+
+    def _start_rope_party_remove_member(self, role_name):
+        if not self.is_window_identified:
+            self.auto_identify_on_startup()
+        if not self.is_window_identified or not self.game_window_hwnd:
+            self.logger.log(f"游戏窗口未识别，无法发送 /踢出隊伍 {role_name}")
+            self.update_log_display()
+            return
+        worker = RopePartyWorker(self.game_window_hwnd, False, False, [], remove_role_name=role_name)
         worker.log_update.connect(self.on_status_update)
         worker.error_signal.connect(self.on_error)
         worker.finished_signal.connect(self.on_worker_finished)

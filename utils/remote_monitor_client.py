@@ -275,7 +275,7 @@ class RemoteMonitorClient:
                     self.on_identity(name)
         elif payload.get("type") == "command":
             action = str(payload.get("action") or "")
-            if action in {"start", "stop", "configure_rope_party", "disband_rope_party"} and self.on_command:
+            if action in {"start", "stop", "configure_rope_party", "disband_rope_party", "remove_rope_party_member"} and self.on_command:
                 self.on_command(payload)
 
     def _on_close(self, app, _status_code, _message):

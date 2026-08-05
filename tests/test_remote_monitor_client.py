@@ -130,6 +130,12 @@ class RemoteMonitorClientTests(unittest.TestCase):
             client._on_message(None, json.dumps({"type": "command", "action": "disband_rope_party", "teamId": 7}))
             self.assertEqual(commands[-1]["action"], "disband_rope_party")
 
+            client._on_message(None, json.dumps({
+                "type": "command", "action": "remove_rope_party_member",
+                "teamId": 7, "targetRoleName": "队员",
+            }))
+            self.assertEqual(commands[-1]["targetRoleName"], "队员")
+
 
 if __name__ == "__main__":
     unittest.main()

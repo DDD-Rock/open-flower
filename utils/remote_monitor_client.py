@@ -106,6 +106,7 @@ class RemoteMonitorClient:
         allowed = {
             "team_created", "invitation_sent", "team_disbanded", "buff_due",
             "boss_joined", "buff_completed", "boss_kicked",
+            "boss_cycle_disbanded",
         }
         if int(team_id) <= 0 or event not in allowed:
             return
@@ -292,7 +293,7 @@ class RemoteMonitorClient:
             if action in {
                 "start", "stop", "configure_rope_party", "disband_rope_party",
                 "remove_rope_party_member", "start_boss_invite_cycle",
-                "cast_boss_buffs", "kick_boss_from_party",
+                "cast_boss_buffs", "kick_boss_from_party", "disband_boss_party",
             } and self.on_command:
                 self.on_command(payload)
 

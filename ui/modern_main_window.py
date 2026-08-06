@@ -1712,6 +1712,7 @@ class MainWindow(LegacyMainWindow):
         worker.boss_joined.connect(self._on_rope_party_boss_joined)
         worker.boss_buffs_completed.connect(self._on_rope_party_buffs_completed)
         worker.boss_kicked.connect(self._on_rope_party_boss_kicked)
+        worker.boss_cycle_disbanded.connect(self._on_rope_party_boss_cycle_disbanded)
         worker.countdown_update.connect(self.on_countdown_update)
         self.worker = worker
         self.is_worker_running = True
@@ -1775,6 +1776,14 @@ class MainWindow(LegacyMainWindow):
                 cycle_id=cycle_id,
             )
             self.logger.log("已向服务器上报老板踢出成功")
+            self.update_log_display()
+
+    def _on_rope_party_boss_cycle_disbanded(self, cycle_id):
+        if self.remote_monitor_client and self.rope_party_team_id > 0:
+            self.remote_monitor_client.publish_rope_party_progress(
+                self.rope_party_team_id, "boss_cycle_disbanded", cycle_id=cycle_id
+            )
+            self.logger.log("老板 BUFF 周期完成，已解散队伍并准备重新建队")
             self.update_log_display()
 
     def _start_lounge_worker(self):
@@ -2147,6 +2156,10 @@ class MainWindow(LegacyMainWindow):
             role_name = str(command.get("targetRoleName") or "").strip()
             if isinstance(self.worker, RopePartyWorker) and self.worker.isRunning() and cycle_id > 0 and role_name:
                 self.worker.kick_boss(cycle_id, role_name)
+        elif action == "disband_boss_party":
+            cycle_id = int(command.get("cycleId") or 0)
+            if isinstance(self.worker, RopePartyWorker) and self.worker.isRunning() and cycle_id > 0:
+                self.worker.pending_commands.put(("disband_boss_party", cycle_id))
 
     def _start_rope_party_disband(self):
         if not self.is_window_identified:

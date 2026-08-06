@@ -27,6 +27,7 @@ class RopePartyWorker(QThread):
     boss_joined = pyqtSignal(int)
     boss_buffs_completed = pyqtSignal(int)
     boss_kicked = pyqtSignal(int)
+    boss_cycle_disbanded = pyqtSignal(int)
     countdown_update = pyqtSignal(dict)
 
     def __init__(self, hwnd: int, is_leader: bool, first_creation: bool, invite_role_names: list[str], disband_only: bool = False, remove_role_name: str = "", buffs=None):
@@ -35,6 +36,7 @@ class RopePartyWorker(QThread):
         self.is_running = True
         self.disband_only = disband_only
         self.remove_role_name = remove_role_name.strip()
+        self.invite_role_names = [name.strip() for name in invite_role_names if name.strip()]
         if self.remove_role_name:
             self.commands = [build_remove_member_command(self.remove_role_name)]
         else:
@@ -56,6 +58,9 @@ class RopePartyWorker(QThread):
         self.boss_orange_candidate_frames = 0
         self.boss_minimap_ready = False
         self.next_boss_invite_at = 0.0
+        self.boss_join_detected_cycle_id = 0
+        self.next_boss_joined_report_at = 0.0
+        self.latest_boss_buff_cycle_id = 0
 
     def enqueue_remove_member(self, role_name: str):
         role_name = role_name.strip()
@@ -177,12 +182,18 @@ class RopePartyWorker(QThread):
                 self.boss_orange_candidate_frames = 0
                 self.boss_minimap_ready = False
                 self.next_boss_invite_at = 0.0
+                self.boss_join_detected_cycle_id = 0
+                self.next_boss_joined_report_at = 0.0
                 self.log_update.emit(f"老板 Buff 周期 {cycle_id} 启动，等待小地图基线后邀请 {role_name}")
             return True
         if kind == "cast_boss_buffs":
             cycle_id = action[1]
+            if cycle_id <= self.latest_boss_buff_cycle_id:
+                return True
+            self.latest_boss_buff_cycle_id = cycle_id
             self.boss_cycle_requested_id = 0
             self.boss_cycle_id = 0
+            self.boss_join_detected_cycle_id = 0
             if self._cast_all_buffs():
                 self.boss_buffs_completed.emit(cycle_id)
             return True
@@ -193,6 +204,25 @@ class RopePartyWorker(QThread):
                 return False
             self.log_update.emit(f"已发送老板踢出指令：{command}")
             self.boss_kicked.emit(cycle_id)
+            return True
+        if kind == "disband_boss_party":
+            cycle_id = action[1]
+            if not self._send_chat_command("/退出隊伍"):
+                return False
+            self.log_update.emit("老板 BUFF 周期完成，已发送解散队伍指令：/退出隊伍")
+            self.boss_cycle_disbanded.emit(cycle_id)
+            self._sleep(random.uniform(0.8, 1.4))
+            rebuild_commands = build_rope_party_commands(True, True, self.invite_role_names)
+            for index, command in enumerate(rebuild_commands):
+                if not self._send_chat_command(command):
+                    return False
+                self.log_update.emit(f"已发送重建队伍指令：{command}")
+                if command == "/建立隊伍":
+                    self.team_created.emit()
+                elif command.startswith("/邀請組隊 "):
+                    self.invitation_sent.emit(command[len("/邀請組隊 "):])
+                if index < len(rebuild_commands) - 1:
+                    self._sleep(random.uniform(0.55, 1.15))
             return True
         return True
 
@@ -221,9 +251,17 @@ class RopePartyWorker(QThread):
                 self.log_update.emit(
                     f"橙点数量由 {self.boss_orange_baseline} 变为 {orange_count}，判定老板已进队"
                 )
-                self.boss_cycle_id = 0
-                self.boss_joined.emit(cycle_id)
-                return True
+                self.boss_join_detected_cycle_id = cycle_id
+                self.next_boss_joined_report_at = 0.0
+        if self.boss_join_detected_cycle_id == self.boss_cycle_id:
+            now = time.time()
+            if now >= self.next_boss_joined_report_at:
+                self.boss_joined.emit(self.boss_cycle_id)
+                self.log_update.emit(
+                    f"等待服务器确认老板进队，已重新上报周期 {self.boss_cycle_id}"
+                )
+                self.next_boss_joined_report_at = now + 2.0
+            return True
         if self.boss_orange_baseline is not None and time.time() >= self.next_boss_invite_at:
             command = f"/邀請組隊 {self.boss_role_name}"
             if not self._send_chat_command(command):

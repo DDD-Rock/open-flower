@@ -44,14 +44,11 @@ class RopePartyWorker(QThread):
             else:
                 self.log_update.emit("收到网页解散队伍指令" if self.disband_only else "神殿模式 · 挂绳组队启动")
             if self.commands:
-                if not self.window_selector.bring_window_to_front(self.hwnd):
-                    self.error_signal.emit("发送队伍指令前无法激活游戏窗口")
-                    return
-                self._sleep(random.uniform(0.2, 0.45))
                 for index, command in enumerate(self.commands):
                     if not self.is_running or self.isInterruptionRequested():
                         return
-                    self._send_chat_command(command)
+                    if not self._send_chat_command(command):
+                        return
                     self.log_update.emit(f"已发送队伍指令：{command}")
                     if index < len(self.commands) - 1:
                         self._sleep(random.uniform(0.55, 1.15))
@@ -72,10 +69,8 @@ class RopePartyWorker(QThread):
                 except queue.Empty:
                     command = None
                 if command:
-                    if not self.window_selector.bring_window_to_front(self.hwnd):
-                        self.error_signal.emit("发送移除成员指令前无法激活游戏窗口")
+                    if not self._send_chat_command(command):
                         break
-                    self._send_chat_command(command)
                     self.log_update.emit(f"已发送移除成员指令：{command}")
                 self._sleep(1.0)
         except Exception as exc:
@@ -86,11 +81,31 @@ class RopePartyWorker(QThread):
             self.finished_signal.emit()
 
     def _send_chat_command(self, command: str):
+        if not self.window_selector.ensure_window_focus(self.hwnd):
+            self.error_signal.emit(f"发送指令前无法确认游戏窗口焦点：{command}")
+            return False
+        self._sleep(random.uniform(0.2, 0.45))
+        if not self.is_running or self.isInterruptionRequested():
+            return False
+        if not self.window_selector.ensure_window_focus(self.hwnd):
+            self.error_signal.emit(f"激活聊天窗口前无法确认游戏窗口焦点：{command}")
+            return False
         self.human.press_enter()
         self._sleep(random.uniform(0.18, 0.42))
+        if not self.is_running or self.isInterruptionRequested():
+            return False
+        if not self.window_selector.ensure_window_focus(self.hwnd):
+            self.error_signal.emit(f"输入指令前无法确认游戏窗口焦点：{command}")
+            return False
         self.human.type_text(command)
         self._sleep(random.uniform(0.12, 0.32))
+        if not self.is_running or self.isInterruptionRequested():
+            return False
+        if not self.window_selector.ensure_window_focus(self.hwnd):
+            self.error_signal.emit(f"发送指令前无法确认游戏窗口焦点：{command}")
+            return False
         self.human.press_enter()
+        return True
 
     def _sleep(self, seconds: float):
         deadline = time.monotonic() + seconds

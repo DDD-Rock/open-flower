@@ -126,6 +126,12 @@ class RemoteMonitorClientTests(unittest.TestCase):
             envelope = json.loads(client._control_messages[-1])
             self.assertEqual(envelope["type"], "team_joined")
             self.assertEqual(envelope["payload"], {"teamId": 7, "roleName": "队长"})
+            self.assertEqual(client._pending_team_joined["teamId"], 7)
+
+            client._on_message(None, json.dumps({
+                "type": "command", "action": "team_joined_ack", "teamId": 7,
+            }))
+            self.assertIsNone(client._pending_team_joined)
 
             client.publish_rope_party_progress(7, "team_created")
             created = json.loads(client._control_messages[-1])
@@ -162,6 +168,14 @@ class RemoteMonitorClientTests(unittest.TestCase):
                 "teamId": 7, "cycleId": 4,
             }))
             self.assertEqual(commands[-1]["cycleId"], 4)
+
+    def test_control_messages_are_not_silently_evicted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            client = RemoteMonitorClient(self._manager(directory))
+            client._enabled = True
+            for index in range(8):
+                client._enqueue("status", {"online": True, "message": str(index)})
+            self.assertEqual(len(client._control_messages), 8)
 
 
 if __name__ == "__main__":

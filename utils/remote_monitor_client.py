@@ -43,7 +43,8 @@ class RemoteMonitorClient:
         self._sequence = 0
         self._sequence_lock = threading.Lock()
         self._condition = threading.Condition()
-        self._control_messages = deque(maxlen=4)
+        self._control_messages = deque()
+        self._pending_team_joined = None
         self._latest_messages = {}
         self._last_frame_at = 0.0
         self._last_map_id = None
@@ -90,6 +91,7 @@ class RemoteMonitorClient:
                 pass
         self._connected = False
         self._reset_send_queue()
+        self._pending_team_joined = None
 
     def publish_client_state(self, mode: str, running: bool):
         self._last_state = {"mode": mode, "running": bool(running)}
@@ -100,7 +102,8 @@ class RemoteMonitorClient:
 
     def publish_team_joined(self, team_id: int, role_name: str):
         if int(team_id) > 0 and role_name.strip():
-            self._enqueue("team_joined", {"teamId": int(team_id), "roleName": role_name.strip()})
+            self._pending_team_joined = {"teamId": int(team_id), "roleName": role_name.strip()}
+            self._enqueue("team_joined", self._pending_team_joined)
 
     def publish_rope_party_progress(self, team_id: int, event: str, role_name: str = "", cycle_id: int = 0):
         allowed = {
@@ -274,6 +277,8 @@ class RemoteMonitorClient:
         self._sender_thread.start()
         self.publish_status(True, "Windows 客户端已连接")
         self.publish_client_state(**self._last_state)
+        if self._pending_team_joined:
+            self._enqueue("team_joined", self._pending_team_joined)
         self._notify("远程监控已连接")
 
     def _on_message(self, app, message):
@@ -290,6 +295,10 @@ class RemoteMonitorClient:
                     self.on_identity(name)
         elif payload.get("type") == "command":
             action = str(payload.get("action") or "")
+            if action == "team_joined_ack":
+                if self._pending_team_joined and int(payload.get("teamId") or 0) == int(self._pending_team_joined["teamId"]):
+                    self._pending_team_joined = None
+                return
             if action in {
                 "start", "stop", "configure_rope_party", "disband_rope_party",
                 "remove_rope_party_member", "start_boss_invite_cycle",
@@ -329,10 +338,14 @@ class RemoteMonitorClient:
         )
 
     def _sender_loop(self, app):
+        next_team_joined_retry_at = time.monotonic() + 3.0
         while self._enabled and self._connected and app is self._socket_app:
             with self._condition:
                 if self._control_messages:
                     message = self._control_messages.popleft()
+                elif self._pending_team_joined and time.monotonic() >= next_team_joined_retry_at:
+                    message = self._encode("team_joined", self._pending_team_joined)
+                    next_team_joined_retry_at = time.monotonic() + 3.0
                 else:
                     message = next(
                         (

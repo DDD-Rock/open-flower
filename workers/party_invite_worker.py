@@ -65,20 +65,16 @@ class PartyInviteWorker(QThread):
             self.log_update.emit("无法将游戏窗口置于前台，仍会尝试同意组队")
         self._sleep(0.15)
 
-        point = initial_point
-        for attempt in range(2):
+        self.human.click_at(initial_point[0], initial_point[1], offset_range=2)
+        for _ in range(14):
             if not self.is_running or self.isInterruptionRequested():
                 return
-            if attempt > 0:
-                refreshed = self.detector.find_accept_button()
-                if refreshed is not None:
-                    point = refreshed
-            self.human.click_at(point[0], point[1], offset_range=2)
-            self._sleep(0.3)
+            self._sleep(0.15)
             if self.detector.find_accept_button() is None:
                 self.log_update.emit("已同意队伍邀请")
                 self.invite_accepted.emit()
                 return
+        self.log_update.emit("邀请弹窗点击后仍未消失，本次不报告入队成功")
 
     def _sleep(self, seconds: float):
         deadline = time.monotonic() + seconds

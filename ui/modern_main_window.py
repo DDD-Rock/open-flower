@@ -94,6 +94,7 @@ class MainWindow(LegacyMainWindow):
         self.lounge_move_max_minutes = 30
         self.character_name = ""
         self.rope_party_team_id = 0
+        self.pending_rope_party_disband_team_id = 0
         self.rope_party_is_leader = False
         self.rope_party_first_creation = False
         self.rope_party_invite_role_names = []
@@ -1492,15 +1493,80 @@ class MainWindow(LegacyMainWindow):
             self.rope_party_is_leader,
             self.rope_party_first_creation,
             self.rope_party_invite_role_names,
+            buffs=self.buffs,
         )
         worker.log_update.connect(self.on_status_update)
         worker.error_signal.connect(self.on_error)
         worker.finished_signal.connect(self.on_worker_finished)
+        worker.team_created.connect(self._on_rope_party_team_created)
+        worker.invitation_sent.connect(self._on_rope_party_invitation_sent)
+        worker.buff_due.connect(self._on_rope_party_buff_due)
+        worker.boss_joined.connect(self._on_rope_party_boss_joined)
+        worker.boss_buffs_completed.connect(self._on_rope_party_buffs_completed)
+        worker.boss_kicked.connect(self._on_rope_party_boss_kicked)
         self.worker = worker
         self.is_worker_running = True
         worker.start()
         self.rope_party_first_creation = False
         self._set_temple_running_ui()
+
+    def _on_rope_party_team_created(self):
+        if self.remote_monitor_client and self.rope_party_team_id > 0:
+            self.remote_monitor_client.publish_rope_party_progress(
+                self.rope_party_team_id,
+                "team_created",
+            )
+            self.logger.log("已向服务器上报游戏队伍创建成功")
+            self.update_log_display()
+
+    def _on_rope_party_invitation_sent(self, role_name):
+        if self.remote_monitor_client and self.rope_party_team_id > 0:
+            self.remote_monitor_client.publish_rope_party_progress(
+                self.rope_party_team_id,
+                "invitation_sent",
+                role_name,
+            )
+            self.logger.log(f"已向服务器上报邀请发送成功：{role_name}")
+            self.update_log_display()
+
+    def _on_rope_party_buff_due(self):
+        if self.remote_monitor_client and self.rope_party_team_id > 0:
+            self.remote_monitor_client.publish_rope_party_progress(
+                self.rope_party_team_id,
+                "buff_due",
+            )
+            self.logger.log("BUFF 即将到期，已请求老板邀请周期")
+            self.update_log_display()
+
+    def _on_rope_party_boss_joined(self, cycle_id):
+        if self.remote_monitor_client and self.rope_party_team_id > 0:
+            self.remote_monitor_client.publish_rope_party_progress(
+                self.rope_party_team_id,
+                "boss_joined",
+                cycle_id=cycle_id,
+            )
+            self.logger.log("已向服务器上报老板进队")
+            self.update_log_display()
+
+    def _on_rope_party_buffs_completed(self, cycle_id):
+        if self.remote_monitor_client and self.rope_party_team_id > 0:
+            self.remote_monitor_client.publish_rope_party_progress(
+                self.rope_party_team_id,
+                "buff_completed",
+                cycle_id=cycle_id,
+            )
+            self.logger.log("本客户端老板 BUFF 已释放完毕并上报")
+            self.update_log_display()
+
+    def _on_rope_party_boss_kicked(self, cycle_id):
+        if self.remote_monitor_client and self.rope_party_team_id > 0:
+            self.remote_monitor_client.publish_rope_party_progress(
+                self.rope_party_team_id,
+                "boss_kicked",
+                cycle_id=cycle_id,
+            )
+            self.logger.log("已向服务器上报老板踢出成功")
+            self.update_log_display()
 
     def _start_lounge_worker(self):
         worker = LoungeWorker(
@@ -1803,6 +1869,11 @@ class MainWindow(LegacyMainWindow):
             self.update_log_display()
             self.start_worker()
         elif action == "disband_rope_party":
+            team_id = int(command.get("teamId") or 0)
+            if team_id <= 0:
+                self.logger.log("收到的解散队伍指令缺少队伍编号")
+                self.update_log_display()
+                return
             self.logger.log("收到网页解散队伍指令，正在停止当前模式")
             if self.is_worker_running:
                 self.stop_worker()
@@ -1811,6 +1882,7 @@ class MainWindow(LegacyMainWindow):
             self.rope_party_team_id = 0
             self.rope_party_is_leader = False
             self.rope_party_invite_role_names = []
+            self.pending_rope_party_disband_team_id = team_id
             self._persist_settings()
             self._start_rope_party_disband()
         elif action == "remove_rope_party_member":
@@ -1830,6 +1902,20 @@ class MainWindow(LegacyMainWindow):
             if self.is_worker_running:
                 self.stop_worker()
             self._start_rope_party_remove_member(role_name)
+        elif action == "start_boss_invite_cycle":
+            cycle_id = int(command.get("cycleId") or 0)
+            role_name = str(command.get("targetRoleName") or "").strip()
+            if isinstance(self.worker, RopePartyWorker) and self.worker.isRunning() and cycle_id > 0 and role_name:
+                self.worker.start_boss_invite_cycle(cycle_id, role_name)
+        elif action == "cast_boss_buffs":
+            cycle_id = int(command.get("cycleId") or 0)
+            if isinstance(self.worker, RopePartyWorker) and self.worker.isRunning() and cycle_id > 0:
+                self.worker.cast_boss_buffs(cycle_id)
+        elif action == "kick_boss_from_party":
+            cycle_id = int(command.get("cycleId") or 0)
+            role_name = str(command.get("targetRoleName") or "").strip()
+            if isinstance(self.worker, RopePartyWorker) and self.worker.isRunning() and cycle_id > 0 and role_name:
+                self.worker.kick_boss(cycle_id, role_name)
 
     def _start_rope_party_disband(self):
         if not self.is_window_identified:
@@ -1842,12 +1928,24 @@ class MainWindow(LegacyMainWindow):
         worker.log_update.connect(self.on_status_update)
         worker.error_signal.connect(self.on_error)
         worker.finished_signal.connect(self.on_worker_finished)
+        worker.team_disbanded.connect(self._on_rope_party_team_disbanded)
         self.worker = worker
         self.is_worker_running = True
         worker.start()
         if self.remote_monitor_client:
             self.remote_monitor_client.publish_client_state(self.mode, True)
         self._refresh_primary_action()
+
+    def _on_rope_party_team_disbanded(self):
+        team_id = self.pending_rope_party_disband_team_id
+        self.pending_rope_party_disband_team_id = 0
+        if self.remote_monitor_client and team_id > 0:
+            self.remote_monitor_client.publish_rope_party_progress(
+                team_id,
+                "team_disbanded",
+            )
+            self.logger.log("已向服务器上报游戏队伍解散成功")
+            self.update_log_display()
 
     def _start_rope_party_remove_member(self, role_name):
         if not self.is_window_identified:

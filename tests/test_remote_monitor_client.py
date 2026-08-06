@@ -127,6 +127,27 @@ class RemoteMonitorClientTests(unittest.TestCase):
             self.assertEqual(envelope["type"], "team_joined")
             self.assertEqual(envelope["payload"], {"teamId": 7, "roleName": "队长"})
 
+            client.publish_rope_party_progress(7, "team_created")
+            created = json.loads(client._control_messages[-1])
+            self.assertEqual(created["type"], "rope_party_progress")
+            self.assertEqual(created["payload"], {"teamId": 7, "event": "team_created"})
+
+            client.publish_rope_party_progress(7, "invitation_sent", "队员")
+            invited = json.loads(client._control_messages[-1])
+            self.assertEqual(invited["payload"], {
+                "teamId": 7, "event": "invitation_sent", "roleName": "队员",
+            })
+
+            client.publish_rope_party_progress(7, "team_disbanded")
+            disbanded = json.loads(client._control_messages[-1])
+            self.assertEqual(disbanded["payload"], {"teamId": 7, "event": "team_disbanded"})
+
+            client.publish_rope_party_progress(7, "boss_joined", cycle_id=4)
+            boss_joined = json.loads(client._control_messages[-1])
+            self.assertEqual(boss_joined["payload"], {
+                "teamId": 7, "cycleId": 4, "event": "boss_joined",
+            })
+
             client._on_message(None, json.dumps({"type": "command", "action": "disband_rope_party", "teamId": 7}))
             self.assertEqual(commands[-1]["action"], "disband_rope_party")
 
@@ -135,6 +156,12 @@ class RemoteMonitorClientTests(unittest.TestCase):
                 "teamId": 7, "targetRoleName": "队员",
             }))
             self.assertEqual(commands[-1]["targetRoleName"], "队员")
+
+            client._on_message(None, json.dumps({
+                "type": "command", "action": "cast_boss_buffs",
+                "teamId": 7, "cycleId": 4,
+            }))
+            self.assertEqual(commands[-1]["cycleId"], 4)
 
 
 if __name__ == "__main__":

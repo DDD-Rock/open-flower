@@ -102,6 +102,20 @@ class RemoteMonitorClient:
         if int(team_id) > 0 and role_name.strip():
             self._enqueue("team_joined", {"teamId": int(team_id), "roleName": role_name.strip()})
 
+    def publish_rope_party_progress(self, team_id: int, event: str, role_name: str = "", cycle_id: int = 0):
+        allowed = {
+            "team_created", "invitation_sent", "team_disbanded", "buff_due",
+            "boss_joined", "buff_completed", "boss_kicked",
+        }
+        if int(team_id) <= 0 or event not in allowed:
+            return
+        payload = {"teamId": int(team_id), "event": event}
+        if int(cycle_id) > 0:
+            payload["cycleId"] = int(cycle_id)
+        if event == "invitation_sent" and role_name.strip():
+            payload["roleName"] = role_name.strip()
+        self._enqueue("rope_party_progress", payload)
+
     def publish_map(self, topology: MapTopology, content_size: tuple[int, int]):
         map_id = topology.map_name or f"map-{content_size[0]}x{content_size[1]}"
         if self._last_map_id == map_id:
@@ -275,7 +289,11 @@ class RemoteMonitorClient:
                     self.on_identity(name)
         elif payload.get("type") == "command":
             action = str(payload.get("action") or "")
-            if action in {"start", "stop", "configure_rope_party", "disband_rope_party", "remove_rope_party_member"} and self.on_command:
+            if action in {
+                "start", "stop", "configure_rope_party", "disband_rope_party",
+                "remove_rope_party_member", "start_boss_invite_cycle",
+                "cast_boss_buffs", "kick_boss_from_party",
+            } and self.on_command:
                 self.on_command(payload)
 
     def _on_close(self, app, _status_code, _message):

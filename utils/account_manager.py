@@ -21,15 +21,25 @@ class AccountError(Exception):
 
 
 class AccountManager:
-    DEFAULT_SERVER_BASE_URL = "http://106.52.208.129:28671"
+    DEFAULT_SERVER_BASE_URL = "https://buff.juanwang.cc"
+    LEGACY_SERVER_BASE_URLS = {
+        "http://106.52.208.129:28671",
+        "https://106.52.208.129:28671",
+        "http://buff.juanwang.cc",
+    }
 
     def __init__(self, storage_path: Optional[str] = None, server_base_url: Optional[str] = None):
         self.storage_path = Path(storage_path) if storage_path else self._default_storage_path()
-        self.server_base_url = (
+        configured_server_base_url = (
             server_base_url
             or os.environ.get("AUTOBUFF_MONITOR_SERVER")
             or self.DEFAULT_SERVER_BASE_URL
         ).rstrip("/")
+        self.server_base_url = (
+            self.DEFAULT_SERVER_BASE_URL
+            if configured_server_base_url in self.LEGACY_SERVER_BASE_URLS
+            else configured_server_base_url
+        )
 
     def authenticate(self, username: str, password: str) -> str:
         client_id = self._load_or_create_client_id()

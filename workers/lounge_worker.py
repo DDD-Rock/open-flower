@@ -137,10 +137,11 @@ class LoungeWorker(QThread):
         self._send_chat_message("/隊伍")
         self._sleep(random.uniform(0.35, 0.8))
         announcement = self.announcements.next()
-        self._send_chat_message(announcement)
-        self.log_update.emit(f"已发送：{announcement}")
+        clock_time = time.strftime("%H:%M", time.localtime())
+        self._send_chat_message(announcement, suffix=clock_time)
+        self.log_update.emit(f"已发送：{announcement} {clock_time}")
 
-    def _send_chat_message(self, message: str):
+    def _send_chat_message(self, message: str, suffix: str = ""):
         if not self.is_running:
             return
         self.human.press_enter()
@@ -149,6 +150,11 @@ class LoungeWorker(QThread):
             return
         self.human.type_text(message)
         self._sleep(random.uniform(0.12, 0.32))
+        if suffix and self.is_running:
+            press_key("space")
+            self._sleep(random.uniform(0.08, 0.18))
+            self.human.type_text(suffix)
+            self._sleep(random.uniform(0.12, 0.32))
         if self.is_running:
             self.human.press_enter()
 

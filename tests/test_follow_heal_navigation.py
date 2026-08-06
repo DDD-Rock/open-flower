@@ -16,6 +16,9 @@ TeleportExcursionGuard = NAVIGATION_MODULE.TeleportExcursionGuard
 updated_center_adjust_deadline = NAVIGATION_MODULE.updated_center_adjust_deadline
 protective_anchor_tolerance = NAVIGATION_MODULE.protective_anchor_tolerance
 requires_immediate_left_recovery = NAVIGATION_MODULE.requires_immediate_left_recovery
+is_near_anchor = NAVIGATION_MODULE.is_near_anchor
+outward_teleport_direction = NAVIGATION_MODULE.outward_teleport_direction
+opposite_direction = NAVIGATION_MODULE.opposite_direction
 
 
 class FollowHealNavigationTests(unittest.TestCase):
@@ -72,6 +75,17 @@ class FollowHealNavigationTests(unittest.TestCase):
                 priority_left_recovery_tolerance=4.5,
             )
         )
+
+    def test_near_anchor_excursion_uses_half_boundary(self):
+        self.assertTrue(is_near_anchor(101.9, 100, 4))
+        self.assertTrue(is_near_anchor(102, 100, 4))
+        self.assertFalse(is_near_anchor(102.1, 100, 4))
+
+    def test_near_anchor_excursion_points_away_then_back(self):
+        self.assertEqual(outward_teleport_direction(99, 100), "left")
+        self.assertEqual(outward_teleport_direction(101, 100), "right")
+        self.assertEqual(opposite_direction("left"), "right")
+        self.assertEqual(opposite_direction("right"), "left")
 
     def test_new_excursion_is_corrected_immediately(self):
         guard = TeleportExcursionGuard()

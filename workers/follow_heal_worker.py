@@ -16,7 +16,10 @@ from utils.follow_heal_navigation import (
     HEAL_GAP_RANGE as FOLLOW_HEAL_GAP_RANGE,
     HEAL_HOLD_RANGE as FOLLOW_HEAL_HOLD_RANGE,
     TeleportExcursionGuard,
+    is_near_anchor,
     next_center_adjust_interval,
+    opposite_direction,
+    outward_teleport_direction,
     protective_anchor_tolerance,
     requires_immediate_left_recovery,
     teleport_direction_to_base,
@@ -216,7 +219,20 @@ class FollowHealWorker(QThread):
                     )
                     now = time.time()
                     is_scheduled = now >= next_adjust_at
-                    if is_new_excursion or is_scheduled:
+                    should_perform_near_anchor_excursion = (
+                        not is_new_excursion
+                        and is_scheduled
+                        and is_near_anchor(
+                            player_x,
+                            self.base_x,
+                            self.boundary_tolerance,
+                        )
+                    )
+                    if should_perform_near_anchor_excursion:
+                        return_direction = self._perform_near_anchor_excursion(player_x)
+                        if return_direction:
+                            excursion_guard.record_teleport(return_direction)
+                    elif is_new_excursion or is_scheduled:
                         direction = teleport_direction_to_base(player_x, self.base_x)
                         if direction:
                             teleported = self._teleport_toward_base(
@@ -226,11 +242,11 @@ class FollowHealWorker(QThread):
                             )
                             if teleported:
                                 excursion_guard.record_teleport(direction)
-                        next_adjust_at = updated_center_adjust_deadline(
-                            next_adjust_at,
-                            now,
-                            is_scheduled,
-                        )
+                    next_adjust_at = updated_center_adjust_deadline(
+                        next_adjust_at,
+                        now,
+                        is_scheduled,
+                    )
                 else:
                     missing_player_count += 1
                     if missing_player_count == 1 or missing_player_count % 8 == 0:
@@ -244,7 +260,13 @@ class FollowHealWorker(QThread):
             self._random_sleep(*self.HEAL_GAP_RANGE)
         return next_adjust_at
 
-    def _teleport_toward_base(self, direction: str, player_x: float, urgent: bool):
+    def _teleport_toward_base(
+        self,
+        direction: str,
+        player_x: float,
+        urgent: bool,
+        settle_range=None,
+    ):
         direction_text = "左" if direction == "left" else "右"
         phase = "快速回位" if urgent else "跟补修正"
         self.log_update.emit(
@@ -262,11 +284,34 @@ class FollowHealWorker(QThread):
                 )
             else:
                 # 定时修正保持较自然的稳定等待。
-                self._random_sleep(*self.MARKER_SETTLE_RANGE)
+                self._random_sleep(*(settle_range or self.MARKER_SETTLE_RANGE))
             return True
         except Exception as exc:
             self.error_signal.emit(f"瞬移键错误: {exc}")
             return False
+
+    def _perform_near_anchor_excursion(self, player_x: float) -> Optional[str]:
+        outward = outward_teleport_direction(player_x, self.base_x)
+        return_direction = opposite_direction(outward)
+        self.log_update.emit(
+            f"近点拟人往返：先向{'左' if outward == 'left' else '右'}侧瞬移，"
+            "短暂间隔后回位"
+        )
+        if not self._teleport_toward_base(
+            outward,
+            player_x,
+            urgent=False,
+            settle_range=(0.12, 0.24),
+        ):
+            return None
+        if not self._teleport_toward_base(
+            return_direction,
+            player_x,
+            urgent=False,
+            settle_range=(0.15, 0.28),
+        ):
+            return None
+        return return_direction
 
     def _wait_for_player_marker_stability(
         self,

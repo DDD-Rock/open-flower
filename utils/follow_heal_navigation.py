@@ -13,6 +13,7 @@ HEAL_HOLD_RANGE = (8.0, 12.0)
 HEAL_GAP_RANGE = (0.25, 0.60)
 NEW_COLLISION_DISTANCE = 1.0
 PROTECTIVE_BOUNDARY_RATIO = 0.75
+NEAR_ANCHOR_EXCURSION_RATIO = 0.5
 
 
 def teleport_direction_to_base(current_x: float, base_x: float) -> Optional[str]:
@@ -32,6 +33,24 @@ def is_outside_anchor_band(current_x: float, base_x: float, tolerance: float) ->
 def protective_anchor_tolerance(boundary_tolerance: float) -> float:
     """在硬边界内提前触发回位，给连续撞击预留缓冲距离。"""
     return max(0.5, float(boundary_tolerance) * PROTECTIVE_BOUNDARY_RATIO)
+
+
+def is_near_anchor(current_x: float, base_x: float, tolerance: float) -> bool:
+    """是否处于允许范围的一半以内，触发一次拟人往返瞬移。"""
+    return abs(current_x - base_x) <= max(0.0, float(tolerance)) * NEAR_ANCHOR_EXCURSION_RATIO
+
+
+def outward_teleport_direction(current_x: float, base_x: float) -> str:
+    """返回远离基准点的一侧；正好重合时随机选择一侧。"""
+    if current_x < base_x:
+        return "left"
+    if current_x > base_x:
+        return "right"
+    return random.choice(("left", "right"))
+
+
+def opposite_direction(direction: str) -> str:
+    return "right" if direction == "left" else "left"
 
 
 def requires_immediate_left_recovery(

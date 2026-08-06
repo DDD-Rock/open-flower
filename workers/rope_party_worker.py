@@ -83,8 +83,8 @@ class RopePartyWorker(QThread):
                     self.log_update.emit(f"已发送队伍指令：{command}")
                     if command == "/建立隊伍":
                         self.team_created.emit()
-                    elif command.startswith("/邀请组队 "):
-                        self.invitation_sent.emit(command[len("/邀请组队 "):])
+                    elif command.startswith("/邀請組隊 "):
+                        self.invitation_sent.emit(command[len("/邀請組隊 "):])
                     if index < len(self.commands) - 1:
                         self._sleep(random.uniform(0.55, 1.15))
                 if self.remove_role_name:

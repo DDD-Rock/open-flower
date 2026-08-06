@@ -14,7 +14,7 @@ class RopePartyWorkerTests(unittest.TestCase):
     def test_first_creation_leader_builds_commands_in_order(self):
         self.assertEqual(
             build_rope_party_commands(True, True, ["队员甲", "队员乙"]),
-            ["/退出隊伍", "/建立隊伍", "/邀请组队 队员甲", "/邀请组队 队员乙"],
+            ["/退出隊伍", "/建立隊伍", "/邀請組隊 队员甲", "/邀請組隊 队员乙"],
         )
 
     def test_member_or_team_modification_does_not_recreate_party(self):

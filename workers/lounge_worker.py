@@ -134,7 +134,7 @@ class LoungeWorker(QThread):
         if not self.is_running:
             return
         self._sleep(random.uniform(0.25, 0.6))
-        self._send_chat_message("/队伍")
+        self._send_chat_message("/隊伍")
         self._sleep(random.uniform(0.35, 0.8))
         announcement = self.announcements.next()
         self._send_chat_message(announcement)

@@ -17,7 +17,7 @@ class ModernUIContractTests(unittest.TestCase):
             "Power by 小新",
             "BUFF 配置",
             "出市场后移动方式",
-            "只向右（骨龙）",
+            "只向右（骨龙、忘却）",
             "跟补模式",
             "加血技能键",
             "瞬移技能键",

@@ -904,7 +904,7 @@ class MainWindow(LegacyMainWindow):
         for text, value in (
             ("先右再左", "right_left"),
             ("只向左（鱼窝）", "left_only"),
-            ("只向右（骨龙）", "right_only"),
+            ("只向右（骨龙、忘却）", "right_only"),
         ):
             self.pre_skill_combo.addItem(text, value)
         self.pre_skill_combo.currentIndexChanged.connect(

@@ -489,11 +489,16 @@ class MapLibraryDialog(QDialog):
         self.hwnd = hwnd
         self.window_selector = window_selector
         self.account_manager = account_manager
+        self.is_super_admin = bool(
+            self.account_manager
+            and self.account_manager.session_credentials()["isSuperAdmin"]
+        )
 
         layout = QVBoxLayout(self)
         self.list_widget = QListWidget()
         self.list_widget.itemDoubleClicked.connect(self._edit)
-        layout.addWidget(self.list_widget)
+        if self.is_super_admin:
+            layout.addWidget(self.list_widget)
 
         first_row = QHBoxLayout()
         self.create_button = QPushButton("从当前小地图创建")
@@ -507,24 +512,23 @@ class MapLibraryDialog(QDialog):
             self.delete_button,
         ):
             first_row.addWidget(button)
-        layout.addLayout(first_row)
+        if self.is_super_admin:
+            layout.addLayout(first_row)
 
         second_row = QHBoxLayout()
         self.import_button = QPushButton("导入")
         self.export_button = QPushButton("导出全部")
-        second_row.addWidget(self.import_button)
-        second_row.addWidget(self.export_button)
         self.cloud_upload_button = QPushButton("上传所选")
         self.cloud_upload_all_button = QPushButton("上传全部")
         self.cloud_download_button = QPushButton("云端下载")
-        if self.account_manager and self.account_manager.session_credentials()["isSuperAdmin"]:
+        if self.is_super_admin:
+            second_row.addWidget(self.import_button)
+            second_row.addWidget(self.export_button)
             second_row.addWidget(self.cloud_upload_button)
             second_row.addWidget(self.cloud_upload_all_button)
-            second_row.addWidget(self.cloud_download_button)
         else:
-            self.cloud_upload_button.hide()
-            self.cloud_upload_all_button.hide()
-            self.cloud_download_button.hide()
+            layout.addWidget(QLabel("普通用户仅可从云端下载地图标注。"))
+        second_row.addWidget(self.cloud_download_button)
         second_row.addStretch(1)
         close_button = QPushButton("完成")
         close_button.clicked.connect(self.accept)
@@ -565,6 +569,8 @@ class MapLibraryDialog(QDialog):
         return index if 0 <= index < len(self.maps) else None
 
     def _create(self):
+        if not self.is_super_admin:
+            return
         if self.current_image is None:
             QMessageBox.information(self, "提示", "请先启动监控并取得当前小地图画面")
             return
@@ -596,6 +602,8 @@ class MapLibraryDialog(QDialog):
             self._reload(name)
 
     def _edit(self, *_):
+        if not self.is_super_admin:
+            return
         index = self._selected_index()
         if index is None:
             return
@@ -612,6 +620,8 @@ class MapLibraryDialog(QDialog):
             self._reload(editor.topology.map_name)
 
     def _rename(self):
+        if not self.is_super_admin:
+            return
         index = self._selected_index()
         if index is None:
             return
@@ -632,6 +642,8 @@ class MapLibraryDialog(QDialog):
         self._reload(name)
 
     def _delete(self):
+        if not self.is_super_admin:
+            return
         index = self._selected_index()
         if index is None:
             return
@@ -643,6 +655,8 @@ class MapLibraryDialog(QDialog):
         self._reload()
 
     def _import(self):
+        if not self.is_super_admin:
+            return
         path, _ = QFileDialog.getOpenFileName(
             self,
             "导入地图",
@@ -659,6 +673,8 @@ class MapLibraryDialog(QDialog):
             QMessageBox.warning(self, "导入失败", str(error))
 
     def _export(self):
+        if not self.is_super_admin:
+            return
         if not self.maps:
             QMessageBox.information(self, "提示", "当前没有可导出的地图")
             return
@@ -675,6 +691,8 @@ class MapLibraryDialog(QDialog):
                 QMessageBox.warning(self, "导出失败", str(error))
 
     def _cloud_upload(self):
+        if not self.is_super_admin:
+            return
         index = self._selected_index()
         if index is None:
             QMessageBox.information(self, "提示", "请先选择要上传的地图")
@@ -682,12 +700,16 @@ class MapLibraryDialog(QDialog):
         self._upload_maps([self.maps[index]])
 
     def _cloud_upload_all(self):
+        if not self.is_super_admin:
+            return
         if not self.maps:
             QMessageBox.information(self, "提示", "当前没有可上传的地图")
             return
         self._upload_maps(self.maps)
 
     def _upload_maps(self, maps):
+        if not self.is_super_admin:
+            return
         try:
             count = self.account_manager.upload_cloud_maps(maps)
             QMessageBox.information(self, "上传完成", f"已上传 {count} 张地图到云端")

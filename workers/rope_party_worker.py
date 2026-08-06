@@ -10,6 +10,7 @@ from PyQt6.QtCore import QThread, pyqtSignal
 
 from automation.human_input import HumanInput
 from detection.minimap_monitor import MinimapMonitor
+from utils.countdown import remaining_seconds
 from utils.keyboard_utils import press_key
 from utils.window_selector import WindowSelector
 from utils.rope_party import build_remove_member_command, build_rope_party_commands
@@ -26,6 +27,7 @@ class RopePartyWorker(QThread):
     boss_joined = pyqtSignal(int)
     boss_buffs_completed = pyqtSignal(int)
     boss_kicked = pyqtSignal(int)
+    countdown_update = pyqtSignal(dict)
 
     def __init__(self, hwnd: int, is_leader: bool, first_creation: bool, invite_role_names: list[str], disband_only: bool = False, remove_role_name: str = "", buffs=None):
         super().__init__()
@@ -42,11 +44,12 @@ class RopePartyWorker(QThread):
         self.pending_commands = queue.Queue()
         self.buffs = [buff for buff in (buffs or []) if buff.enabled and buff.key]
         now = time.time()
-        self.buff_deadlines = {index: now + float(buff.duration) for index, buff in enumerate(self.buffs)}
+        self.buff_deadlines = {buff.key: now + float(buff.duration) for buff in self.buffs}
         self.next_buff_due_report_at = 0.0
         self.monitor = MinimapMonitor()
         self.monitor.set_window_handle(hwnd)
         self.boss_cycle_id = 0
+        self.boss_cycle_requested_id = 0
         self.boss_role_name = ""
         self.boss_orange_baseline = None
         self.boss_orange_candidate = None
@@ -60,6 +63,9 @@ class RopePartyWorker(QThread):
             self.pending_commands.put(build_remove_member_command(role_name))
 
     def start_boss_invite_cycle(self, cycle_id: int, role_name: str):
+        if self.boss_cycle_id == int(cycle_id) or self.boss_cycle_requested_id == int(cycle_id):
+            return
+        self.boss_cycle_requested_id = int(cycle_id)
         self.pending_commands.put(("start_boss_invite", int(cycle_id), role_name.strip()))
 
     def cast_boss_buffs(self, cycle_id: int):
@@ -70,6 +76,8 @@ class RopePartyWorker(QThread):
 
     def run(self):
         try:
+            self._update_countdown_display()
+            last_countdown_update = time.time()
             if self.remove_role_name:
                 self.log_update.emit(f"收到网页移除队伍成员指令：{self.remove_role_name}")
             else:
@@ -98,6 +106,10 @@ class RopePartyWorker(QThread):
             if self.disband_only or self.remove_role_name:
                 return
             while self.is_running and not self.isInterruptionRequested():
+                now = time.time()
+                if now - last_countdown_update >= 1.0:
+                    last_countdown_update = now
+                    self._update_countdown_display(now)
                 if not self.window_selector.is_window_valid(self.hwnd):
                     self.error_signal.emit("游戏窗口已失效，挂绳组队已停止")
                     break
@@ -121,6 +133,7 @@ class RopePartyWorker(QThread):
             self.error_signal.emit(f"挂绳组队出错：{exc}")
         finally:
             self.is_running = False
+            self.countdown_update.emit({})
             self.human.release_all()
             self.finished_signal.emit()
 
@@ -156,6 +169,7 @@ class RopePartyWorker(QThread):
         if kind == "start_boss_invite":
             _, cycle_id, role_name = action
             if cycle_id > 0 and role_name:
+                self.boss_cycle_requested_id = 0
                 self.boss_cycle_id = cycle_id
                 self.boss_role_name = role_name
                 self.boss_orange_baseline = None
@@ -167,6 +181,7 @@ class RopePartyWorker(QThread):
             return True
         if kind == "cast_boss_buffs":
             cycle_id = action[1]
+            self.boss_cycle_requested_id = 0
             self.boss_cycle_id = 0
             if self._cast_all_buffs():
                 self.boss_buffs_completed.emit(cycle_id)
@@ -221,11 +236,21 @@ class RopePartyWorker(QThread):
     def _report_buff_due_if_needed(self):
         if not self.buffs:
             return
+        if self.boss_cycle_requested_id > 0 or self.boss_cycle_id > 0:
+            return
         now = time.time()
         minimum_remaining = min(self.buff_deadlines.values(), default=now) - now
         if minimum_remaining <= 10 and now >= self.next_buff_due_report_at:
             self.buff_due.emit()
             self.next_buff_due_report_at = now + 8.0
+
+    def _update_countdown_display(self, now=None):
+        current_time = time.time() if now is None else now
+        self.countdown_update.emit({
+            buff.key: remaining_seconds(self.buff_deadlines[buff.key], current_time)
+            for buff in self.buffs
+            if buff.key in self.buff_deadlines
+        })
 
     def _cast_all_buffs(self) -> bool:
         if not self.buffs:
@@ -246,7 +271,8 @@ class RopePartyWorker(QThread):
             if index < len(self.buffs) - 1:
                 self._sleep(random.uniform(2.0, 3.0))
         now = time.time()
-        self.buff_deadlines = {index: now + float(buff.duration) for index, buff in enumerate(self.buffs)}
+        self.buff_deadlines = {buff.key: now + float(buff.duration) for buff in self.buffs}
+        self._update_countdown_display(now)
         self.next_buff_due_report_at = 0.0
         return True
 

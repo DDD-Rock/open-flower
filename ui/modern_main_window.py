@@ -1712,6 +1712,7 @@ class MainWindow(LegacyMainWindow):
         worker.boss_joined.connect(self._on_rope_party_boss_joined)
         worker.boss_buffs_completed.connect(self._on_rope_party_buffs_completed)
         worker.boss_kicked.connect(self._on_rope_party_boss_kicked)
+        worker.countdown_update.connect(self.on_countdown_update)
         self.worker = worker
         self.is_worker_running = True
         worker.start()
@@ -2134,6 +2135,8 @@ class MainWindow(LegacyMainWindow):
             cycle_id = int(command.get("cycleId") or 0)
             role_name = str(command.get("targetRoleName") or "").strip()
             if isinstance(self.worker, RopePartyWorker) and self.worker.isRunning() and cycle_id > 0 and role_name:
+                self.logger.log(f"收到老板邀请周期 {cycle_id}，已加入执行队列：{role_name}")
+                self.update_log_display()
                 self.worker.start_boss_invite_cycle(cycle_id, role_name)
         elif action == "cast_boss_buffs":
             cycle_id = int(command.get("cycleId") or 0)

@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import (
 class MonitorCanvas(QLabel):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumHeight(190)
+        self.setMinimumHeight(235)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setStyleSheet("background:#151A24;border-radius:9px;color:#AAB2C0;")
@@ -171,26 +171,37 @@ class MonitorPanel(QFrame):
         self.manage_maps_button = QPushButton("管理地图")
         header.addWidget(self.manage_maps_button)
         self.action_test_button = QPushButton("动作测试")
-        header.addWidget(self.action_test_button)
         self.route_test_button = QPushButton("路径执行")
-        header.addWidget(self.route_test_button)
         layout.addLayout(header)
 
         self.status_label = QLabel("尚未开始监控")
         self.status_label.setStyleSheet("color:#747D8D;")
-        layout.addWidget(self.status_label)
 
         self.display_mode = QComboBox()
         self.display_mode.addItem("纯小地图", "minimap_only")
         self.display_mode.addItem("小地图 + 标注", "minimap_with_annotations")
         self.display_mode.addItem("纯标注", "annotations_only")
         self.display_mode.setCurrentIndex(1)
-        layout.addWidget(self.display_mode)
+        self.display_mode.setVisible(False)
+
+        display_row = QHBoxLayout()
+        display_row.addWidget(QLabel("显示方式"))
+        self.display_mode_buttons = []
+        for index, text in enumerate(("纯小地图", "小地图 + 标注", "纯标注")):
+            button = QPushButton(text)
+            button.clicked.connect(
+                lambda _=False, value=index: self.display_mode.setCurrentIndex(value)
+            )
+            display_row.addWidget(button, 1)
+            self.display_mode_buttons.append(button)
+        layout.addLayout(display_row)
 
         self.canvas = MonitorCanvas()
         self.display_mode.currentIndexChanged.connect(
             lambda: self.canvas.set_display_mode(self.display_mode.currentData())
         )
+        self.display_mode.currentIndexChanged.connect(self._refresh_display_buttons)
+        self._refresh_display_buttons()
         layout.addWidget(self.canvas)
 
         self.metrics_label = QLabel("X -- · Y -- · 队友 0 · 其他玩家 0 · 0 FPS")
@@ -209,6 +220,12 @@ class MonitorPanel(QFrame):
         self.exp_label.setStyleSheet("color:#747D8D;")
         layout.addWidget(self.exp_label)
 
+        test_row = QHBoxLayout()
+        test_row.addWidget(self.action_test_button)
+        test_row.addWidget(self.route_test_button)
+        test_row.addStretch(1)
+        layout.addLayout(test_row)
+
         zone_row = QHBoxLayout()
         self.zone_button = QPushButton("设置安全区基准点")
         zone_row.addWidget(self.zone_button)
@@ -226,6 +243,19 @@ class MonitorPanel(QFrame):
         self.clear_zone_button = QPushButton("清除")
         zone_row.addWidget(self.clear_zone_button)
         layout.addLayout(zone_row)
+        layout.addWidget(self.status_label)
+
+    def _refresh_display_buttons(self):
+        selected_index = self.display_mode.currentIndex()
+        for index, button in enumerate(self.display_mode_buttons):
+            button.setStyleSheet(
+                (
+                    "background:#FFFFFF;color:#171E30;border:1px solid #CCD5E2;"
+                    if index == selected_index
+                    else "background:#F1F4F8;color:#667085;border:1px solid #E2E7EF;"
+                )
+                + "border-radius:7px;padding:4px 7px;"
+            )
 
     def update_frame(self, frame):
         self.canvas.set_frame(frame)

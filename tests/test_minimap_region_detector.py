@@ -125,6 +125,29 @@ class MinimapRegionDetectorTests(unittest.TestCase):
         self.assertGreater(height, 150)
         self.assertGreaterEqual(y, divider_y)
 
+    def test_uses_last_title_divider_when_header_has_bright_bands(self):
+        image, geometry = self._make_frame(
+            panel_width=300,
+            panel_height=380,
+        )
+        panel_x, divider_y, right, _ = geometry
+
+        # The live Windows header is mostly pale blue and produces multiple
+        # thick full-width bright bands before the actual map divider.
+        cv2.rectangle(
+            image,
+            (panel_x + 4, divider_y - 20),
+            (right - 4, divider_y - 10),
+            (210, 210, 210),
+            -1,
+        )
+
+        region = detect_minimap_content_region(image)
+
+        self.assertIsNotNone(region)
+        _, y, _, _ = region
+        self.assertGreaterEqual(y, divider_y)
+
     def test_rejects_unframed_dark_rectangle(self):
         image = np.full((720, 1_280, 3), 110, dtype=np.uint8)
         cv2.rectangle(image, (0, 0), (360, 300), (20, 20, 20), -1)

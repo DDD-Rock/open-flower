@@ -6,8 +6,8 @@ import sys
 import webbrowser
 from typing import List, Optional
 
-from PyQt6.QtCore import QEvent, Qt, QTimer
-from PyQt6.QtGui import QIcon, QIntValidator
+from PyQt6.QtCore import QEvent, QSize, Qt, QTimer
+from PyQt6.QtGui import QColor, QIcon, QIntValidator, QPainter
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
     QSpinBox,
     QStackedWidget,
+    QStyle,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -116,34 +117,70 @@ class MainWindow(LegacyMainWindow):
         central.setObjectName("appRoot")
         central.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setCentralWidget(central)
-        root = QVBoxLayout(central)
+        root = QHBoxLayout(central)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(
+        sidebar = QFrame()
+        sidebar.setObjectName("sidebar")
+        sidebar.setFixedWidth(150)
+        sidebar_layout = QVBoxLayout(sidebar)
+        sidebar_layout.setContentsMargins(14, 18, 14, 14)
+        sidebar_layout.setSpacing(9)
+        self._create_sidebar_brand(sidebar_layout)
+        self._create_mode_tabs(sidebar_layout)
+        sidebar_layout.addStretch(1)
+        self._create_status_bar(sidebar_layout)
+        root.addWidget(sidebar)
+
+        content = QWidget()
+        content.setObjectName("contentPane")
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
+        self._create_header(content_layout)
+
+        self.content_stack = QStackedWidget()
+        config_page = QWidget()
+        config_page_layout = QVBoxLayout(config_page)
+        config_page_layout.setContentsMargins(0, 0, 0, 0)
+        config_scroll = QScrollArea()
+        config_scroll.setWidgetResizable(True)
+        config_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        config_scroll.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
-        scroll.setObjectName("mainScroll")
-        body = QWidget()
-        body.setObjectName("scrollBody")
-        body_layout = QVBoxLayout(body)
-        body_layout.setContentsMargins(18, 12, 18, 6)
-        body_layout.setSpacing(9)
+        config_scroll.setObjectName("mainScroll")
+        config_body = QWidget()
+        config_body.setObjectName("scrollBody")
+        config_body_layout = QVBoxLayout(config_body)
+        config_body_layout.setContentsMargins(22, 18, 22, 18)
+        config_body_layout.setSpacing(12)
+        self.create_settings_section(config_body_layout)
+        config_body_layout.addStretch(1)
+        config_scroll.setWidget(config_body)
+        config_page_layout.addWidget(config_scroll)
+        self.content_stack.addWidget(config_page)
 
-        self._create_header(body_layout)
-        self._create_status_bar(body_layout)
-        self._create_mode_tabs(body_layout)
-        self.create_settings_section(body_layout)
-        self.create_log_section(body_layout)
-        self._create_debug_section(body_layout)
-        body_layout.addStretch(1)
+        log_page = QWidget()
+        log_page_layout = QVBoxLayout(log_page)
+        log_page_layout.setContentsMargins(22, 18, 22, 18)
+        log_page_layout.setSpacing(12)
+        self.create_log_section(log_page_layout)
+        log_page_layout.addStretch(1)
+        self.content_stack.addWidget(log_page)
 
-        scroll.setWidget(body)
-        root.addWidget(scroll, 1)
-        self.create_control_section(root)
+        tools_page = QWidget()
+        tools_page_layout = QVBoxLayout(tools_page)
+        tools_page_layout.setContentsMargins(22, 18, 22, 18)
+        tools_page_layout.setSpacing(12)
+        self._create_debug_section(tools_page_layout)
+        tools_page_layout.addStretch(1)
+        self.content_stack.addWidget(tools_page)
+
+        content_layout.addWidget(self.content_stack, 1)
+        self.create_control_section(content_layout)
+        root.addWidget(content, 1)
 
         self._save_timer = QTimer(self)
         self._save_timer.setSingleShot(True)
@@ -158,11 +195,34 @@ class MainWindow(LegacyMainWindow):
             widget.installEventFilter(self)
         QTimer.singleShot(0, self._dismiss_input_focus)
 
+    def _create_sidebar_brand(self, parent_layout):
+        brand = QHBoxLayout()
+        brand.setSpacing(10)
+        icon = QLabel()
+        icon.setFixedSize(40, 40)
+        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        app_icon = QIcon(resource_path(os.path.join("resources", "app_icon.ico")))
+        icon.setPixmap(app_icon.pixmap(40, 40))
+        brand.addWidget(icon)
+        text = QVBoxLayout()
+        text.setSpacing(0)
+        name = QLabel("AutoBuff")
+        name.setStyleSheet("font-size:14px;font-weight:700;color:#172033;")
+        caption = QLabel("自动辅助")
+        caption.setToolTip("Power by 小新")
+        caption.setStyleSheet("font-size:9px;color:#778195;")
+        text.addWidget(name)
+        text.addWidget(caption)
+        brand.addLayout(text)
+        brand.addStretch(1)
+        parent_layout.addLayout(brand)
+        parent_layout.addSpacing(12)
+
     def _apply_light_theme(self):
         self.setStyleSheet(
             """
-            QMainWindow, #appRoot, #scrollBody, #mainScroll {
-                background: #F4F7FC;
+            QMainWindow, #appRoot, #contentPane, #scrollBody, #mainScroll {
+                background: #F5F8FD;
             }
             QWidget {
                 color: #171E30;
@@ -171,8 +231,16 @@ class MainWindow(LegacyMainWindow):
             }
             QFrame#card {
                 background: white;
-                border: 1px solid #E3E8F2;
-                border-radius: 14px;
+                border: 1px solid #DDE5F0;
+                border-radius: 16px;
+            }
+            QFrame#sidebar {
+                background: #FFFFFF;
+                border-right: 1px solid #DDE5F0;
+            }
+            QFrame#contentHeader {
+                background: #FFFFFF;
+                border-bottom: 1px solid #DDE5F0;
             }
             QFrame#buffRows {
                 background: #F8FAFD;
@@ -213,14 +281,14 @@ class MainWindow(LegacyMainWindow):
             }
             QPushButton#modeCard {
                 text-align: left;
-                padding: 10px 13px;
-                border-radius: 12px;
-                min-height: 42px;
+                padding: 8px 12px;
+                border-radius: 11px;
+                min-height: 34px;
                 font-size: 12px;
                 font-weight: 600;
             }
             QPushButton#primaryAction {
-                background: #1370F7;
+                background: #1675F8;
                 color: white;
                 border: none;
                 border-radius: 10px;
@@ -280,77 +348,124 @@ class MainWindow(LegacyMainWindow):
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
                 height: 0;
             }
+            QPushButton#sectionTab {
+                border:none;
+                border-radius:8px;
+                padding:5px 18px;
+                min-height:18px;
+                background:transparent;
+                color:#4F596B;
+                font-weight:600;
+            }
             """
         )
 
     def _create_header(self, parent_layout):
-        header = QHBoxLayout()
-        header.setSpacing(11)
-
-        icon = QLabel()
-        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        icon.setFixedSize(40, 40)
-        app_icon = QIcon(resource_path(os.path.join("resources", "app_icon.ico")))
-        icon.setPixmap(
-            app_icon.pixmap(
-                40,
-                40,
-                QIcon.Mode.Normal,
-                QIcon.State.Off,
-            )
-        )
-        icon.setScaledContents(True)
-        header.addWidget(icon)
-
+        header_frame = QFrame()
+        header_frame.setObjectName("contentHeader")
+        header = QHBoxLayout(header_frame)
+        header.setContentsMargins(24, 16, 24, 14)
+        header.setSpacing(12)
         title_column = QVBoxLayout()
-        title_column.setSpacing(1)
-        title = QLabel(APP_NAME)
-        title.setStyleSheet("font-size:20px;font-weight:700;color:#171E30;")
-        subtitle = QLabel("Power by 小新")
-        subtitle.setStyleSheet("font-size:10px;color:#747D8D;")
-        title_column.addWidget(title)
-        title_column.addWidget(subtitle)
+        title_column.setSpacing(2)
+        self.mode_heading = QLabel(self._mode_title(self.mode))
+        self.mode_heading.setStyleSheet("font-size:19px;font-weight:700;color:#172033;")
+        self.mode_subtitle = QLabel(self._mode_description(self.mode))
+        self.mode_subtitle.setStyleSheet("font-size:10px;color:#778195;")
+        title_column.addWidget(self.mode_heading)
+        title_column.addWidget(self.mode_subtitle)
         header.addLayout(title_column)
         header.addStretch(1)
+        tabs = QFrame()
+        tabs.setStyleSheet("background:#EEF1F5;border-radius:9px;")
+        tabs_layout = QHBoxLayout(tabs)
+        tabs_layout.setContentsMargins(2, 2, 2, 2)
+        tabs_layout.setSpacing(0)
+        self.config_page_btn = QPushButton("配置")
+        self.log_page_btn = QPushButton("日志")
+        self.tools_page_btn = QPushButton("工具")
+        for button in (
+            self.config_page_btn,
+            self.log_page_btn,
+            self.tools_page_btn,
+        ):
+            button.setObjectName("sectionTab")
+            tabs_layout.addWidget(button)
+        self.config_page_btn.clicked.connect(lambda: self._show_content_page(0))
+        self.log_page_btn.clicked.connect(lambda: self._show_content_page(1))
+        self.tools_page_btn.clicked.connect(lambda: self._show_content_page(2))
+        header.addWidget(tabs)
+        parent_layout.addWidget(header_frame)
+        QTimer.singleShot(0, lambda: self._show_content_page(0))
 
-        version = QLabel(f"版本  v{APP_VERSION}")
-        version.setStyleSheet(
-            "color:#286BD6;background:#ECF4FF;border:1px solid #9FC4FF;"
-            "border-radius:10px;padding:6px 10px;font-size:11px;font-weight:700;"
-        )
-        version.setToolTip(f"当前客户端版本 v{APP_VERSION}")
-        header.addWidget(version)
-        parent_layout.addLayout(header)
+    def _show_content_page(self, index: int):
+        if hasattr(self, "content_stack"):
+            self.content_stack.setCurrentIndex(index)
+        selected = "background:#AEB0B3;color:white;border-radius:7px;"
+        normal = "background:transparent;color:#4F596B;"
+        if hasattr(self, "config_page_btn"):
+            self.config_page_btn.setStyleSheet(selected if index == 0 else normal)
+            self.log_page_btn.setStyleSheet(selected if index == 1 else normal)
+            self.tools_page_btn.setStyleSheet(selected if index == 2 else normal)
 
     def _create_status_bar(self, parent_layout):
-        row = QHBoxLayout()
-        row.setSpacing(6)
+        divider = QFrame()
+        divider.setFrameShape(QFrame.Shape.HLine)
+        divider.setStyleSheet("color:#E3E8F2;")
+        parent_layout.addWidget(divider)
+
+        if self.account_manager:
+            credentials = self.account_manager.session_credentials()
+            account_title = QLabel("软件账号")
+            account_title.setStyleSheet("font-size:10px;font-weight:700;color:#263044;")
+            parent_layout.addWidget(account_title)
+            account_name = QLabel(credentials.get("username") or "未登录")
+            account_name.setStyleSheet("font-size:10px;color:#1675F8;font-weight:600;")
+            parent_layout.addWidget(account_name)
+            client_name = QLabel(credentials.get("clientName") or "本机客户端")
+            client_name.setStyleSheet("font-size:9px;color:#778195;")
+            client_name.setWordWrap(True)
+            parent_layout.addWidget(client_name)
 
         self.admin_status = QLabel()
         self._refresh_admin_status()
-        row.addWidget(self.admin_status)
+        parent_layout.addWidget(self.admin_status)
 
-        self.identify_btn = QPushButton("● 游戏窗口")
+        self.identify_btn = QPushButton("游戏窗口")
         self.identify_btn.setObjectName("statusChip")
         self.identify_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.identify_btn.clicked.connect(self.on_identify_window)
         self.identify_btn.setEnabled(self.window_selector is not None)
         self._set_game_status_chip(False)
-        row.addWidget(self.identify_btn)
+        parent_layout.addWidget(self.identify_btn)
 
         self.window_status_label = QLabel("未识别")
         self.window_status_label.setStyleSheet("color:#747D8D;font-size:10px;")
-        self.window_status_label.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
-        )
-        row.addWidget(self.window_status_label, 1)
+        self.window_status_label.setWordWrap(True)
+        self.window_status_label.setMaximumHeight(34)
+        parent_layout.addWidget(self.window_status_label)
 
-        self.portal_marker_btn = QPushButton("⌖")
-        self.portal_marker_btn.setFixedSize(28, 26)
+        self.portal_marker_btn = QPushButton("地图标注")
         self.portal_marker_btn.setToolTip("标记传送门")
         self.portal_marker_btn.clicked.connect(self.on_mark_portal)
-        row.addWidget(self.portal_marker_btn)
-        parent_layout.addLayout(row)
+        parent_layout.addWidget(self.portal_marker_btn)
+
+        library = QPushButton("地图仓库")
+        library.setObjectName("linkButton")
+        library.setStyleSheet(
+            "QPushButton{border:none;background:transparent;color:#1370F7;"
+            "text-align:left;font-weight:600;padding:3px;}"
+        )
+        library.clicked.connect(self.on_manage_maps)
+        parent_layout.addWidget(library)
+
+        version = QLabel(f"版本 v{APP_VERSION}")
+        version.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        version.setStyleSheet(
+            "color:#1675F8;background:#EAF3FF;border:1px solid #9EC4FB;"
+            "border-radius:9px;padding:6px;font-size:10px;font-weight:700;"
+        )
+        parent_layout.addWidget(version)
 
     def _refresh_admin_status(self):
         is_admin = False
@@ -377,38 +492,31 @@ class MainWindow(LegacyMainWindow):
         )
 
     def _create_mode_tabs(self, parent_layout):
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(9)
-        grid.setVerticalSpacing(9)
-        self.dead_flower_tab = QPushButton(
-            "↩  死花模式\n    释放后进入自由市场"
+        self.dead_flower_tab = QPushButton("死花模式")
+        self.live_flower_tab = QPushButton("活花模式")
+        self.temple_tab = QPushButton("神殿模式")
+        self.follow_heal_tab = QPushButton("跟补模式")
+        self.monitor_tab = QPushButton("监控模式")
+        self.mode_icon_specs = (
+            (self.dead_flower_tab, QStyle.StandardPixmap.SP_ArrowBack),
+            (self.live_flower_tab, QStyle.StandardPixmap.SP_BrowserReload),
+            (self.temple_tab, QStyle.StandardPixmap.SP_DirHomeIcon),
+            (self.follow_heal_tab, QStyle.StandardPixmap.SP_DialogYesButton),
+            (self.monitor_tab, QStyle.StandardPixmap.SP_ComputerIcon),
         )
-        self.live_flower_tab = QPushButton(
-            "↻  活花模式\n    在当前地图循环释放"
-        )
-        self.follow_heal_tab = QPushButton(
-            "♥  跟补模式\n    自动补血并回位"
-        )
-        self.monitor_tab = QPushButton(
-            "◉  监控模式\n    只读显示实时地图"
-        )
-        self.temple_tab = QPushButton(
-            "♜  神殿模式\n    休息室 / 挂绳组队"
-        )
+        for button, standard_icon in self.mode_icon_specs:
+            button.setIcon(self._tinted_standard_icon(standard_icon, "#748096"))
+            button.setIconSize(QSize(16, 16))
         for button in (
             self.dead_flower_tab,
             self.live_flower_tab,
+            self.temple_tab,
             self.follow_heal_tab,
             self.monitor_tab,
-            self.temple_tab,
         ):
             button.setObjectName("modeCard")
             button.setCursor(Qt.CursorShape.PointingHandCursor)
-        grid.addWidget(self.dead_flower_tab, 0, 0)
-        grid.addWidget(self.live_flower_tab, 0, 1)
-        grid.addWidget(self.follow_heal_tab, 1, 0)
-        grid.addWidget(self.monitor_tab, 1, 1)
-        grid.addWidget(self.temple_tab, 2, 0, 1, 2)
+            parent_layout.addWidget(button)
         self.dead_flower_tab.clicked.connect(
             lambda: self._switch_mode_tab("dead")
         )
@@ -424,8 +532,15 @@ class MainWindow(LegacyMainWindow):
         self.temple_tab.clicked.connect(
             lambda: self._switch_mode_tab("temple")
         )
-        parent_layout.addLayout(grid)
         self._update_mode_tab_style()
+
+    def _tinted_standard_icon(self, standard_icon, color: str) -> QIcon:
+        pixmap = self.style().standardIcon(standard_icon).pixmap(18, 18)
+        painter = QPainter(pixmap)
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+        painter.fillRect(pixmap.rect(), QColor(color))
+        painter.end()
+        return QIcon(pixmap)
 
     def _switch_mode_tab(self, mode):
         if self.is_worker_running:
@@ -451,17 +566,26 @@ class MainWindow(LegacyMainWindow):
             "temple": "神殿模式",
         }.get(mode, "活花模式")
 
+    def _mode_description(self, mode: str) -> str:
+        return {
+            "dead": "释放 BUFF 后自动进入自由市场",
+            "live": "在当前地图循环释放 BUFF",
+            "follow_heal": "自动补血、位置修正并回到基准点",
+            "monitor": "只读取游戏画面并显示实时地图",
+            "temple": "为时间神殿地图配置专用 BUFF 行为",
+        }.get(mode, "在当前地图循环释放 BUFF")
+
     def _update_mode_tab_style(self):
         selected = (
-            "QPushButton{background:#ECF4FF;color:#171E30;"
-            "border:1px solid #68A7FF;border-radius:12px;"
-            "padding:10px 13px;text-align:left;min-height:42px;"
+            "QPushButton{background:#EAF3FF;color:#1675F8;"
+            "border:1px solid #78AEF8;border-radius:11px;"
+            "padding:8px 12px;text-align:left;min-height:34px;"
             "font-size:12px;font-weight:600;}"
         )
         normal = (
             "QPushButton{background:white;color:#5F6878;"
-            "border:1px solid #E3E8F2;border-radius:12px;"
-            "padding:10px 13px;text-align:left;min-height:42px;"
+            "border:1px solid #DDE5F0;border-radius:11px;"
+            "padding:8px 12px;text-align:left;min-height:34px;"
             "font-size:12px;font-weight:600;}"
             "QPushButton:hover{background:#F8FAFD;border-color:#AFCFFF;}"
         )
@@ -472,6 +596,30 @@ class MainWindow(LegacyMainWindow):
         )
         self.monitor_tab.setStyleSheet(selected if self.mode == "monitor" else normal)
         self.temple_tab.setStyleSheet(selected if self.mode == "temple" else normal)
+        if hasattr(self, "mode_icon_specs"):
+            selected_button = {
+                "dead": self.dead_flower_tab,
+                "live": self.live_flower_tab,
+                "temple": self.temple_tab,
+                "follow_heal": self.follow_heal_tab,
+                "monitor": self.monitor_tab,
+            }.get(self.mode)
+            for button, standard_icon in self.mode_icon_specs:
+                button.setIcon(
+                    self._tinted_standard_icon(
+                        standard_icon,
+                        "#1675F8" if button is selected_button else "#748096",
+                    )
+                )
+        if hasattr(self, "mode_heading"):
+            self.mode_heading.setText(self._mode_title(self.mode))
+            self.mode_subtitle.setText(self._mode_description(self.mode))
+        if hasattr(self, "tools_page_btn"):
+            self.tools_page_btn.setVisible(self.mode != "monitor")
+            if self.mode == "monitor" and self.content_stack.currentIndex() == 2:
+                self._show_content_page(0)
+        if hasattr(self, "footer_status_mode"):
+            self.footer_status_mode.setText(self._mode_title(self.mode))
 
     def create_settings_section(self, parent_layout):
         card = QFrame()
@@ -511,19 +659,12 @@ class MainWindow(LegacyMainWindow):
         layout.addWidget(divider)
 
         self.temple_function_widget = self._create_temple_function_selector()
-        layout.addWidget(self.temple_function_widget)
         self.movement_stack = QStackedWidget()
         self.movement_stack.addWidget(self._create_live_options())
         self.movement_stack.addWidget(self._create_dead_options())
         self.movement_stack.addWidget(self._create_follow_heal_options())
         self.movement_stack.addWidget(self._create_temple_options())
         self.movement_stack.addWidget(self._create_rope_party_options())
-        layout.addWidget(self.movement_stack)
-
-        divider = QFrame()
-        divider.setFrameShape(QFrame.Shape.HLine)
-        divider.setStyleSheet("color:#E7EBF2;")
-        layout.addWidget(divider)
 
         party_row = QHBoxLayout()
         party_title = QLabel("自动同意组队")
@@ -542,7 +683,29 @@ class MainWindow(LegacyMainWindow):
         party_row.addWidget(self.party_invite_checkbox)
         layout.addLayout(party_row)
 
-        role_row = QHBoxLayout()
+        map_row = QHBoxLayout()
+        map_title = QLabel("地图标注")
+        map_title.setStyleSheet("font-size:11px;font-weight:600;")
+        map_row.addWidget(map_title)
+        self.map_count_label = QLabel(f"已创建 {len(self.map_topologies)} 张地图")
+        self.map_count_label.setStyleSheet("color:#747D8D;font-size:9px;")
+        map_row.addWidget(self.map_count_label)
+        map_row.addStretch(1)
+        manage_maps_inline = QPushButton("管理地图")
+        manage_maps_inline.clicked.connect(self.on_manage_maps)
+        map_row.addWidget(manage_maps_inline)
+        layout.addLayout(map_row)
+
+        divider = QFrame()
+        divider.setFrameShape(QFrame.Shape.HLine)
+        divider.setStyleSheet("color:#E7EBF2;")
+        layout.addWidget(divider)
+        layout.addWidget(self.temple_function_widget)
+        layout.addWidget(self.movement_stack)
+
+        self.role_widget = QWidget()
+        role_row = QHBoxLayout(self.role_widget)
+        role_row.setContentsMargins(0, 0, 0, 0)
         role_row.addWidget(QLabel("游戏角色名"))
         self.character_name_input = QLineEdit()
         self.character_name_input.setPlaceholderText("用于网页组队邀请")
@@ -554,9 +717,11 @@ class MainWindow(LegacyMainWindow):
         save_role_btn = QPushButton("保存")
         save_role_btn.clicked.connect(self._save_character_name)
         role_row.addWidget(save_role_btn)
-        layout.addLayout(role_row)
+        layout.addWidget(self.role_widget)
 
-        role_actions_row = QHBoxLayout()
+        self.role_actions_widget = QWidget()
+        role_actions_row = QHBoxLayout(self.role_actions_widget)
+        role_actions_row.setContentsMargins(0, 0, 0, 0)
         role_actions_row.addStretch(1)
         clients_btn = QPushButton("客户端管理")
         clients_btn.clicked.connect(self._open_clients_page)
@@ -564,7 +729,7 @@ class MainWindow(LegacyMainWindow):
         copy_btn = QPushButton("复制链接")
         copy_btn.clicked.connect(self._copy_clients_page)
         role_actions_row.addWidget(copy_btn)
-        layout.addLayout(role_actions_row)
+        layout.addWidget(self.role_actions_widget)
         self.settings_card = card
         parent_layout.addWidget(card)
         self.monitor_panel = MonitorPanel()
@@ -589,8 +754,32 @@ class MainWindow(LegacyMainWindow):
         self.temple_function_combo.addItem("挂绳组队", "rope_party")
         self.temple_function_combo.addItem("进出自由", "free_entry")
         self.temple_function_combo.currentIndexChanged.connect(self._on_temple_function_changed)
-        row.addWidget(self.temple_function_combo, 1)
+        self.temple_function_combo.setVisible(False)
+        self.temple_function_buttons = []
+        for index, text in enumerate(("休息室", "挂绳组队", "进出自由")):
+            button = QPushButton(text)
+            button.clicked.connect(
+                lambda _=False, value=index: self.temple_function_combo.setCurrentIndex(value)
+            )
+            row.addWidget(button, 1)
+            self.temple_function_buttons.append(button)
+        self.temple_function_combo.currentIndexChanged.connect(
+            self._refresh_temple_function_buttons
+        )
+        self._refresh_temple_function_buttons()
         return panel
+
+    def _refresh_temple_function_buttons(self):
+        current = self.temple_function_combo.currentIndex()
+        for index, button in enumerate(self.temple_function_buttons):
+            button.setStyleSheet(
+                (
+                    "background:#FFFFFF;color:#171E30;border:1px solid #CCD5E2;"
+                    if index == current
+                    else "background:#F1F4F8;color:#667085;border:1px solid #E2E7EF;"
+                )
+                + "border-radius:7px;padding:4px 7px;"
+            )
 
     def _create_temple_options(self):
         panel = QWidget()
@@ -733,6 +922,10 @@ class MainWindow(LegacyMainWindow):
 
         chair_row = self._create_chair_controls()
         row.addWidget(self._option_column("空闲时坐椅子", chair_row), 1)
+
+        portal = QPushButton("标记传送门")
+        portal.clicked.connect(self.on_mark_portal)
+        row.addWidget(self._option_column("自由市场传送门", portal), 1)
         return panel
 
     def _create_follow_heal_options(self):
@@ -924,13 +1117,12 @@ class MainWindow(LegacyMainWindow):
         layout.setSpacing(5)
 
         header = QHBoxLayout()
-        self.log_toggle_btn = QPushButton("›  运行日志")
+        self.log_toggle_btn = QPushButton("运行日志")
         self.log_toggle_btn.setObjectName("linkButton")
         self.log_toggle_btn.setStyleSheet(
             "QPushButton{border:none;background:transparent;color:#171E30;"
             "font-weight:700;text-align:left;padding:2px;}"
         )
-        self.log_toggle_btn.clicked.connect(self._toggle_log_section)
         header.addWidget(self.log_toggle_btn)
         header.addStretch(1)
         clear_button = QPushButton("清空")
@@ -944,12 +1136,13 @@ class MainWindow(LegacyMainWindow):
         self.log_preview.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
+        self.log_preview.setVisible(False)
         layout.addWidget(self.log_preview)
 
         self.log_display = QTextEdit()
         self.log_display.setReadOnly(True)
-        self.log_display.setMinimumHeight(96)
-        self.log_display.setVisible(False)
+        self.log_display.setMinimumHeight(420)
+        self.log_display.setVisible(True)
         layout.addWidget(self.log_display)
         parent_layout.addWidget(card)
 
@@ -969,13 +1162,14 @@ class MainWindow(LegacyMainWindow):
             "QPushButton{border:none;background:transparent;color:#747D8D;"
             "text-align:left;padding:2px;font-size:9px;}"
         )
-        self.debug_toggle_btn.clicked.connect(self._toggle_debug_section)
+        self.debug_toggle_btn.setVisible(False)
         parent_layout.addWidget(self.debug_toggle_btn)
 
-        self.debug_widget = QWidget()
-        self.debug_widget.setVisible(False)
+        self.debug_widget = QFrame()
+        self.debug_widget.setObjectName("card")
+        self.debug_widget.setVisible(True)
         row = QHBoxLayout(self.debug_widget)
-        row.setContentsMargins(0, 0, 0, 0)
+        row.setContentsMargins(14, 14, 14, 14)
         row.setSpacing(5)
         self.test_market_btn = QPushButton("测试离开市场")
         self.test_return_market_btn = QPushButton("测试回到市场")
@@ -1004,15 +1198,27 @@ class MainWindow(LegacyMainWindow):
             "QFrame#footer{background:rgba(255,255,255,245);"
             "border-top:1px solid #E3E8F2;}"
         )
-        layout = QVBoxLayout(footer)
-        layout.setContentsMargins(18, 9, 18, 10)
+        layout = QHBoxLayout(footer)
+        layout.setContentsMargins(22, 10, 22, 11)
+        layout.setSpacing(14)
         self.is_worker_running = False
+        status = QVBoxLayout()
+        status.setSpacing(0)
+        self.footer_status_title = QLabel("●  准备就绪")
+        self.footer_status_title.setStyleSheet(
+            "color:#4F596B;font-size:10px;font-weight:700;"
+        )
+        self.footer_status_mode = QLabel(self._mode_title(self.mode))
+        self.footer_status_mode.setStyleSheet("color:#8791A3;font-size:9px;")
+        status.addWidget(self.footer_status_title)
+        status.addWidget(self.footer_status_mode)
+        layout.addLayout(status)
         self.toggle_btn = QPushButton("▶  开始运行")
         self.toggle_btn.setObjectName("primaryAction")
         self.toggle_btn.setProperty("running", False)
         self.toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.toggle_btn.clicked.connect(self.on_toggle_worker)
-        layout.addWidget(self.toggle_btn)
+        layout.addWidget(self.toggle_btn, 1)
         parent_layout.addWidget(footer)
 
     def load_default_config(self):
@@ -1344,6 +1550,8 @@ class MainWindow(LegacyMainWindow):
     def _update_movement_mode_visibility(self):
         is_temple = self.mode == "temple"
         self.temple_function_widget.setVisible(is_temple)
+        self.role_widget.setVisible(is_temple)
+        self.role_actions_widget.setVisible(is_temple)
         if self.mode == "dead":
             self.movement_stack.setCurrentIndex(1)
         elif self.mode == "follow_heal":
@@ -1601,6 +1809,8 @@ class MainWindow(LegacyMainWindow):
     def _set_temple_running_ui(self):
         self._set_buff_settings_enabled(False)
         self.temple_function_combo.setEnabled(False)
+        for button in self.temple_function_buttons:
+            button.setEnabled(False)
         self.lounge_move_min_input.setEnabled(False)
         self.lounge_move_max_input.setEnabled(False)
         for tab in (self.dead_flower_tab, self.live_flower_tab, self.follow_heal_tab, self.monitor_tab, self.temple_tab):
@@ -1611,9 +1821,13 @@ class MainWindow(LegacyMainWindow):
 
     def stop_worker(self):
         monitor_worker = self.monitor_worker
-        self.monitor_worker = None
         if monitor_worker is not None:
             monitor_worker.stop()
+            # ``stopped`` is delivered through the Qt event loop. Keep the
+            # worker registered until cleanup runs, and restore the controls
+            # synchronously as a fallback when the user clicks Stop.
+            if self.monitor_worker is monitor_worker:
+                self._on_monitor_stopped(monitor_worker)
         super().stop_worker()
         if hasattr(self, "monitor_tab"):
             self.monitor_tab.setEnabled(True)
@@ -1621,6 +1835,8 @@ class MainWindow(LegacyMainWindow):
             self.temple_tab.setEnabled(True)
         if hasattr(self, "temple_function_combo"):
             self.temple_function_combo.setEnabled(True)
+            for button in self.temple_function_buttons:
+                button.setEnabled(True)
             self.lounge_move_min_input.setEnabled(True)
             self.lounge_move_max_input.setEnabled(True)
         if hasattr(self, "monitor_panel") and self.mode == "monitor":
@@ -1642,6 +1858,18 @@ class MainWindow(LegacyMainWindow):
         )
         self.toggle_btn.style().unpolish(self.toggle_btn)
         self.toggle_btn.style().polish(self.toggle_btn)
+        if hasattr(self, "footer_status_title"):
+            self.footer_status_title.setText(
+                "●  正在运行" if self.is_worker_running else "●  准备就绪"
+            )
+            self.footer_status_title.setStyleSheet(
+                (
+                    "color:#19A866;font-size:10px;font-weight:700;"
+                    if self.is_worker_running
+                    else "color:#4F596B;font-size:10px;font-weight:700;"
+                )
+            )
+            self.footer_status_mode.setText(self._mode_title(self.mode))
 
     def _show_buff_countdown(self, show: bool):
         if not show:
@@ -1990,6 +2218,8 @@ class MainWindow(LegacyMainWindow):
         )
         dialog.exec()
         self.map_topologies = self.map_library_store.load()
+        if hasattr(self, "map_count_label"):
+            self.map_count_label.setText(f"已创建 {len(self.map_topologies)} 张地图")
         if (
             self.monitor_matched_topology is not None
             and not any(

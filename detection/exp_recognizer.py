@@ -38,7 +38,7 @@ class EXPRecognitionResult:
 
 
 class EXPRecognitionStabilizer:
-    def __init__(self, required_matches: int = 1, tolerated_misses: int = 3):
+    def __init__(self, required_matches: int = 2, tolerated_misses: int = 3):
         self.required_matches = max(1, required_matches)
         self.tolerated_misses = max(0, tolerated_misses)
         self.reset()

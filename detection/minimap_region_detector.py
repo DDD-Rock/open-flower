@@ -154,13 +154,19 @@ def _content_rect(
     bands = _bright_bands(mask, left, right, top, bottom)
     minimum_divider_y = top + round(panel_width * 0.20)
     maximum_divider_y = min(bottom - 20, top + round(panel_width * 0.62))
+    minimum_canvas_height = max(70, round(panel_width * 0.36))
+    # The current Windows client paints most of the title block in pale blue.
+    # That block can contain several thick, almost full-width bright runs.  The
+    # first one belongs to the title controls; the last one is the divider
+    # immediately above the dark map canvas.
     divider = next(
         (
             band
-            for band in bands
+            for band in reversed(bands)
             if band[1] - band[0] + 1 >= 4
             and band[0] >= minimum_divider_y
             and band[1] <= maximum_divider_y
+            and bottom - band[1] >= minimum_canvas_height
         ),
         None,
     )

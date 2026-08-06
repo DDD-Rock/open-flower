@@ -45,5 +45,15 @@ class ModernUIContractTests(unittest.TestCase):
         self.assertNotIn('QLabel("⚡")', source)
 
 
+    def test_monitor_stop_restores_controls_before_clearing_worker(self):
+        source = (ROOT / "ui" / "modern_main_window.py").read_text(
+            encoding="utf-8"
+        )
+        stop_worker = source[source.index("    def stop_worker(self):") :]
+        stop_worker = stop_worker[: stop_worker.index("    def _refresh_primary_action")]
+        self.assertNotIn("self.monitor_worker = None\n        if monitor_worker", stop_worker)
+        self.assertIn("self._on_monitor_stopped(monitor_worker)", stop_worker)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -15,6 +15,7 @@ from detection.mouse_follow_verification_detector import (
 )
 from detection.rune_alert_detector import RuneAlertDetector, RuneAlertStabilizer
 from models.map_topology import MinimapVisualMatcher
+from utils.verification_region_recorder import VerificationRegionRecorder
 
 
 class MonitorWorker(QThread):
@@ -22,6 +23,7 @@ class MonitorWorker(QThread):
     status_update = pyqtSignal(str)
     rune_update = pyqtSignal(bool, object)
     verification_update = pyqtSignal(bool, object)
+    verification_recording_update = pyqtSignal(str)
     exp_update = pyqtSignal(object, str)
     error_signal = pyqtSignal(str)
     stopped = pyqtSignal()
@@ -30,6 +32,7 @@ class MonitorWorker(QThread):
     MAP_MATCH_INTERVAL_FRAMES = 6
     RUNE_INTERVAL_FRAMES = 30
     VERIFICATION_INTERVAL_FRAMES = 15
+    VERIFICATION_RECORDING_INTERVAL_FRAMES = 3
     EXP_INTERVAL_FRAMES = 15
     WINDOW_CHECK_INTERVAL_FRAMES = 30
     MAP_MISS_LIMIT = 5
@@ -55,6 +58,7 @@ class MonitorWorker(QThread):
         self._running = True
         rune_state = RuneAlertStabilizer()
         verification_state = MouseFollowVerificationStabilizer()
+        verification_recorder = VerificationRegionRecorder()
         exp_recognizer = EXPRapidOCRRecognizer()
         exp_state = EXPRecognitionStabilizer()
         exp_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="exp-ocr")
@@ -114,10 +118,16 @@ class MonitorWorker(QThread):
                     }
                 )
 
+                verification_interval = (
+                    self.VERIFICATION_RECORDING_INTERVAL_FRAMES
+                    if verification_state.is_present
+                    else self.VERIFICATION_INTERVAL_FRAMES
+                )
+                verification_due = frame_index % verification_interval == 0
                 if (
                     frame_index % self.RUNE_INTERVAL_FRAMES == 0
                     or frame_index % self.EXP_INTERVAL_FRAMES == 0
-                    or frame_index % self.VERIFICATION_INTERVAL_FRAMES == 0
+                    or verification_due
                 ):
                     full_image = self.monitor.capture_game_screen()
                 else:
@@ -151,13 +161,37 @@ class MonitorWorker(QThread):
                     changed = rune_state.update(detection)
                     if changed or rune_state.is_present:
                         self.rune_update.emit(rune_state.is_present, rune_state.latest_detection)
-                if frame_index % self.VERIFICATION_INTERVAL_FRAMES == 0:
+                if verification_due:
                     detection = (
                         MouseFollowVerificationDetector.detect(full_image)
                         if full_image is not None
                         else None
                     )
                     changed = verification_state.update(detection)
+                    try:
+                        if verification_state.is_present and full_image is not None:
+                            body_rect = (
+                                verification_state.latest_detection.body_rect
+                                if verification_state.latest_detection is not None
+                                else None
+                            )
+                            if not verification_recorder.is_recording and body_rect is not None:
+                                path = verification_recorder.start(full_image, body_rect)
+                                self.verification_recording_update.emit(
+                                    f"已开始录制验证区域：{path.name}"
+                                )
+                            elif verification_recorder.is_recording:
+                                verification_recorder.append(full_image, body_rect)
+                        elif verification_recorder.is_recording:
+                            path = verification_recorder.stop()
+                            self.verification_recording_update.emit(
+                                f"验证区域录像已保存：{path}"
+                            )
+                    except Exception as error:
+                        verification_recorder.stop()
+                        self.verification_recording_update.emit(
+                            f"验证区域录制失败：{error}"
+                        )
                     if changed or verification_state.is_present:
                         self.verification_update.emit(
                             verification_state.is_present,
@@ -171,6 +205,11 @@ class MonitorWorker(QThread):
         except Exception as error:
             self.error_signal.emit(str(error))
         finally:
+            completed_recording = verification_recorder.stop()
+            if completed_recording is not None:
+                self.verification_recording_update.emit(
+                    f"验证区域录像已保存：{completed_recording}"
+                )
             exp_executor.shutdown(wait=False, cancel_futures=True)
             self._running = False
             self.stopped.emit()

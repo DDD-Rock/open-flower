@@ -1967,6 +1967,7 @@ class MainWindow(LegacyMainWindow):
         worker.status_update.connect(self._on_monitor_status)
         worker.rune_update.connect(self._on_monitor_rune)
         worker.verification_update.connect(self._on_monitor_verification)
+        worker.verification_recording_update.connect(self._on_monitor_recording_update)
         worker.exp_update.connect(self._on_monitor_exp)
         worker.error_signal.connect(self._on_monitor_error)
         worker.stopped.connect(lambda current=worker: self._on_monitor_stopped(current))
@@ -2052,6 +2053,10 @@ class MainWindow(LegacyMainWindow):
         if self.remote_monitor_client:
             confidence = detection.confidence if detection is not None else None
             self.remote_monitor_client.publish_verification(present, confidence)
+
+    def _on_monitor_recording_update(self, message):
+        self.logger.log(message)
+        self.update_log_display()
 
     def _on_monitor_exp(self, reading, status):
         self.monitor_panel.set_exp(reading, status)

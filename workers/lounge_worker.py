@@ -8,7 +8,7 @@ import time
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from automation.human_input import HumanInput
+from automation.human_input import HumanInput, input_transaction_lock
 from detection.minimap_monitor import MinimapMonitor
 from utils.keyboard_utils import press_key
 from utils.lounge import LoungeAnnouncementPicker, LoungeMarkerCounts, LoungePopulationTracker
@@ -142,20 +142,18 @@ class LoungeWorker(QThread):
         self.log_update.emit(f"已发送：{announcement} {clock_time}")
 
     def _send_chat_message(self, message: str, suffix: str = ""):
-        if not self.is_running:
-            return
-        self.human.press_enter()
-        self._sleep(random.uniform(0.18, 0.42))
-        if not self.is_running:
-            return
-        self.human.type_text(message)
-        self._sleep(random.uniform(0.12, 0.32))
-        if suffix and self.is_running:
-            press_key("space")
-            self._sleep(random.uniform(0.08, 0.18))
-            self.human.type_text(suffix)
+        with input_transaction_lock:
+            if not self.is_running:
+                return
+            self.human.press_enter()
+            self._sleep(random.uniform(0.18, 0.42))
+            self.human.type_text(message)
             self._sleep(random.uniform(0.12, 0.32))
-        if self.is_running:
+            if suffix:
+                press_key("space")
+                self._sleep(random.uniform(0.08, 0.18))
+                self.human.type_text(suffix)
+                self._sleep(random.uniform(0.12, 0.32))
             self.human.press_enter()
 
     def _perform_anti_stuck_movement(self):

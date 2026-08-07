@@ -8,7 +8,7 @@ import time
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from automation.human_input import HumanInput
+from automation.human_input import HumanInput, input_transaction_lock
 from detection.minimap_monitor import MinimapMonitor
 from utils.countdown import remaining_seconds
 from utils.keyboard_utils import press_key
@@ -143,31 +143,22 @@ class RopePartyWorker(QThread):
             self.finished_signal.emit()
 
     def _send_chat_command(self, command: str):
-        if not self._ensure_game_focus():
-            self.error_signal.emit(f"发送指令前无法确认游戏窗口焦点：{command}")
-            return False
-        self._sleep(random.uniform(0.2, 0.45))
-        if not self.is_running or self.isInterruptionRequested():
-            return False
-        if not self._ensure_game_focus():
-            self.error_signal.emit(f"激活聊天窗口前无法确认游戏窗口焦点：{command}")
-            return False
-        self.human.press_enter()
-        self._sleep(random.uniform(0.18, 0.42))
-        if not self.is_running or self.isInterruptionRequested():
-            return False
-        if not self._ensure_game_focus():
-            self.error_signal.emit(f"输入指令前无法确认游戏窗口焦点：{command}")
-            return False
-        self.human.type_text(command)
-        self._sleep(random.uniform(0.12, 0.32))
-        if not self.is_running or self.isInterruptionRequested():
-            return False
-        if not self._ensure_game_focus():
-            self.error_signal.emit(f"发送指令前无法确认游戏窗口焦点：{command}")
-            return False
-        self.human.press_enter()
-        return True
+        with input_transaction_lock:
+            if not self._ensure_game_focus():
+                self.error_signal.emit(f"发送指令前无法确认游戏窗口焦点：{command}")
+                return False
+            self._sleep(random.uniform(0.2, 0.45))
+            if not self.is_running or self.isInterruptionRequested():
+                return False
+
+            # Once chat is opened, always finish the second Enter. A stop or
+            # reconfigure request takes effect after this command completes.
+            self.human.press_enter()
+            self._sleep(random.uniform(0.18, 0.42))
+            self.human.type_text(command)
+            self._sleep(random.uniform(0.12, 0.32))
+            self.human.press_enter()
+            return True
 
     def _handle_boss_action(self, action) -> bool:
         kind = action[0]

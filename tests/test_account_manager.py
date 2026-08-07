@@ -45,7 +45,7 @@ class AccountManagerTests(unittest.TestCase):
 
         request = urlopen.call_args.args[0]
         self.assertEqual(request.get_header("X-autobuff-client-platform"), "windows")
-        self.assertEqual(request.get_header("X-autobuff-client-version"), "2.1.2")
+        self.assertEqual(request.get_header("X-autobuff-client-version"), "2.1.3")
 
     def test_login_token_is_reused_for_startup_restore(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -1705,7 +1705,7 @@ class MainWindow(LegacyMainWindow):
         )
         worker.log_update.connect(self.on_status_update)
         worker.error_signal.connect(self.on_error)
-        worker.finished_signal.connect(self.on_worker_finished)
+        worker.finished_signal.connect(lambda worker=worker: self.on_worker_finished(worker))
         worker.team_created.connect(self._on_rope_party_team_created)
         worker.invitation_sent.connect(self._on_rope_party_invitation_sent)
         worker.buff_due.connect(self._on_rope_party_buff_due)
@@ -1795,7 +1795,7 @@ class MainWindow(LegacyMainWindow):
         )
         worker.log_update.connect(self.on_status_update)
         worker.error_signal.connect(self.on_error)
-        worker.finished_signal.connect(self.on_worker_finished)
+        worker.finished_signal.connect(lambda worker=worker: self.on_worker_finished(worker))
         self.worker = worker
         self.is_worker_running = True
         worker.start()
@@ -1828,6 +1828,20 @@ class MainWindow(LegacyMainWindow):
         if self.remote_monitor_client:
             self.remote_monitor_client.publish_client_state(self.mode, True)
         self._refresh_primary_action()
+
+    def on_worker_finished(self, worker=None):
+        """Handle completion only for the worker that is currently active.
+
+        A remote configuration can stop one worker and start its replacement
+        before Qt delivers the old worker's finished signal.  Without the
+        identity check below, that stale signal calls ``stop_worker`` and
+        immediately stops the replacement as well.
+        """
+        if worker is not None and self.worker is not worker:
+            return
+        self.logger.log("Worker已停止")
+        self.update_log_display()
+        self.stop_worker()
 
     def stop_worker(self):
         monitor_worker = self.monitor_worker
@@ -2171,7 +2185,7 @@ class MainWindow(LegacyMainWindow):
         worker = RopePartyWorker(self.game_window_hwnd, False, False, [], disband_only=True)
         worker.log_update.connect(self.on_status_update)
         worker.error_signal.connect(self.on_error)
-        worker.finished_signal.connect(self.on_worker_finished)
+        worker.finished_signal.connect(lambda worker=worker: self.on_worker_finished(worker))
         worker.team_disbanded.connect(self._on_rope_party_team_disbanded)
         self.worker = worker
         self.is_worker_running = True
@@ -2201,7 +2215,7 @@ class MainWindow(LegacyMainWindow):
         worker = RopePartyWorker(self.game_window_hwnd, False, False, [], remove_role_name=role_name)
         worker.log_update.connect(self.on_status_update)
         worker.error_signal.connect(self.on_error)
-        worker.finished_signal.connect(self.on_worker_finished)
+        worker.finished_signal.connect(lambda worker=worker: self.on_worker_finished(worker))
         self.worker = worker
         self.is_worker_running = True
         worker.start()

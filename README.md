@@ -177,7 +177,7 @@ pyinstaller build.spec
 输出目录：
 
 ```text
-dist/YzY-Auto-Buff_v2.1.2/
+dist/YzY-Auto-Buff_v2.1.3/
 ```
 
 ## 注意事项

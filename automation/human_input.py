@@ -8,6 +8,11 @@ from typing import Tuple, Optional
 from pynput.keyboard import Key, Controller as KeyboardController
 from pynput.mouse import Button, Controller as MouseController
 
+# A chat command is one indivisible input transaction: Enter, text, Enter.
+# Workers share this lock so a replacement worker cannot type into an open
+# chat box left by the worker that is finishing.
+input_transaction_lock = threading.Lock()
+
 class HumanInput:
     """
     模拟拟人化的键盘和鼠标输入

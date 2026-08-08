@@ -58,6 +58,7 @@ class MainWindow(QMainWindow):
         self.follow_heal_anchor_pos = None
         self.follow_heal_minimap_region = None
         self.follow_heal_boundary_tolerance = 6.0
+        self.follow_heal_return_strategy = "walk"
         self.auto_accept_party_invite = False
         
         # 初始化窗口选择器
@@ -119,6 +120,9 @@ class MainWindow(QMainWindow):
         self.follow_heal_minimap_region = settings.get("follow_heal_minimap_region")
         self.follow_heal_boundary_tolerance = settings.get(
             "follow_heal_boundary_tolerance", 6.0
+        )
+        self.follow_heal_return_strategy = settings.get(
+            "follow_heal_return_strategy", "walk"
         )
         self.auto_accept_party_invite = settings.get(
             "auto_accept_party_invite", False
@@ -196,6 +200,7 @@ class MainWindow(QMainWindow):
         self.follow_heal_anchor_pos = None
         self.follow_heal_minimap_region = None
         self.follow_heal_boundary_tolerance = 6.0
+        self.follow_heal_return_strategy = "walk"
         self.auto_accept_party_invite = False
         if hasattr(self, 'selected_jump_key'):
             self.selected_jump_key = "Alt"
@@ -240,6 +245,9 @@ class MainWindow(QMainWindow):
             follow_heal_minimap_region=getattr(self, "follow_heal_minimap_region", None),
             follow_heal_boundary_tolerance=getattr(
                 self, "follow_heal_boundary_tolerance", 6.0
+            ),
+            follow_heal_return_strategy=getattr(
+                self, "follow_heal_return_strategy", "walk"
             ),
             sit_chair_enabled=getattr(self, 'sit_chair_enabled', False),
             chair_key=getattr(self, 'selected_chair_key', '='),
@@ -1048,10 +1056,13 @@ class MainWindow(QMainWindow):
             if not getattr(self, "follow_heal_key", ""):
                 QMessageBox.warning(self, "警告", "请先设置加血技能键！")
                 return
+            strategy = getattr(self, "follow_heal_return_strategy", "walk")
             if not getattr(self, "follow_heal_teleport_key", ""):
                 QMessageBox.warning(self, "警告", "请先设置瞬移技能键！")
                 return
-            if self.follow_heal_teleport_key.lower() == self.follow_heal_key.lower():
+            if (
+                self.follow_heal_teleport_key.lower() == self.follow_heal_key.lower()
+            ):
                 QMessageBox.warning(self, "警告", "瞬移技能键不能和加血技能键重复！")
                 return
             if not getattr(self, "follow_heal_anchor_pos", None):
@@ -1069,6 +1080,7 @@ class MainWindow(QMainWindow):
                 self.follow_heal_anchor_pos,
                 self.follow_heal_minimap_region,
                 getattr(self, "follow_heal_boundary_tolerance", 6.0),
+                strategy,
             )
             self.worker.log_update.connect(self.on_status_update)
             self.worker.finished_signal.connect(self.on_worker_finished)

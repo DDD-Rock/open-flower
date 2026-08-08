@@ -136,6 +136,7 @@ class SettingsManagerTests(unittest.TestCase):
                     follow_heal_anchor_pos=(74, 58),
                     follow_heal_minimap_region=(6, 122, 164, 86),
                     follow_heal_boundary_tolerance=9.5,
+                    follow_heal_return_strategy="teleport",
                 )
             )
             settings = SettingsManager(str(path)).load_settings()
@@ -147,6 +148,19 @@ class SettingsManagerTests(unittest.TestCase):
             self.assertEqual(settings["follow_heal_anchor_pos"], (74, 58))
             self.assertEqual(settings["follow_heal_minimap_region"], (6, 122, 164, 86))
             self.assertEqual(settings["follow_heal_boundary_tolerance"], 9.5)
+            self.assertEqual(settings["follow_heal_return_strategy"], "teleport")
+
+    def test_legacy_follow_heal_settings_default_to_walking(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.ini"
+            config = configparser.ConfigParser()
+            config["General"] = {"mode": "follow_heal"}
+            with path.open("w", encoding="utf-8") as stream:
+                config.write(stream)
+
+            settings = SettingsManager(str(path)).load_settings()
+
+            self.assertEqual(settings["follow_heal_return_strategy"], "walk")
 
     def test_auto_accept_party_invite_round_trip(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -44,6 +44,7 @@ class SettingsManager:
                       follow_heal_anchor_pos: Optional[Tuple[int, int]] = None,
                       follow_heal_minimap_region: Optional[Tuple[int, int, int, int]] = None,
                       follow_heal_boundary_tolerance: float = 6.0,
+                      follow_heal_return_strategy: str = "walk",
                       sit_chair_enabled: bool = False,
                       chair_key: str = "=",
                       random_behavior_enabled: bool = True,
@@ -110,6 +111,9 @@ class SettingsManager:
             "follow_heal_minimap_width": region_w,
             "follow_heal_minimap_height": region_h,
             "follow_heal_boundary_tolerance": str(follow_heal_boundary_tolerance),
+            "follow_heal_return_strategy": (
+                "teleport" if follow_heal_return_strategy == "teleport" else "walk"
+            ),
             "sit_chair_enabled": str(sit_chair_enabled),
             "chair_key": chair_key,
             "random_behavior_enabled": str(random_behavior_enabled),
@@ -201,6 +205,9 @@ class SettingsManager:
                     "follow_heal_minimap_height",
                 ),
                 "follow_heal_boundary_tolerance": self._load_follow_heal_boundary_tolerance(),
+                "follow_heal_return_strategy": self.config.get(
+                    "General", "follow_heal_return_strategy", fallback="walk"
+                ),
                 "sit_chair_enabled": self.config.getboolean("General", "sit_chair_enabled", fallback=False),
                 "chair_key": self.config.get("General", "chair_key", fallback="="),
                 "random_behavior_enabled": self.config.getboolean("General", "random_behavior_enabled", fallback=True),

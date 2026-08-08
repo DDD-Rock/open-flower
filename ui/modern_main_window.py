@@ -90,6 +90,7 @@ class MainWindow(LegacyMainWindow):
         self.follow_heal_anchor_pos = None
         self.follow_heal_minimap_region = None
         self.follow_heal_boundary_tolerance = 6.0
+        self.follow_heal_return_strategy = "walk"
         self.temple_function = "rope_party"
         self.lounge_move_min_minutes = 15
         self.lounge_move_max_minutes = 30
@@ -939,6 +940,14 @@ class MainWindow(LegacyMainWindow):
         self.heal_key_btn.clicked.connect(self.on_select_heal_key)
         row.addWidget(self._option_column("加血技能键", self.heal_key_btn), 1)
 
+        self.follow_heal_return_combo = QComboBox()
+        self.follow_heal_return_combo.addItem("左右走防卡", "walk")
+        self.follow_heal_return_combo.addItem("瞬移回位", "teleport")
+        self.follow_heal_return_combo.currentIndexChanged.connect(
+            self._on_follow_heal_return_strategy_changed
+        )
+        row.addWidget(self._option_column("回位方案", self.follow_heal_return_combo), 1)
+
         self.teleport_key_btn = QPushButton("选键")
         self.teleport_key_btn.setFixedWidth(54)
         self.teleport_key_btn.clicked.connect(self.on_select_teleport_key)
@@ -1253,6 +1262,9 @@ class MainWindow(LegacyMainWindow):
         self.follow_heal_boundary_tolerance = settings.get(
             "follow_heal_boundary_tolerance", 6.0
         )
+        self.follow_heal_return_strategy = settings.get(
+            "follow_heal_return_strategy", "walk"
+        )
         self.sit_chair_enabled = settings.get("sit_chair_enabled", False)
         self.selected_chair_key = settings.get("chair_key", "=")
         self.movement_mode = settings.get("movement_mode", "none")
@@ -1296,6 +1308,11 @@ class MainWindow(LegacyMainWindow):
         self.jump_key_btn.setText(self.selected_jump_key)
         self.heal_key_btn.setText(self.follow_heal_key or "选键")
         self.teleport_key_btn.setText(self.follow_heal_teleport_key or "选键")
+        strategy_index = self.follow_heal_return_combo.findData(
+            self.follow_heal_return_strategy
+        )
+        self.follow_heal_return_combo.setCurrentIndex(max(0, strategy_index))
+        self.teleport_key_btn.setEnabled(True)
         self._update_follow_heal_anchor_label()
         self._sync_chair_controls()
         self.random_behavior_checkbox.setChecked(
@@ -1340,6 +1357,7 @@ class MainWindow(LegacyMainWindow):
         self.follow_heal_anchor_pos = None
         self.follow_heal_minimap_region = None
         self.follow_heal_boundary_tolerance = 6.0
+        self.follow_heal_return_strategy = "walk"
         self.sit_chair_enabled = False
         self.selected_chair_key = "="
         self.manual_portal_pos = None
@@ -1364,6 +1382,8 @@ class MainWindow(LegacyMainWindow):
         self.jump_key_btn.setText("Alt")
         self.heal_key_btn.setText("选键")
         self.teleport_key_btn.setText("选键")
+        self.follow_heal_return_combo.setCurrentIndex(0)
+        self.teleport_key_btn.setEnabled(True)
         self._update_follow_heal_anchor_label()
         self._sync_chair_controls()
         self.random_behavior_checkbox.setChecked(True)
@@ -1397,6 +1417,7 @@ class MainWindow(LegacyMainWindow):
             follow_heal_anchor_pos=self.follow_heal_anchor_pos,
             follow_heal_minimap_region=self.follow_heal_minimap_region,
             follow_heal_boundary_tolerance=self.follow_heal_boundary_tolerance,
+            follow_heal_return_strategy=self.follow_heal_return_strategy,
             sit_chair_enabled=self.sit_chair_enabled,
             chair_key=self.selected_chair_key,
             random_behavior_enabled=self.random_behavior_checkbox.isChecked(),
@@ -1524,6 +1545,12 @@ class MainWindow(LegacyMainWindow):
             )
             self._schedule_save()
 
+    def _on_follow_heal_return_strategy_changed(self):
+        strategy = self.follow_heal_return_combo.currentData() or "walk"
+        self.follow_heal_return_strategy = strategy
+        self.teleport_key_btn.setEnabled(not self.is_worker_running)
+        self._schedule_save()
+
     def on_mark_follow_anchor(self):
         previous_anchor = self.follow_heal_anchor_pos
         previous_region = self.follow_heal_minimap_region
@@ -1635,7 +1662,9 @@ class MainWindow(LegacyMainWindow):
                 errors.append("加血技能键不能和 BUFF 按键重复")
             if not self.follow_heal_teleport_key:
                 errors.append("请设置瞬移技能键")
-            elif self.follow_heal_teleport_key.lower() in keys:
+            elif (
+                self.follow_heal_teleport_key.lower() in keys
+            ):
                 errors.append("瞬移技能键不能和 BUFF 按键重复")
             elif (
                 self.follow_heal_key
@@ -1940,6 +1969,7 @@ class MainWindow(LegacyMainWindow):
         self.pre_skill_combo.setEnabled(enabled)
         self.jump_key_btn.setEnabled(enabled)
         self.heal_key_btn.setEnabled(enabled)
+        self.follow_heal_return_combo.setEnabled(enabled)
         self.teleport_key_btn.setEnabled(enabled)
         self.follow_anchor_btn.setEnabled(enabled)
 

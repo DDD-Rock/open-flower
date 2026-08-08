@@ -14,6 +14,9 @@ HEAL_GAP_RANGE = (0.25, 0.60)
 NEW_COLLISION_DISTANCE = 1.0
 PROTECTIVE_BOUNDARY_RATIO = 0.75
 NEAR_ANCHOR_EXCURSION_RATIO = 0.5
+WALKING_KEEPALIVE_INTERVAL_RANGE = (8.0, 12.0)
+WALKING_KEEPALIVE_DURATION_RANGE = (0.20, 0.30)
+WALKING_KEEPALIVE_RECOVERY_RANGE = (0.08, 0.22)
 
 
 def teleport_direction_to_base(current_x: float, base_x: float) -> Optional[str]:
@@ -23,6 +26,32 @@ def teleport_direction_to_base(current_x: float, base_x: float) -> Optional[str]
     if current_x > base_x:
         return "left"
     return None
+
+
+def walking_direction_to_base(current_x: float, base_x: float) -> Optional[str]:
+    """走路方案独立判断回位方向。"""
+    if current_x < base_x:
+        return "right"
+    if current_x > base_x:
+        return "left"
+    return None
+
+
+def is_outside_walking_boundary(
+    current_x: float,
+    base_x: float,
+    tolerance: float,
+) -> bool:
+    """走路方案独立判断是否越出用户界限。"""
+    return abs(current_x - base_x) > max(0.0, float(tolerance))
+
+
+def walking_keepalive_direction(current_x: float, base_x: float) -> str:
+    return walking_direction_to_base(current_x, base_x) or "right"
+
+
+def next_walking_keepalive_interval() -> float:
+    return random.uniform(*WALKING_KEEPALIVE_INTERVAL_RANGE)
 
 
 def is_outside_anchor_band(current_x: float, base_x: float, tolerance: float) -> bool:

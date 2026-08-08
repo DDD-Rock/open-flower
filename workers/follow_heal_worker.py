@@ -1,4 +1,4 @@
-"""Windows 跟补模式：持续加血，并在加血不中断时用瞬移修正横向位置。"""
+"""Windows 跟补模式：持续加血，并按用户选择走路或瞬移回位。"""
 
 import random
 import time
@@ -17,13 +17,19 @@ from utils.follow_heal_navigation import (
     HEAL_HOLD_RANGE as FOLLOW_HEAL_HOLD_RANGE,
     TeleportExcursionGuard,
     is_near_anchor,
+    is_outside_walking_boundary,
     next_center_adjust_interval,
+    next_walking_keepalive_interval,
     opposite_direction,
     outward_teleport_direction,
     protective_anchor_tolerance,
     requires_immediate_left_recovery,
     teleport_direction_to_base,
     updated_center_adjust_deadline,
+    walking_direction_to_base,
+    walking_keepalive_direction,
+    WALKING_KEEPALIVE_DURATION_RANGE,
+    WALKING_KEEPALIVE_RECOVERY_RANGE,
 )
 from utils.key_names import normalize_key_name
 from utils.window_selector import WindowSelector
@@ -67,6 +73,7 @@ class FollowHealWorker(QThread):
         anchor_pos: Tuple[int, int],
         minimap_region: Optional[Tuple[int, int, int, int]] = None,
         boundary_tolerance: float = 6.0,
+        return_strategy: str = "walk",
     ):
         super().__init__()
         self.hwnd = hwnd
@@ -80,6 +87,7 @@ class FollowHealWorker(QThread):
         self.base_x = float(anchor_pos[0])
         self.minimap_region = minimap_region
         self.boundary_tolerance = max(1.0, min(50.0, float(boundary_tolerance)))
+        self.return_strategy = "teleport" if return_strategy == "teleport" else "walk"
         self.protective_tolerance = protective_anchor_tolerance(
             self.boundary_tolerance
         )
@@ -106,14 +114,16 @@ class FollowHealWorker(QThread):
             if not self.teleport_key:
                 self.error_signal.emit("请先设置瞬移技能键")
                 return
-            if self.teleport_key.lower() == self.heal_key.lower():
+            if (
+                self.teleport_key.lower() == self.heal_key.lower()
+            ):
                 self.error_signal.emit("瞬移技能键不能和加血技能键重复")
                 return
             if not self.anchor_pos:
                 self.error_signal.emit("请先标记跟补基准点")
                 return
             if not self.buffs:
-                self.log_update.emit("未启用 BUFF，将只执行补血和瞬移修正")
+                self.log_update.emit("未启用 BUFF，将只执行补血和位置修正")
             if not self._ensure_game_focus("跟补启动"):
                 self.error_signal.emit("无法将游戏窗口置于前台")
                 return
@@ -121,8 +131,10 @@ class FollowHealWorker(QThread):
             self.log_update.emit(
                 f"使用手动跟补基准点 X={self.base_x:.1f}，"
                 f"左右界限 ±{self.boundary_tolerance:.1f}，"
-                f"提前保护 ±{self.protective_tolerance:.1f}"
+                f"回位方案：{'瞬移回位' if self.return_strategy == 'teleport' else '左右走防卡'}"
             )
+            if self.return_strategy == "teleport":
+                self.log_update.emit(f"瞬移提前保护 ±{self.protective_tolerance:.1f}")
             if self.minimap_region:
                 self.monitor.set_minimap_region(*self.minimap_region)
                 self.log_update.emit(
@@ -133,6 +145,7 @@ class FollowHealWorker(QThread):
                 self.log_update.emit("未保存小地图区域，将在补血后再识别，避免开局空等")
 
             next_adjust_at = time.time() + next_center_adjust_interval()
+            next_walking_keepalive_at = time.time() + next_walking_keepalive_interval()
             excursion_guard = TeleportExcursionGuard()
             self.buff_next_cast.clear()
 
@@ -155,8 +168,9 @@ class FollowHealWorker(QThread):
                     self._random_sleep(*self.BUFF_RECOVERY_GAP_RANGE)
                     continue
 
-                next_adjust_at = self._continuous_heal_cycle(
+                next_adjust_at, next_walking_keepalive_at = self._continuous_heal_cycle(
                     next_adjust_at,
+                    next_walking_keepalive_at,
                     excursion_guard,
                 )
 
@@ -179,10 +193,11 @@ class FollowHealWorker(QThread):
     def _continuous_heal_cycle(
         self,
         next_adjust_at: float,
+        next_walking_keepalive_at: float,
         excursion_guard: TeleportExcursionGuard,
-    ) -> float:
+    ) -> Tuple[float, float]:
         if not self._ensure_game_focus("持续释放加血技能"):
-            return next_adjust_at
+            return next_adjust_at, next_walking_keepalive_at
 
         heal_key = self._resolve_key(self.heal_key)
         try:
@@ -190,7 +205,7 @@ class FollowHealWorker(QThread):
             self._held_heal_key = heal_key
         except Exception as exc:
             self.error_signal.emit(f"加血键错误: {exc}")
-            return next_adjust_at
+            return next_adjust_at, next_walking_keepalive_at
 
         end_at = time.time() + random.uniform(*self.HEAL_HOLD_RANGE)
         missing_player_count = 0
@@ -198,26 +213,42 @@ class FollowHealWorker(QThread):
             if self._get_buffs_to_cast(include_upcoming=False):
                 self._release_held_heal_key()
                 self._cast_if_buff_due()
-                return next_adjust_at
+                return next_adjust_at, next_walking_keepalive_at
             if (
                 not self.window_selector.is_window_valid(self.hwnd)
                 or not self.window_selector.is_window_foreground(self.hwnd)
             ):
                 self._release_held_heal_key()
-                return next_adjust_at
+                return next_adjust_at, next_walking_keepalive_at
 
             if self.monitor.get_minimap_size() is not None:
                 player = self.monitor.find_player_position()
                 if player:
                     missing_player_count = 0
                     player_x = float(player[0])
+                    now = time.time()
+                    if self.return_strategy == "walk":
+                        if is_outside_walking_boundary(
+                            player_x, self.base_x, self.boundary_tolerance
+                        ):
+                            self._release_held_heal_key()
+                            self._teleport_back_for_walking_strategy(player_x)
+                            return next_adjust_at, next_walking_keepalive_at
+                        if now >= next_walking_keepalive_at:
+                            self._release_held_heal_key()
+                            self._walk_for_skill_keepalive(player_x)
+                            next_walking_keepalive_at = (
+                                time.time() + next_walking_keepalive_interval()
+                            )
+                            return next_adjust_at, next_walking_keepalive_at
+                        self._random_sleep(*self.POSITION_POLL_RANGE)
+                        continue
                     is_new_excursion = excursion_guard.should_correct(
                         player_x,
                         self.base_x,
                         self.protective_tolerance,
                         priority_left_recovery_tolerance=self.protective_tolerance,
                     )
-                    now = time.time()
                     is_scheduled = now >= next_adjust_at
                     should_perform_near_anchor_excursion = (
                         not is_new_excursion
@@ -258,7 +289,42 @@ class FollowHealWorker(QThread):
         self._release_held_heal_key()
         if self.is_running:
             self._random_sleep(*self.HEAL_GAP_RANGE)
-        return next_adjust_at
+        return next_adjust_at, next_walking_keepalive_at
+
+    def _teleport_back_for_walking_strategy(self, player_x: float):
+        direction = walking_direction_to_base(player_x, self.base_x)
+        if direction is None:
+            return
+        self.log_update.emit(
+            f"左右走防卡越界：当前X={player_x:.1f}，使用一次瞬移回安全区"
+        )
+        try:
+            self.human.perform_directional_skill(
+                direction,
+                self._resolve_key(self.teleport_key),
+            )
+            self._random_sleep(0.15, 0.25)
+        except Exception as exc:
+            self.error_signal.emit(f"瞬移键错误: {exc}")
+
+    def _walk_for_skill_keepalive(self, player_x: float):
+        direction = walking_keepalive_direction(player_x, self.base_x)
+        self.log_update.emit(
+            f"防卡技能小走：当前X={player_x:.1f}，向"
+            f"{'左' if direction == 'left' else '右'}走"
+        )
+        if self._cast_if_buff_due() or not self._ensure_game_focus("防卡技能小走"):
+            return
+        self._move_walking_direction(direction)
+        self._random_sleep(*WALKING_KEEPALIVE_DURATION_RANGE)
+        self.human.stop_move()
+        self._random_sleep(*WALKING_KEEPALIVE_RECOVERY_RANGE)
+
+    def _move_walking_direction(self, direction: str):
+        if direction == "left":
+            self.human.move_left()
+        else:
+            self.human.move_right()
 
     def _teleport_toward_base(
         self,

@@ -155,6 +155,8 @@ class RopePartyWorker(QThread):
             # reconfigure request takes effect after this command completes.
             self.human.press_enter()
             self._sleep(random.uniform(0.18, 0.42))
+            self.human.press_delete()
+            self._sleep(random.uniform(0.08, 0.18))
             self.human.type_text(command)
             self._sleep(random.uniform(0.12, 0.32))
             self.human.press_enter()

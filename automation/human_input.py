@@ -194,6 +194,13 @@ class HumanInput:
             self._sleep(random.uniform(0.05, 0.13))
             self.keyboard.release(Key.enter)
 
+    def press_delete(self):
+        """按下退格删除键，清除聊天框中可能残留的全选文本。"""
+        with self._lock:
+            self.keyboard.press(Key.backspace)
+            self._sleep(random.uniform(0.05, 0.13))
+            self.keyboard.release(Key.backspace)
+
     def type_text(self, text: str, interval_range=(0.05, 0.12)):
         """逐字输入聊天文本；Windows 使用 Unicode SendInput 支持中文角色名。"""
         with self._lock:

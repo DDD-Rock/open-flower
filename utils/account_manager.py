@@ -2,12 +2,16 @@
 
 import json
 import os
+import socket
+import ssl
 import sys
 import urllib.error
 import urllib.request
 import uuid
 from pathlib import Path
 from typing import Optional
+
+import certifi
 
 from config import APP_VERSION
 
@@ -30,6 +34,7 @@ class AccountManager:
 
     def __init__(self, storage_path: Optional[str] = None, server_base_url: Optional[str] = None):
         self.storage_path = Path(storage_path) if storage_path else self._default_storage_path()
+        self.ssl_context = ssl.create_default_context(cafile=certifi.where())
         configured_server_base_url = (
             server_base_url
             or os.environ.get("AUTOBUFF_MONITOR_SERVER")
@@ -190,7 +195,11 @@ class AccountManager:
             },
         )
         try:
-            with urllib.request.urlopen(request, timeout=10) as response:
+            with urllib.request.urlopen(
+                request,
+                timeout=10,
+                context=self.ssl_context,
+            ) as response:
                 payload = response.read()
                 return json.loads(payload.decode("utf-8")) if payload else {}
         except urllib.error.HTTPError as error:
@@ -205,8 +214,26 @@ class AccountManager:
                 message or f"登录请求失败（{error.code}）",
                 code,
             ) from error
-        except (urllib.error.URLError, TimeoutError, OSError) as error:
-            raise AccountError("无法连接监控服务器，请检查网络") from error
+        except urllib.error.URLError as error:
+            raise AccountError(self._connection_error_message(error.reason)) from error
+        except (TimeoutError, OSError) as error:
+            raise AccountError(self._connection_error_message(error)) from error
+
+    @staticmethod
+    def _connection_error_message(error) -> str:
+        if isinstance(error, ssl.SSLCertVerificationError):
+            prefix = "监控服务器证书验证失败"
+        elif isinstance(error, ssl.SSLError):
+            prefix = "与监控服务器建立 TLS 连接失败"
+        elif isinstance(error, socket.gaierror):
+            prefix = "无法解析监控服务器域名"
+        elif isinstance(error, (TimeoutError, socket.timeout)):
+            return "连接监控服务器超时"
+        else:
+            prefix = "无法连接监控服务器"
+
+        detail = " ".join(str(error).split())
+        return f"{prefix}：{detail[:240]}" if detail else prefix
 
     def _load(self) -> Optional[dict]:
         try:

@@ -14,6 +14,7 @@ numpy>=1.26.0
 mss>=9.0.0
 pillow>=10.0.0
 websocket-client>=1.8.0
+certifi>=2024.7.4
 
 # 屏幕工具
 pyautogui>=0.9.50

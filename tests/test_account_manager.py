@@ -46,6 +46,31 @@ class AccountManagerTests(unittest.TestCase):
         request = urlopen.call_args.args[0]
         self.assertEqual(request.get_header("X-autobuff-client-platform"), "windows")
         self.assertEqual(request.get_header("X-autobuff-client-version"), "2.1.3")
+        self.assertIs(urlopen.call_args.kwargs["context"], manager.ssl_context)
+
+    def test_certificate_errors_are_reported_separately(self):
+        manager = AccountManager(server_base_url="https://example.test")
+        certificate_error = ACCOUNT_MODULE.ssl.SSLCertVerificationError(
+            "certificate verify failed"
+        )
+        with mock.patch.object(
+            ACCOUNT_MODULE.urllib.request,
+            "urlopen",
+            side_effect=ACCOUNT_MODULE.urllib.error.URLError(certificate_error),
+        ):
+            with self.assertRaisesRegex(AccountError, "证书验证失败"):
+                manager._request("/api/auth/me")
+
+    def test_dns_errors_are_reported_separately(self):
+        manager = AccountManager(server_base_url="https://example.test")
+        dns_error = ACCOUNT_MODULE.socket.gaierror(11001, "getaddrinfo failed")
+        with mock.patch.object(
+            ACCOUNT_MODULE.urllib.request,
+            "urlopen",
+            side_effect=ACCOUNT_MODULE.urllib.error.URLError(dns_error),
+        ):
+            with self.assertRaisesRegex(AccountError, "无法解析监控服务器域名"):
+                manager._request("/api/auth/me")
 
     def test_login_token_is_reused_for_startup_restore(self):
         with tempfile.TemporaryDirectory() as temp_dir:

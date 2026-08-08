@@ -1,11 +1,12 @@
 # -*- mode: python ; coding: utf-8 -*-
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_all, collect_data_files
 
 block_cipher = None
 
 # 只收集必要的包（numpy和cv2是核心依赖）
 numpy_datas, numpy_binaries, numpy_hiddenimports = collect_all('numpy')
 cv2_datas, cv2_binaries, cv2_hiddenimports = collect_all('cv2')
+certifi_datas = collect_data_files('certifi')
 
 a = Analysis(
     ['main.py'],
@@ -17,7 +18,7 @@ a = Analysis(
         ('resources/rapidocr/THIRD_PARTY_NOTICES.md', 'resources/rapidocr'),
         ('resources/rapidocr/LICENSE-RapidOCR-json.txt', 'resources/rapidocr'),
         ('resources/rapidocr/LICENSE-PaddleOCR.txt', 'resources/rapidocr'),
-    ] + numpy_datas + cv2_datas,
+    ] + numpy_datas + cv2_datas + certifi_datas,
     binaries=[
         ('resources/rapidocr/RapidOCR-json.exe', 'resources/rapidocr'),
     ] + numpy_binaries + cv2_binaries,

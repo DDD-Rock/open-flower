@@ -14,9 +14,10 @@ HEAL_GAP_RANGE = (0.25, 0.60)
 NEW_COLLISION_DISTANCE = 1.0
 PROTECTIVE_BOUNDARY_RATIO = 0.75
 NEAR_ANCHOR_EXCURSION_RATIO = 0.5
-WALKING_KEEPALIVE_INTERVAL_RANGE = (8.0, 12.0)
-WALKING_KEEPALIVE_DURATION_RANGE = (0.20, 0.30)
-WALKING_KEEPALIVE_RECOVERY_RANGE = (0.08, 0.22)
+WALKING_KEEPALIVE_INTERVAL_RANGE = (5.0, 8.0)
+WALKING_KEEPALIVE_FIRST_STEP_RANGE = (0.18, 0.24)
+WALKING_KEEPALIVE_SECOND_STEP_REDUCTION_RANGE = (0.03, 0.05)
+WALKING_RECOVERY_MAXIMUM_ATTEMPTS = 3
 
 
 def teleport_direction_to_base(current_x: float, base_x: float) -> Optional[str]:
@@ -48,6 +49,10 @@ def is_outside_walking_boundary(
 
 def walking_keepalive_direction(current_x: float, base_x: float) -> str:
     return walking_direction_to_base(current_x, base_x) or "right"
+
+
+def opposite_walking_direction(direction: str) -> str:
+    return "right" if direction == "left" else "left"
 
 
 def next_walking_keepalive_interval() -> float:

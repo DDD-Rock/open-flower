@@ -1276,8 +1276,10 @@ class MainWindow(LegacyMainWindow):
             "auto_accept_party_invite", False
         )
         self.temple_function = settings.get("temple_function", "rope_party")
-        self.lounge_move_min_minutes = settings.get("lounge_move_min_minutes", 15)
-        self.lounge_move_max_minutes = settings.get("lounge_move_max_minutes", 30)
+        self.lounge_move_min_minutes = max(1, min(1440, int(settings.get("lounge_move_min_minutes", 15))))
+        self.lounge_move_max_minutes = max(1, min(1440, int(settings.get("lounge_move_max_minutes", 30))))
+        if self.lounge_move_max_minutes < self.lounge_move_min_minutes:
+            self.lounge_move_max_minutes = max(30, self.lounge_move_min_minutes)
         self.character_name = settings.get("character_name", "")
         if self.account_manager:
             self.character_name = self.account_manager.session_credentials().get("roleName") or self.character_name
@@ -1330,8 +1332,12 @@ class MainWindow(LegacyMainWindow):
         self.character_name_input.setText(self.character_name)
         index = self.temple_function_combo.findData(self.temple_function)
         self.temple_function_combo.setCurrentIndex(max(0, index))
+        self.lounge_move_min_input.blockSignals(True)
+        self.lounge_move_max_input.blockSignals(True)
         self.lounge_move_min_input.setValue(self.lounge_move_min_minutes)
         self.lounge_move_max_input.setValue(self.lounge_move_max_minutes)
+        self.lounge_move_min_input.blockSignals(False)
+        self.lounge_move_max_input.blockSignals(False)
         display_mode = settings.get(
             "monitor_display_mode",
             "minimap_with_annotations",
@@ -1396,8 +1402,12 @@ class MainWindow(LegacyMainWindow):
         self.party_invite_checkbox.blockSignals(False)
         self.character_name_input.setText(self.character_name)
         self.temple_function_combo.setCurrentIndex(max(0, self.temple_function_combo.findData("rope_party")))
+        self.lounge_move_min_input.blockSignals(True)
+        self.lounge_move_max_input.blockSignals(True)
         self.lounge_move_min_input.setValue(15)
         self.lounge_move_max_input.setValue(30)
+        self.lounge_move_min_input.blockSignals(False)
+        self.lounge_move_max_input.blockSignals(False)
 
     def _persist_settings(self):
         if self._loading_settings:
@@ -2172,6 +2182,19 @@ class MainWindow(LegacyMainWindow):
             self.pending_rope_party_disband_team_id = team_id
             self._persist_settings()
             self._start_rope_party_disband()
+        elif action == "clear_rope_party":
+            if self.is_worker_running:
+                self.stop_worker()
+            self.auto_accept_party_invite = False
+            self.party_invite_checkbox.setChecked(False)
+            self.rope_party_team_id = 0
+            self.rope_party_is_leader = False
+            self.rope_party_first_creation = False
+            self.rope_party_invite_role_names = []
+            self._persist_settings()
+            self._sync_party_invite_worker()
+            self.logger.log("网页队伍已解散或本角色已被移除，挂绳组队状态已清理")
+            self.update_log_display()
         elif action == "remove_rope_party_member":
             role_name = str(command.get("targetRoleName") or "").strip()
             if not role_name:
@@ -2208,7 +2231,7 @@ class MainWindow(LegacyMainWindow):
         elif action == "disband_boss_party":
             cycle_id = int(command.get("cycleId") or 0)
             if isinstance(self.worker, RopePartyWorker) and self.worker.isRunning() and cycle_id > 0:
-                self.worker.pending_commands.put(("disband_boss_party", cycle_id))
+                self.worker.disband_boss_party(cycle_id)
 
     def _start_rope_party_disband(self):
         if not self.is_window_identified:

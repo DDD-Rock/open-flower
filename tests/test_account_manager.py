@@ -45,7 +45,7 @@ class AccountManagerTests(unittest.TestCase):
 
         request = urlopen.call_args.args[0]
         self.assertEqual(request.get_header("X-autobuff-client-platform"), "windows")
-        self.assertEqual(request.get_header("X-autobuff-client-version"), "2.1.3")
+        self.assertEqual(request.get_header("X-autobuff-client-version"), "2.1.4")
         self.assertIs(urlopen.call_args.kwargs["context"], manager.ssl_context)
 
     def test_certificate_errors_are_reported_separately(self):

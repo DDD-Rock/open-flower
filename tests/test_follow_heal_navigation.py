@@ -19,6 +19,7 @@ requires_immediate_left_recovery = NAVIGATION_MODULE.requires_immediate_left_rec
 is_near_anchor = NAVIGATION_MODULE.is_near_anchor
 outward_teleport_direction = NAVIGATION_MODULE.outward_teleport_direction
 opposite_direction = NAVIGATION_MODULE.opposite_direction
+opposite_walking_direction = NAVIGATION_MODULE.opposite_walking_direction
 walking_direction_to_base = NAVIGATION_MODULE.walking_direction_to_base
 is_outside_walking_boundary = NAVIGATION_MODULE.is_outside_walking_boundary
 next_walking_keepalive_interval = NAVIGATION_MODULE.next_walking_keepalive_interval
@@ -34,22 +35,25 @@ class FollowHealNavigationTests(unittest.TestCase):
         self.assertEqual(walking_direction_to_base(104, 100), "left")
         self.assertEqual(walking_direction_to_base(96, 100), "right")
         self.assertIsNone(walking_direction_to_base(100, 100))
+        self.assertEqual(opposite_walking_direction("left"), "right")
+        self.assertEqual(opposite_walking_direction("right"), "left")
         self.assertFalse(is_outside_walking_boundary(106, 100, 6))
         self.assertTrue(is_outside_walking_boundary(106.1, 100, 6))
 
     def test_walking_keepalive_uses_historical_timing(self):
         self.assertEqual(
-            NAVIGATION_MODULE.WALKING_KEEPALIVE_DURATION_RANGE,
-            (0.20, 0.30),
+            NAVIGATION_MODULE.WALKING_KEEPALIVE_FIRST_STEP_RANGE,
+            (0.18, 0.24),
         )
         self.assertEqual(
-            NAVIGATION_MODULE.WALKING_KEEPALIVE_RECOVERY_RANGE,
-            (0.08, 0.22),
+            NAVIGATION_MODULE.WALKING_KEEPALIVE_SECOND_STEP_REDUCTION_RANGE,
+            (0.03, 0.05),
         )
+        self.assertEqual(NAVIGATION_MODULE.WALKING_RECOVERY_MAXIMUM_ATTEMPTS, 3)
         for _ in range(20):
             interval = next_walking_keepalive_interval()
-            self.assertGreaterEqual(interval, 8)
-            self.assertLessEqual(interval, 12)
+            self.assertGreaterEqual(interval, 5)
+            self.assertLessEqual(interval, 8)
 
     def test_anchor_band_uses_configured_tolerance(self):
         self.assertFalse(is_outside_anchor_band(109.5, 100, 9.5))

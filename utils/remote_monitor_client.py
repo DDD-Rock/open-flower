@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+import uuid
 from collections import deque
 from typing import Callable, Optional
 from urllib.parse import quote, urlsplit, urlunsplit
@@ -45,6 +46,7 @@ class RemoteMonitorClient:
         self._condition = threading.Condition()
         self._control_messages = deque()
         self._pending_team_joined = None
+        self._pending_rope_progress = {}
         self._latest_messages = {}
         self._last_frame_at = 0.0
         self._last_map_id = None
@@ -92,6 +94,7 @@ class RemoteMonitorClient:
         self._connected = False
         self._reset_send_queue()
         self._pending_team_joined = None
+        self._pending_rope_progress.clear()
 
     def publish_client_state(self, mode: str, running: bool):
         self._last_state = {"mode": mode, "running": bool(running)}
@@ -102,10 +105,16 @@ class RemoteMonitorClient:
 
     def publish_team_joined(self, team_id: int, role_name: str):
         if int(team_id) > 0 and role_name.strip():
-            self._pending_team_joined = {"teamId": int(team_id), "roleName": role_name.strip()}
+            self._pending_team_joined = {
+                "teamId": int(team_id),
+                "roleName": role_name.strip(),
+                "receiptId": str(uuid.uuid4()),
+            }
             self._enqueue("team_joined", self._pending_team_joined)
 
     def publish_rope_party_progress(self, team_id: int, event: str, role_name: str = "", cycle_id: int = 0):
+        if not self._enabled:
+            return
         allowed = {
             "team_created", "invitation_sent", "team_disbanded", "buff_due",
             "boss_joined", "buff_completed", "boss_kicked",
@@ -118,6 +127,15 @@ class RemoteMonitorClient:
             payload["cycleId"] = int(cycle_id)
         if event == "invitation_sent" and role_name.strip():
             payload["roleName"] = role_name.strip()
+        reliable_events = {
+            "team_created", "invitation_sent", "team_disbanded",
+            "buff_completed", "boss_cycle_disbanded",
+        }
+        if event in reliable_events:
+            receipt_id = str(uuid.uuid4())
+            payload["receiptId"] = receipt_id
+            with self._condition:
+                self._pending_rope_progress[receipt_id] = payload.copy()
         self._enqueue("rope_party_progress", payload)
 
     def publish_map(self, topology: MapTopology, content_size: tuple[int, int]):
@@ -279,6 +297,10 @@ class RemoteMonitorClient:
         self.publish_client_state(**self._last_state)
         if self._pending_team_joined:
             self._enqueue("team_joined", self._pending_team_joined)
+        with self._condition:
+            pending_progress = list(self._pending_rope_progress.values())
+        for payload in pending_progress:
+            self._enqueue("rope_party_progress", payload)
         self._notify("远程监控已连接")
 
     def _on_message(self, app, message):
@@ -296,12 +318,20 @@ class RemoteMonitorClient:
         elif payload.get("type") == "command":
             action = str(payload.get("action") or "")
             if action == "team_joined_ack":
-                if self._pending_team_joined and int(payload.get("teamId") or 0) == int(self._pending_team_joined["teamId"]):
+                if (self._pending_team_joined
+                        and int(payload.get("teamId") or 0) == int(self._pending_team_joined["teamId"])
+                        and str(payload.get("receiptId") or "") == self._pending_team_joined["receiptId"]):
                     self._pending_team_joined = None
+                return
+            if action == "rope_progress_ack":
+                receipt_id = str(payload.get("receiptId") or "")
+                if receipt_id:
+                    with self._condition:
+                        self._pending_rope_progress.pop(receipt_id, None)
                 return
             if action in {
                 "start", "stop", "configure_rope_party", "disband_rope_party",
-                "remove_rope_party_member", "start_boss_invite_cycle",
+                "clear_rope_party", "remove_rope_party_member", "start_boss_invite_cycle",
                 "cast_boss_buffs", "kick_boss_from_party", "disband_boss_party",
             } and self.on_command:
                 self.on_command(payload)
@@ -339,6 +369,7 @@ class RemoteMonitorClient:
 
     def _sender_loop(self, app):
         next_team_joined_retry_at = time.monotonic() + 3.0
+        next_rope_progress_retry_at = time.monotonic() + 3.0
         while self._enabled and self._connected and app is self._socket_app:
             with self._condition:
                 if self._control_messages:
@@ -346,6 +377,10 @@ class RemoteMonitorClient:
                 elif self._pending_team_joined and time.monotonic() >= next_team_joined_retry_at:
                     message = self._encode("team_joined", self._pending_team_joined)
                     next_team_joined_retry_at = time.monotonic() + 3.0
+                elif self._pending_rope_progress and time.monotonic() >= next_rope_progress_retry_at:
+                    payload = next(iter(self._pending_rope_progress.values()))
+                    message = self._encode("rope_party_progress", payload)
+                    next_rope_progress_retry_at = time.monotonic() + 3.0
                 else:
                     message = next(
                         (

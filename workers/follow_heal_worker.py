@@ -20,6 +20,7 @@ from utils.follow_heal_navigation import (
     is_outside_walking_boundary,
     next_center_adjust_interval,
     next_walking_keepalive_interval,
+    opposite_walking_direction,
     opposite_direction,
     outward_teleport_direction,
     protective_anchor_tolerance,
@@ -28,8 +29,9 @@ from utils.follow_heal_navigation import (
     updated_center_adjust_deadline,
     walking_direction_to_base,
     walking_keepalive_direction,
-    WALKING_KEEPALIVE_DURATION_RANGE,
-    WALKING_KEEPALIVE_RECOVERY_RANGE,
+    WALKING_KEEPALIVE_FIRST_STEP_RANGE,
+    WALKING_KEEPALIVE_SECOND_STEP_REDUCTION_RANGE,
+    WALKING_RECOVERY_MAXIMUM_ATTEMPTS,
 )
 from utils.key_names import normalize_key_name
 from utils.window_selector import WindowSelector
@@ -292,33 +294,93 @@ class FollowHealWorker(QThread):
         return next_adjust_at, next_walking_keepalive_at
 
     def _teleport_back_for_walking_strategy(self, player_x: float):
-        direction = walking_direction_to_base(player_x, self.base_x)
-        if direction is None:
-            return
-        self.log_update.emit(
-            f"左右走防卡越界：当前X={player_x:.1f}，使用一次瞬移回安全区"
-        )
-        try:
-            self.human.perform_directional_skill(
-                direction,
-                self._resolve_key(self.teleport_key),
+        latest_x = player_x
+        for attempt in range(1, WALKING_RECOVERY_MAXIMUM_ATTEMPTS + 1):
+            direction = walking_direction_to_base(latest_x, self.base_x)
+            if direction is None:
+                return
+            self.log_update.emit(
+                f"左右走防卡越界：当前X={latest_x:.1f}，"
+                f"第 {attempt} 次朝标记点方向瞬移"
             )
-            self._random_sleep(0.15, 0.25)
-        except Exception as exc:
-            self.error_signal.emit(f"瞬移键错误: {exc}")
+            try:
+                self.human.perform_directional_skill(
+                    direction,
+                    self._resolve_key(self.teleport_key),
+                )
+            except Exception as exc:
+                self.error_signal.emit(f"瞬移键错误: {exc}")
+                return
+            landing_x = self._wait_for_walking_strategy_landing()
+            if landing_x is None:
+                self.log_update.emit("⚠️ 越界瞬移后未识别到稳定黄点，停止连续瞬移")
+                return
+            latest_x = landing_x
+            if not is_outside_walking_boundary(
+                landing_x,
+                self.base_x,
+                self.boundary_tolerance,
+            ):
+                self.log_update.emit(
+                    f"越界瞬移已回到安全区：当前X={landing_x:.1f}"
+                )
+                return
+        self.log_update.emit(
+            f"⚠️ 连续瞬移 {WALKING_RECOVERY_MAXIMUM_ATTEMPTS} 次后"
+            "仍在界外，恢复补血并等待下轮检测"
+        )
+
+    def _wait_for_walking_strategy_landing(self) -> Optional[float]:
+        started_at = time.time()
+        minimum_end = started_at + 0.15
+        deadline = started_at + 0.45
+        previous_x = None
+        latest_x = None
+        stable_frames = 0
+        while self.is_running and time.time() < deadline:
+            player = self.monitor.find_player_position()
+            if player:
+                current_x = float(player[0])
+                latest_x = current_x
+                if (
+                    previous_x is not None
+                    and abs(current_x - previous_x) <= self.STABLE_MARKER_DELTA
+                ):
+                    stable_frames += 1
+                else:
+                    stable_frames = 1
+                previous_x = current_x
+                if time.time() >= minimum_end and stable_frames >= 2:
+                    return current_x
+            else:
+                previous_x = None
+                stable_frames = 0
+            self._random_sleep(*self.STABILITY_POLL_RANGE)
+        return latest_x
 
     def _walk_for_skill_keepalive(self, player_x: float):
         direction = walking_keepalive_direction(player_x, self.base_x)
+        return_direction = opposite_walking_direction(direction)
+        first_step = random.uniform(*WALKING_KEEPALIVE_FIRST_STEP_RANGE)
+        second_step = first_step - random.uniform(
+            *WALKING_KEEPALIVE_SECOND_STEP_REDUCTION_RANGE
+        )
         self.log_update.emit(
-            f"防卡技能小走：当前X={player_x:.1f}，向"
-            f"{'左' if direction == 'left' else '右'}走"
+            f"防卡技能双向短走：先向{'左' if direction == 'left' else '右'} "
+            f"{round(first_step * 1000)}ms，再向"
+            f"{'左' if return_direction == 'left' else '右'} "
+            f"{round(second_step * 1000)}ms"
         )
         if self._cast_if_buff_due() or not self._ensure_game_focus("防卡技能小走"):
             return
         self._move_walking_direction(direction)
-        self._random_sleep(*WALKING_KEEPALIVE_DURATION_RANGE)
+        self._interruptible_sleep(first_step)
+        if not self.is_running:
+            self.human.stop_move()
+            return
+        self._move_walking_direction(return_direction)
+        self._interruptible_sleep(second_step)
         self.human.stop_move()
-        self._random_sleep(*WALKING_KEEPALIVE_RECOVERY_RANGE)
 
     def _move_walking_direction(self, direction: str):
         if direction == "left":

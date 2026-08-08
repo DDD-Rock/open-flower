@@ -61,6 +61,7 @@ class RopePartyWorker(QThread):
         self.boss_join_detected_cycle_id = 0
         self.next_boss_joined_report_at = 0.0
         self.latest_boss_buff_cycle_id = 0
+        self.latest_boss_disband_cycle_id = 0
 
     def enqueue_remove_member(self, role_name: str):
         role_name = role_name.strip()
@@ -78,6 +79,13 @@ class RopePartyWorker(QThread):
 
     def kick_boss(self, cycle_id: int, role_name: str):
         self.pending_commands.put(("kick_boss", int(cycle_id), role_name.strip()))
+
+    def disband_boss_party(self, cycle_id: int):
+        cycle_id = int(cycle_id)
+        if cycle_id <= 0 or cycle_id <= self.latest_boss_disband_cycle_id:
+            return
+        self.latest_boss_disband_cycle_id = cycle_id
+        self.pending_commands.put(("disband_boss_party", cycle_id))
 
     def run(self):
         try:

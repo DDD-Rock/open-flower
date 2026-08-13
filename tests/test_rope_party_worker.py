@@ -8,6 +8,7 @@ module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 build_rope_party_commands = module.build_rope_party_commands
 build_remove_member_command = module.build_remove_member_command
+rebuild_phase = module.rebuild_phase
 
 
 class RopePartyWorkerTests(unittest.TestCase):
@@ -29,6 +30,14 @@ class RopePartyWorkerTests(unittest.TestCase):
 
     def test_remove_member_command_uses_traditional_game_command(self):
         self.assertEqual(build_remove_member_command(" 队员甲 "), "/踢出隊伍 队员甲")
+
+    def test_manual_and_post_buff_rebuilds_have_distinct_dedupe_phases(self):
+        cycle_id = 123
+        before_key = (cycle_id, rebuild_phase("restart_party_and_buff"))
+        after_key = (cycle_id, rebuild_phase("rebuild_party"))
+        legacy_after_key = (cycle_id, rebuild_phase("disband_boss_party"))
+        self.assertNotEqual(before_key, after_key)
+        self.assertEqual(after_key, legacy_after_key)
 
 
 if __name__ == "__main__":

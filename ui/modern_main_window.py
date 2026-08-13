@@ -53,6 +53,7 @@ from workers.monitor_worker import MonitorWorker
 from workers.rope_party_worker import RopePartyWorker
 from workers.lounge_worker import LoungeWorker
 from utils.account_manager import AccountError
+from utils.rope_party import rebuild_phase
 
 
 def resource_path(relative_path: str) -> str:
@@ -2210,7 +2211,7 @@ class MainWindow(LegacyMainWindow):
                     self.update_log_display()
                     return
             if isinstance(self.worker, RopePartyWorker) and self.worker.isRunning() and cycle_id > 0:
-                phase = "before_buff" if action == "restart_party_and_buff" else "after_buff"
+                phase = rebuild_phase(action)
                 self.worker.disband_boss_party(
                     cycle_id, phase, list(command.get("inviteRoleNames") or [])
                 )

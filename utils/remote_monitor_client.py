@@ -318,7 +318,8 @@ class RemoteMonitorClient:
             if action in {
                 "start", "stop", "configure_rope_party", "disband_rope_party",
                 "clear_rope_party", "remove_member", "invite_boss", "cast_buffs",
-                "rebuild_party", "prepare_for_rebuild", "restart_party_and_buff",
+                "disband_boss_party", "rebuild_party", "prepare_for_rebuild",
+                "restart_party_and_buff",
             } and self.on_command:
                 self.on_command(payload)
 

@@ -9,3 +9,8 @@ def build_rope_party_commands(is_leader: bool, first_creation: bool, role_names:
 
 def build_remove_member_command(role_name: str) -> str:
     return f"/踢出隊伍 {role_name.strip()}"
+
+
+def rebuild_phase(action: str) -> str:
+    """Keep the manual pre-BUFF rebuild distinct from the post-BUFF rebuild."""
+    return "before_buff" if action == "restart_party_and_buff" else "after_buff"

@@ -20,14 +20,12 @@ class RopePartyWorker(QThread):
     log_update = pyqtSignal(str)
     error_signal = pyqtSignal(str)
     finished_signal = pyqtSignal()
-    team_created = pyqtSignal()
-    invitation_sent = pyqtSignal(str)
     team_disbanded = pyqtSignal()
     buff_due = pyqtSignal()
     boss_joined = pyqtSignal(int)
     boss_buffs_completed = pyqtSignal(int)
-    boss_kicked = pyqtSignal(int)
-    boss_cycle_disbanded = pyqtSignal(int)
+    party_commands_finished = pyqtSignal()
+    party_rebuild_commands_finished = pyqtSignal(int)
     countdown_update = pyqtSignal(dict)
 
     def __init__(self, hwnd: int, is_leader: bool, first_creation: bool, invite_role_names: list[str], disband_only: bool = False, remove_role_name: str = "", buffs=None):
@@ -77,9 +75,6 @@ class RopePartyWorker(QThread):
     def cast_boss_buffs(self, cycle_id: int):
         self.pending_commands.put(("cast_boss_buffs", int(cycle_id)))
 
-    def kick_boss(self, cycle_id: int, role_name: str):
-        self.pending_commands.put(("kick_boss", int(cycle_id), role_name.strip()))
-
     def disband_boss_party(self, cycle_id: int):
         cycle_id = int(cycle_id)
         if cycle_id <= 0 or cycle_id <= self.latest_boss_disband_cycle_id:
@@ -102,10 +97,6 @@ class RopePartyWorker(QThread):
                     if not self._send_chat_command(command):
                         return
                     self.log_update.emit(f"已发送队伍指令：{command}")
-                    if command == "/建立隊伍":
-                        self.team_created.emit()
-                    elif command.startswith("/邀請組隊 "):
-                        self.invitation_sent.emit(command[len("/邀請組隊 "):])
                     if index < len(self.commands) - 1:
                         self._sleep(random.uniform(0.55, 1.15))
                 if self.remove_role_name:
@@ -114,6 +105,8 @@ class RopePartyWorker(QThread):
                     self.log_update.emit("已发送解散队伍指令：/退出隊伍" if self.disband_only else "首次建队指令已发送完毕")
                 if self.disband_only:
                     self.team_disbanded.emit()
+                elif not self.remove_role_name:
+                    self.party_commands_finished.emit()
             elif not self.remove_role_name:
                 self.log_update.emit("等待并自动接受队伍邀请")
             if self.disband_only or self.remove_role_name:
@@ -198,32 +191,20 @@ class RopePartyWorker(QThread):
             if self._cast_all_buffs():
                 self.boss_buffs_completed.emit(cycle_id)
             return True
-        if kind == "kick_boss":
-            _, cycle_id, role_name = action
-            command = f"/踢出隊伍 {role_name}"
-            if not self._send_chat_command(command):
-                return False
-            self.log_update.emit(f"已发送老板踢出指令：{command}")
-            self.boss_kicked.emit(cycle_id)
-            return True
         if kind == "disband_boss_party":
             cycle_id = action[1]
             if not self._send_chat_command("/退出隊伍"):
                 return False
             self.log_update.emit("老板 BUFF 周期完成，已发送解散队伍指令：/退出隊伍")
-            self.boss_cycle_disbanded.emit(cycle_id)
             self._sleep(random.uniform(0.8, 1.4))
-            rebuild_commands = build_rope_party_commands(True, True, self.invite_role_names)
+            rebuild_commands = build_rope_party_commands(True, True, self.invite_role_names)[1:]
             for index, command in enumerate(rebuild_commands):
                 if not self._send_chat_command(command):
                     return False
                 self.log_update.emit(f"已发送重建队伍指令：{command}")
-                if command == "/建立隊伍":
-                    self.team_created.emit()
-                elif command.startswith("/邀請組隊 "):
-                    self.invitation_sent.emit(command[len("/邀請組隊 "):])
                 if index < len(rebuild_commands) - 1:
                     self._sleep(random.uniform(0.55, 1.15))
+            self.party_rebuild_commands_finished.emit(cycle_id)
             return True
         return True
 
@@ -247,7 +228,7 @@ class RopePartyWorker(QThread):
             if self.boss_orange_baseline is None:
                 self.boss_orange_baseline = orange_count
                 self.log_update.emit(f"老板邀请前橙点基线：{orange_count}")
-            elif orange_count != self.boss_orange_baseline:
+            elif orange_count > self.boss_orange_baseline:
                 cycle_id = self.boss_cycle_id
                 self.log_update.emit(
                     f"橙点数量由 {self.boss_orange_baseline} 变为 {orange_count}，判定老板已进队"
@@ -255,13 +236,10 @@ class RopePartyWorker(QThread):
                 self.boss_join_detected_cycle_id = cycle_id
                 self.next_boss_joined_report_at = 0.0
         if self.boss_join_detected_cycle_id == self.boss_cycle_id:
-            now = time.time()
-            if now >= self.next_boss_joined_report_at:
-                self.boss_joined.emit(self.boss_cycle_id)
-                self.log_update.emit(
-                    f"等待服务器确认老板进队，已重新上报周期 {self.boss_cycle_id}"
-                )
-                self.next_boss_joined_report_at = now + 2.0
+            cycle_id = self.boss_cycle_id
+            self.boss_joined.emit(cycle_id)
+            self.log_update.emit(f"已上报老板进队，等待服务端下发放 BUFF：{cycle_id}")
+            self.boss_cycle_id = 0
             return True
         if self.boss_orange_baseline is not None and time.time() >= self.next_boss_invite_at:
             command = f"/邀請組隊 {self.boss_role_name}"
@@ -292,28 +270,29 @@ class RopePartyWorker(QThread):
         })
 
     def _cast_all_buffs(self) -> bool:
-        if not self.buffs:
-            return True
-        if not self._ensure_game_focus():
-            self.error_signal.emit("强制释放老板 BUFF 前无法确认游戏窗口焦点")
-            return False
-        for index, buff in enumerate(self.buffs):
-            if not self.is_running or self.isInterruptionRequested():
+        with input_transaction_lock:
+            if not self.buffs:
+                return True
+            if not self._ensure_game_focus():
+                self.error_signal.emit("强制释放老板 BUFF 前无法确认游戏窗口焦点")
                 return False
-            try:
-                press_key(buff.key)
-                self._sleep(random.uniform(0.1, 0.3))
-                press_key(buff.key)
-                self.log_update.emit(f"老板进队触发，已释放 BUFF：{buff.key}")
-            except Exception as exc:
-                self.error_signal.emit(f"强制释放 BUFF {buff.key} 失败：{exc}")
-            if index < len(self.buffs) - 1:
-                self._sleep(random.uniform(2.0, 3.0))
-        now = time.time()
-        self.buff_deadlines = {buff.key: now + float(buff.duration) for buff in self.buffs}
-        self._update_countdown_display(now)
-        self.next_buff_due_report_at = 0.0
-        return True
+            for index, buff in enumerate(self.buffs):
+                if not self.is_running or self.isInterruptionRequested():
+                    return False
+                try:
+                    press_key(buff.key)
+                    self._sleep(random.uniform(0.1, 0.3))
+                    press_key(buff.key)
+                    self.log_update.emit(f"老板进队触发，已释放 BUFF：{buff.key}")
+                except Exception as exc:
+                    self.error_signal.emit(f"强制释放 BUFF {buff.key} 失败：{exc}")
+                if index < len(self.buffs) - 1:
+                    self._sleep(random.uniform(2.0, 3.0))
+            now = time.time()
+            self.buff_deadlines = {buff.key: now + float(buff.duration) for buff in self.buffs}
+            self._update_countdown_display(now)
+            self.next_buff_due_report_at = 0.0
+            return True
 
     def _ensure_game_focus(self) -> bool:
         # Force the selected HWND to the foreground even when Windows reports it

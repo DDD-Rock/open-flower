@@ -7,7 +7,7 @@ import time
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from automation.human_input import HumanInput
+from automation.human_input import HumanInput, input_transaction_lock
 from detection.party_invite_detector import PartyInviteDetector
 from utils.window_selector import WindowSelector
 
@@ -60,21 +60,22 @@ class PartyInviteWorker(QThread):
             self.finished_signal.emit()
 
     def _accept_invite(self, initial_point):
-        self.log_update.emit("检测到队伍邀请，自动同意")
-        if not self.window_selector.bring_window_to_front(self.hwnd):
-            self.log_update.emit("无法将游戏窗口置于前台，仍会尝试同意组队")
-        self._sleep(0.15)
-
-        self.human.click_at(initial_point[0], initial_point[1], offset_range=2)
-        for _ in range(14):
-            if not self.is_running or self.isInterruptionRequested():
-                return
+        with input_transaction_lock:
+            self.log_update.emit("检测到队伍邀请，自动同意")
+            if not self.window_selector.bring_window_to_front(self.hwnd):
+                self.log_update.emit("无法将游戏窗口置于前台，仍会尝试同意组队")
             self._sleep(0.15)
-            if self.detector.find_accept_button() is None:
-                self.log_update.emit("已同意队伍邀请")
-                self.invite_accepted.emit()
-                return
-        self.log_update.emit("邀请弹窗点击后仍未消失，本次不报告入队成功")
+
+            self.human.click_at(initial_point[0], initial_point[1], offset_range=2)
+            for _ in range(14):
+                if not self.is_running or self.isInterruptionRequested():
+                    return
+                self._sleep(0.15)
+                if self.detector.find_accept_button() is None:
+                    self.log_update.emit("已同意队伍邀请")
+                    self.invite_accepted.emit()
+                    return
+            self.log_update.emit("邀请弹窗点击后仍未消失，本次不报告入队成功")
 
     def _sleep(self, seconds: float):
         deadline = time.monotonic() + seconds

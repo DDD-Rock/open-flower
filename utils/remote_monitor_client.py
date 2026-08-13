@@ -105,32 +105,18 @@ class RemoteMonitorClient:
 
     def publish_team_joined(self, team_id: int, role_name: str):
         if int(team_id) > 0 and role_name.strip():
-            self._pending_team_joined = {
-                "teamId": int(team_id),
-                "roleName": role_name.strip(),
-                "receiptId": str(uuid.uuid4()),
-            }
-            self._enqueue("team_joined", self._pending_team_joined)
+            self.publish_rope_party_progress(team_id, "team_joined")
 
     def publish_rope_party_progress(self, team_id: int, event: str, role_name: str = "", cycle_id: int = 0):
         if not self._enabled:
             return
-        allowed = {
-            "team_created", "invitation_sent", "team_disbanded", "buff_due",
-            "boss_joined", "buff_completed", "boss_kicked",
-            "boss_cycle_disbanded",
-        }
+        allowed = {"party_commands_finished", "team_joined", "buff_due", "boss_joined", "buff_finished", "party_rebuild_commands_finished"}
         if int(team_id) <= 0 or event not in allowed:
             return
         payload = {"teamId": int(team_id), "event": event}
         if int(cycle_id) > 0:
             payload["cycleId"] = int(cycle_id)
-        if event == "invitation_sent" and role_name.strip():
-            payload["roleName"] = role_name.strip()
-        reliable_events = {
-            "team_created", "invitation_sent", "team_disbanded",
-            "buff_completed", "boss_cycle_disbanded",
-        }
+        reliable_events = set()
         if event in reliable_events:
             receipt_id = str(uuid.uuid4())
             payload["receiptId"] = receipt_id
@@ -331,8 +317,8 @@ class RemoteMonitorClient:
                 return
             if action in {
                 "start", "stop", "configure_rope_party", "disband_rope_party",
-                "clear_rope_party", "remove_rope_party_member", "start_boss_invite_cycle",
-                "cast_boss_buffs", "kick_boss_from_party", "disband_boss_party",
+                "clear_rope_party", "remove_member", "invite_boss", "cast_buffs",
+                "rebuild_party", "prepare_for_rebuild", "restart_party_and_buff",
             } and self.on_command:
                 self.on_command(payload)
 

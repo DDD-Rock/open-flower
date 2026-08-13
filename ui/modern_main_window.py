@@ -2205,6 +2205,10 @@ class MainWindow(LegacyMainWindow):
             ):
                 self.rope_party_first_creation = False
                 self.start_worker()
+                if not (isinstance(self.worker, RopePartyWorker) and self.worker.isRunning()):
+                    self.logger.log("重新组队失败：挂绳组队未能启动，请检查游戏窗口和配置")
+                    self.update_log_display()
+                    return
             if isinstance(self.worker, RopePartyWorker) and self.worker.isRunning() and cycle_id > 0:
                 self.worker.disband_boss_party(cycle_id)
         elif action == "prepare_for_rebuild":

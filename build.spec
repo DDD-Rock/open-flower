@@ -32,6 +32,7 @@ a = Analysis(
         'win32api',
         'win32process',
         'websocket',
+        'certifi',
     ] + numpy_hiddenimports + cv2_hiddenimports,
     hookspath=[],
     hooksconfig={},

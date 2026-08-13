@@ -59,7 +59,7 @@ class RopePartyWorker(QThread):
         self.boss_join_detected_cycle_id = 0
         self.next_boss_joined_report_at = 0.0
         self.latest_boss_buff_cycle_id = 0
-        self.latest_boss_disband_cycle_id = 0
+        self.processed_rebuild_keys = set()
 
     def enqueue_remove_member(self, role_name: str):
         role_name = role_name.strip()
@@ -75,12 +75,14 @@ class RopePartyWorker(QThread):
     def cast_boss_buffs(self, cycle_id: int):
         self.pending_commands.put(("cast_boss_buffs", int(cycle_id)))
 
-    def disband_boss_party(self, cycle_id: int):
+    def disband_boss_party(self, cycle_id: int, phase: str, role_names: list[str]):
         cycle_id = int(cycle_id)
-        if cycle_id <= 0 or cycle_id <= self.latest_boss_disband_cycle_id:
+        rebuild_key = (cycle_id, str(phase))
+        if cycle_id <= 0 or rebuild_key in self.processed_rebuild_keys:
             return
-        self.latest_boss_disband_cycle_id = cycle_id
-        self.pending_commands.put(("disband_boss_party", cycle_id))
+        role_names = [str(name).strip() for name in role_names if str(name).strip()]
+        self.processed_rebuild_keys.add(rebuild_key)
+        self.pending_commands.put(("disband_boss_party", cycle_id, role_names))
 
     def run(self):
         try:
@@ -98,7 +100,8 @@ class RopePartyWorker(QThread):
                         return
                     self.log_update.emit(f"已发送队伍指令：{command}")
                     if index < len(self.commands) - 1:
-                        self._sleep(random.uniform(0.55, 1.15))
+                        delay = random.uniform(1.5, 2.2) if command == "/建立隊伍" else random.uniform(1.0, 1.6)
+                        self._sleep(delay)
                 if self.remove_role_name:
                     self.log_update.emit(f"已发送移除成员指令：{self.commands[0]}")
                 else:
@@ -193,17 +196,21 @@ class RopePartyWorker(QThread):
             return True
         if kind == "disband_boss_party":
             cycle_id = action[1]
+            role_names = action[2]
             if not self._send_chat_command("/退出隊伍"):
                 return False
             self.log_update.emit("老板 BUFF 周期完成，已发送解散队伍指令：/退出隊伍")
             self._sleep(random.uniform(0.8, 1.4))
-            rebuild_commands = build_rope_party_commands(True, True, self.invite_role_names)[1:]
+            rebuild_commands = build_rope_party_commands(True, True, role_names)[1:]
             for index, command in enumerate(rebuild_commands):
                 if not self._send_chat_command(command):
                     return False
                 self.log_update.emit(f"已发送重建队伍指令：{command}")
                 if index < len(rebuild_commands) - 1:
-                    self._sleep(random.uniform(0.55, 1.15))
+                    # Chat commands have no game acknowledgement. In particular,
+                    # wait for party creation to settle before sending invites.
+                    delay = random.uniform(1.5, 2.2) if command == "/建立隊伍" else random.uniform(1.0, 1.6)
+                    self._sleep(delay)
             self.party_rebuild_commands_finished.emit(cycle_id)
             return True
         return True

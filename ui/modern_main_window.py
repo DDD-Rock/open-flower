@@ -2210,7 +2210,10 @@ class MainWindow(LegacyMainWindow):
                     self.update_log_display()
                     return
             if isinstance(self.worker, RopePartyWorker) and self.worker.isRunning() and cycle_id > 0:
-                self.worker.disband_boss_party(cycle_id)
+                phase = "before_buff" if action == "restart_party_and_buff" else "after_buff"
+                self.worker.disband_boss_party(
+                    cycle_id, phase, list(command.get("inviteRoleNames") or [])
+                )
         elif action == "prepare_for_rebuild":
             self.logger.log("队长正在重新组队，本机等待新的组队邀请")
             self.update_log_display()

@@ -21,6 +21,12 @@ class RopePartyWorkerTests(unittest.TestCase):
         self.assertEqual(build_rope_party_commands(False, True, ["队员"]), [])
         self.assertEqual(build_rope_party_commands(True, False, ["队员"]), [])
 
+    def test_leader_only_team_creates_party_without_invites(self):
+        self.assertEqual(
+            build_rope_party_commands(True, True, []),
+            ["/退出隊伍", "/建立隊伍"],
+        )
+
     def test_remove_member_command_uses_traditional_game_command(self):
         self.assertEqual(build_remove_member_command(" 队员甲 "), "/踢出隊伍 队员甲")
 

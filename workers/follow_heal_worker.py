@@ -1,4 +1,4 @@
-"""Windows 跟补模式：持续加血，并按用户选择走路或瞬移回位。"""
+"""Windows 跟补模式：混合模式与瞬移回位的实现。"""
 
 import random
 import time
@@ -133,7 +133,7 @@ class FollowHealWorker(QThread):
             self.log_update.emit(
                 f"使用手动跟补基准点 X={self.base_x:.1f}，"
                 f"左右界限 ±{self.boundary_tolerance:.1f}，"
-                f"回位方案：{'瞬移回位' if self.return_strategy == 'teleport' else '左右走防卡'}"
+                f"回位方案：{'瞬移回位' if self.return_strategy == 'teleport' else '混合模式'}"
             )
             if self.return_strategy == "teleport":
                 self.log_update.emit(f"瞬移提前保护 ±{self.protective_tolerance:.1f}")
@@ -300,7 +300,7 @@ class FollowHealWorker(QThread):
             if direction is None:
                 return
             self.log_update.emit(
-                f"左右走防卡越界：当前X={latest_x:.1f}，"
+                f"混合模式越界：当前X={latest_x:.1f}，"
                 f"第 {attempt} 次朝标记点方向瞬移"
             )
             try:

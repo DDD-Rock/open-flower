@@ -112,7 +112,9 @@ class SettingsManager:
             "follow_heal_minimap_height": region_h,
             "follow_heal_boundary_tolerance": str(follow_heal_boundary_tolerance),
             "follow_heal_return_strategy": (
-                "teleport" if follow_heal_return_strategy == "teleport" else "walk"
+                follow_heal_return_strategy
+                if follow_heal_return_strategy in {"walk", "teleport", "left_right"}
+                else "walk"
             ),
             "sit_chair_enabled": str(sit_chair_enabled),
             "chair_key": chair_key,

@@ -23,6 +23,7 @@ from workers.skill_worker import SkillWorker
 from workers.market_worker import MarketWorker
 from workers.dead_flower_worker import DeadFlowerWorker
 from workers.follow_heal_worker import FollowHealWorker
+from workers.follow_heal_walking_worker import FollowHealWalkingWorker
 from workers.party_invite_worker import PartyInviteWorker
 from utils.logger import Logger
 from utils.screen_utils import get_screen_resolution
@@ -1057,14 +1058,6 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "警告", "请先设置加血技能键！")
                 return
             strategy = getattr(self, "follow_heal_return_strategy", "walk")
-            if not getattr(self, "follow_heal_teleport_key", ""):
-                QMessageBox.warning(self, "警告", "请先设置瞬移技能键！")
-                return
-            if (
-                self.follow_heal_teleport_key.lower() == self.follow_heal_key.lower()
-            ):
-                QMessageBox.warning(self, "警告", "瞬移技能键不能和加血技能键重复！")
-                return
             if not getattr(self, "follow_heal_anchor_pos", None):
                 QMessageBox.warning(self, "警告", "请先标记跟补基准点！")
                 return
@@ -1072,16 +1065,32 @@ class MainWindow(QMainWindow):
             self.logger.log("启动跟补模式...")
             self.update_log_display()
 
-            self.worker = FollowHealWorker(
-                self.game_window_hwnd,
-                self.buffs,
-                self.follow_heal_key,
-                self.follow_heal_teleport_key,
-                self.follow_heal_anchor_pos,
-                self.follow_heal_minimap_region,
-                getattr(self, "follow_heal_boundary_tolerance", 6.0),
-                strategy,
-            )
+            if strategy == "left_right":
+                self.worker = FollowHealWalkingWorker(
+                    self.game_window_hwnd,
+                    self.buffs,
+                    self.follow_heal_key,
+                    self.follow_heal_anchor_pos,
+                    self.follow_heal_minimap_region,
+                    getattr(self, "follow_heal_boundary_tolerance", 6.0),
+                )
+            else:
+                if not getattr(self, "follow_heal_teleport_key", ""):
+                    QMessageBox.warning(self, "警告", "请先设置瞬移技能键！")
+                    return
+                if self.follow_heal_teleport_key.lower() == self.follow_heal_key.lower():
+                    QMessageBox.warning(self, "警告", "瞬移技能键不能和加血技能键重复！")
+                    return
+                self.worker = FollowHealWorker(
+                    self.game_window_hwnd,
+                    self.buffs,
+                    self.follow_heal_key,
+                    self.follow_heal_teleport_key,
+                    self.follow_heal_anchor_pos,
+                    self.follow_heal_minimap_region,
+                    getattr(self, "follow_heal_boundary_tolerance", 6.0),
+                    strategy,
+                )
             self.worker.log_update.connect(self.on_status_update)
             self.worker.finished_signal.connect(self.on_worker_finished)
             self.worker.error_signal.connect(self.on_error)

@@ -162,6 +162,24 @@ class SettingsManagerTests(unittest.TestCase):
 
             self.assertEqual(settings["follow_heal_return_strategy"], "walk")
 
+    def test_left_right_follow_heal_strategy_round_trip_without_teleport_key(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.ini"
+            manager = SettingsManager(str(path))
+
+            self.assertTrue(
+                manager.save_settings(
+                    buffs=[BuffConfig(), BuffConfig(), BuffConfig()],
+                    mode="follow_heal",
+                    heal_skill_key="Q",
+                    follow_heal_anchor_pos=(74, 58),
+                    follow_heal_return_strategy="left_right",
+                )
+            )
+            settings = SettingsManager(str(path)).load_settings()
+
+            self.assertEqual(settings["follow_heal_return_strategy"], "left_right")
+
     def test_auto_accept_party_invite_round_trip(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "settings.ini"

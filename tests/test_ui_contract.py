@@ -19,6 +19,8 @@ class ModernUIContractTests(unittest.TestCase):
             "出市场后移动方式",
             "只向右（骨龙、忘却）",
             "跟补模式",
+            "混合模式",
+            "左右走模式",
             "加血技能键",
             "瞬移技能键",
             "跟补基准点",
@@ -32,6 +34,13 @@ class ModernUIContractTests(unittest.TestCase):
         ):
             self.assertIn(text, source)
         self.assertNotIn("修正按住", source)
+        self.assertNotIn("左右走防卡", source)
+
+        walking_worker = (ROOT / "workers" / "follow_heal_walking_worker.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("teleport_key", walking_worker)
+        self.assertNotIn("perform_directional_skill", walking_worker)
 
     def test_entrypoint_uses_modern_window(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")

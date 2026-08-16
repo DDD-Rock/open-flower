@@ -942,8 +942,9 @@ class MainWindow(LegacyMainWindow):
         row.addWidget(self._option_column("加血技能键", self.heal_key_btn), 1)
 
         self.follow_heal_return_combo = QComboBox()
-        self.follow_heal_return_combo.addItem("左右走防卡", "walk")
+        self.follow_heal_return_combo.addItem("混合模式", "walk")
         self.follow_heal_return_combo.addItem("瞬移回位", "teleport")
+        self.follow_heal_return_combo.addItem("左右走模式", "left_right")
         self.follow_heal_return_combo.currentIndexChanged.connect(
             self._on_follow_heal_return_strategy_changed
         )
@@ -1315,7 +1316,7 @@ class MainWindow(LegacyMainWindow):
             self.follow_heal_return_strategy
         )
         self.follow_heal_return_combo.setCurrentIndex(max(0, strategy_index))
-        self.teleport_key_btn.setEnabled(True)
+        self.teleport_key_btn.setEnabled(self.follow_heal_return_strategy != "left_right")
         self._update_follow_heal_anchor_label()
         self._sync_chair_controls()
         self.random_behavior_checkbox.setChecked(
@@ -1559,7 +1560,9 @@ class MainWindow(LegacyMainWindow):
     def _on_follow_heal_return_strategy_changed(self):
         strategy = self.follow_heal_return_combo.currentData() or "walk"
         self.follow_heal_return_strategy = strategy
-        self.teleport_key_btn.setEnabled(not self.is_worker_running)
+        self.teleport_key_btn.setEnabled(
+            not self.is_worker_running and strategy != "left_right"
+        )
         self._schedule_save()
 
     def on_mark_follow_anchor(self):
@@ -1671,18 +1674,17 @@ class MainWindow(LegacyMainWindow):
                 errors.append("请设置加血技能键")
             elif self.follow_heal_key.lower() in keys:
                 errors.append("加血技能键不能和 BUFF 按键重复")
-            if not self.follow_heal_teleport_key:
-                errors.append("请设置瞬移技能键")
-            elif (
-                self.follow_heal_teleport_key.lower() in keys
-            ):
-                errors.append("瞬移技能键不能和 BUFF 按键重复")
-            elif (
-                self.follow_heal_key
-                and self.follow_heal_teleport_key.lower()
-                == self.follow_heal_key.lower()
-            ):
-                errors.append("瞬移技能键不能和加血技能键重复")
+            if self.follow_heal_return_strategy != "left_right":
+                if not self.follow_heal_teleport_key:
+                    errors.append("请设置瞬移技能键")
+                elif self.follow_heal_teleport_key.lower() in keys:
+                    errors.append("瞬移技能键不能和 BUFF 按键重复")
+                elif (
+                    self.follow_heal_key
+                    and self.follow_heal_teleport_key.lower()
+                    == self.follow_heal_key.lower()
+                ):
+                    errors.append("瞬移技能键不能和加血技能键重复")
             if not self.follow_heal_anchor_pos:
                 errors.append("请先标记跟补基准点")
             if not 1.0 <= self.follow_heal_boundary_tolerance <= 50.0:
@@ -1956,7 +1958,9 @@ class MainWindow(LegacyMainWindow):
         self.jump_key_btn.setEnabled(enabled)
         self.heal_key_btn.setEnabled(enabled)
         self.follow_heal_return_combo.setEnabled(enabled)
-        self.teleport_key_btn.setEnabled(enabled)
+        self.teleport_key_btn.setEnabled(
+            enabled and self.follow_heal_return_strategy != "left_right"
+        )
         self.follow_anchor_btn.setEnabled(enabled)
 
     def _start_monitor_worker(self):

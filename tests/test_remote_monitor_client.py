@@ -1,7 +1,10 @@
 import importlib.util
 import json
+import ssl
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest import mock
 from pathlib import Path
 
 from models.map_topology import MapPlatform, MapTopology, NormalizedMapPoint
@@ -50,6 +53,37 @@ class RemoteMonitorClientTests(unittest.TestCase):
             self.assertEqual(body["type"], "client_state")
             self.assertEqual(body["sequence"], 1)
             self.assertEqual(body["payload"]["mode"], "monitor")
+
+    def test_websocket_uses_bundled_ca_bundle(self):
+        with tempfile.TemporaryDirectory() as directory:
+            client = RemoteMonitorClient(self._manager(directory))
+            options = client._websocket_ssl_options()
+
+            self.assertEqual(options["cert_reqs"], ssl.CERT_REQUIRED)
+            self.assertTrue(options["ca_certs"].endswith("cacert.pem"))
+
+    def test_connection_loop_passes_ssl_options_to_websocket(self):
+        calls = []
+
+        class FakeWebSocketApp:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def run_forever(self, **kwargs):
+                calls.append(kwargs)
+                client._enabled = False
+
+        with tempfile.TemporaryDirectory() as directory:
+            client = RemoteMonitorClient(self._manager(directory))
+            client._enabled = True
+            globals_map = RemoteMonitorClient._connection_loop.__globals__
+            with mock.patch.dict(
+                globals_map,
+                {"websocket": SimpleNamespace(WebSocketApp=FakeWebSocketApp)},
+            ):
+                client._connection_loop()
+
+        self.assertEqual(calls[0]["sslopt"], client._websocket_ssl_options())
 
     def test_frame_coordinates_are_normalized_and_coalesced(self):
         with tempfile.TemporaryDirectory() as directory:

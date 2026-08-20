@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import ssl
 import threading
 import time
 import uuid
 from collections import deque
 from typing import Callable, Optional
 from urllib.parse import quote, urlsplit, urlunsplit
+
+import certifi
 
 try:
     import websocket
@@ -251,7 +254,10 @@ class RemoteMonitorClient:
             )
             self._socket_app = app
             try:
-                app.run_forever(ping_interval=0)
+                app.run_forever(
+                    ping_interval=0,
+                    sslopt=self._websocket_ssl_options(),
+                )
             except Exception as error:
                 self._notify(f"远程监控连接异常：{error}")
             self._connected = False
@@ -406,6 +412,14 @@ class RemoteMonitorClient:
         parsed = urlsplit(base_url.rstrip("/"))
         scheme = "wss" if parsed.scheme == "https" else "ws"
         return urlunsplit((scheme, parsed.netloc, "/ws/device", f"client_id={quote(client_id)}", ""))
+
+    @staticmethod
+    def _websocket_ssl_options() -> dict:
+        """Use the bundled CA bundle so frozen Windows builds do not depend on OS roots."""
+        return {
+            "cert_reqs": ssl.CERT_REQUIRED,
+            "ca_certs": certifi.where(),
+        }
 
     def _notify(self, message: str):
         if self.on_status:

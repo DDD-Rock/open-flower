@@ -1,7 +1,20 @@
 # -*- mode: python ; coding: utf-8 -*-
+import importlib.util
+
 from PyInstaller.utils.hooks import collect_all, collect_data_files
 
 block_cipher = None
+
+required_packages = ("websocket", "certifi")
+missing_packages = [
+    package for package in required_packages
+    if importlib.util.find_spec(package) is None
+]
+if missing_packages:
+    raise RuntimeError(
+        "Missing required packages for the Windows build: "
+        + ", ".join(missing_packages)
+    )
 
 # 只收集必要的包（numpy和cv2是核心依赖）
 numpy_datas, numpy_binaries, numpy_hiddenimports = collect_all('numpy')

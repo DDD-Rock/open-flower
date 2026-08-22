@@ -72,6 +72,12 @@ class PartyInviteDetectorTests(unittest.TestCase):
         self.assertFalse(self.detector.is_same_popup((100, 200), (140, 200)))
         self.assertFalse(self.detector.is_same_popup((100, 200), None))
 
+    def test_safe_cursor_point_is_in_middle_right_of_client_area(self):
+        self.assertEqual(
+            self.detector.safe_cursor_client_point(1000, 600),
+            (820, 300),
+        )
+
     def test_reuses_cached_position_while_resolution_is_unchanged(self):
         image = np.full((500, 800, 3), 35, dtype=np.uint8)
         accept = cv2.imread(self.detector.ACCEPT_TEMPLATE)

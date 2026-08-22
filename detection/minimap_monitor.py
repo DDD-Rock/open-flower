@@ -3,6 +3,7 @@ import cv2
 import numpy as np
 import mss
 import os
+import threading
 import time
 import win32gui
 from typing import Optional, Tuple
@@ -17,7 +18,7 @@ class MinimapMonitor:
     1. 自动检测小地图深色区域边界
     2. 通过黄点颜色检测玩家位置
     
-    注意：mss 不线程安全，每次截图时创建新实例
+    注意：mss 不线程安全，高频调用时在所在线程显式开启复用会话。
     """
     
     def __init__(self):
@@ -28,6 +29,33 @@ class MinimapMonitor:
         # 小地图区域配置（相对于游戏窗口客户区）
         # (x, y, width, height) - None 表示未配置
         self.minimap_region = None
+        self._capture_local = threading.local()
+
+    def start_capture(self):
+        """在当前线程开启可复用的 MSS 截图会话。"""
+        capture = getattr(self._capture_local, "capture", None)
+        if capture is None:
+            capture = mss.mss()
+            self._capture_local.capture = capture
+        return capture
+
+    def _grab(self, region):
+        """截取区域；显式开启会话时复用 MSS，否则保持原有的单次截图行为。"""
+        capture = getattr(self._capture_local, "capture", None)
+        if capture is not None:
+            return np.array(capture.grab(region))
+        with mss.mss() as one_shot_capture:
+            return np.array(one_shot_capture.grab(region))
+
+    def close_capture(self):
+        """释放当前线程的截图资源。"""
+        capture = getattr(self._capture_local, "capture", None)
+        if capture is None:
+            return
+        try:
+            capture.close()
+        finally:
+            self._capture_local.capture = None
 
     def set_window_handle(self, hwnd: int):
         """设置游戏窗口句柄"""
@@ -112,9 +140,7 @@ class MinimapMonitor:
                     "width": sw,
                     "height": sh
                 }
-                with mss.mss() as sct:
-                    sct_img = sct.grab(region)
-                    screenshot = np.array(sct_img)
+                screenshot = self._grab(region)
                 screenshot = cv2.cvtColor(screenshot, cv2.COLOR_BGRA2BGR)
             
             # 1. 转为灰度图
@@ -221,9 +247,7 @@ class MinimapMonitor:
                     "width": 300,
                     "height": 200
                 }
-            # 使用MSS截取（每次创建新实例，线程安全）
-            with mss.mss() as sct:
-                screenshot = np.array(sct.grab(monitor))
+            screenshot = self._grab(monitor)
             return cv2.cvtColor(screenshot, cv2.COLOR_BGRA2BGR)
         except Exception as e:
             print(f"截图失败: {e}")
@@ -251,6 +275,16 @@ class MinimapMonitor:
             if attempt < 2:
                 time.sleep(0.04)
         return None
+
+    def find_player_position_once(self) -> Optional[Tuple[int, int]]:
+        """只采集和分析一帧，供固定帧率的导航循环使用。"""
+        minimap = self.capture_minimap()
+        if minimap is None:
+            self.last_player_detection_summary = "截取小地图失败"
+            return None
+        position, summary = self.find_player_position_in_image(minimap)
+        self.last_player_detection_summary = summary
+        return position
 
     @staticmethod
     def find_player_position_in_image(
@@ -549,8 +583,7 @@ class MinimapMonitor:
                 "height": client_height
             }
             
-            with mss.mss() as sct:
-                screenshot = np.array(sct.grab(monitor))
+            screenshot = self._grab(monitor)
             return cv2.cvtColor(screenshot, cv2.COLOR_BGRA2BGR)
         except Exception as e:
             print(f"游戏画面截图失败: {e}")

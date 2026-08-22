@@ -39,7 +39,25 @@ class DeadFlowerWorker(QThread):
     error_signal = pyqtSignal(str)
     countdown_update = pyqtSignal(dict)  # buff倒计时更新
 
-    def __init__(self, hwnd: int, buffs: List[BuffConfig], jump_key: str = "alt", sit_chair_enabled: bool = False, chair_key: str = "=", pre_skill_move_mode: str = "right_only", manual_portal_pos: tuple = None):
+    NAVIGATION_TARGET_INTERVAL = 1.0 / 30.0
+    PLAYER_MISSING_GRACE_SECONDS = 0.12
+    PLAYER_MISSING_ABORT_SECONDS = 3.0
+    PLAYER_RECOVERY_JUMP_INTERVAL = 0.45
+    STUCK_TIMEOUT_SECONDS = 0.9
+    FINE_ADJUST_DURATION_MS = (180, 280)
+    PORTAL_TRANSITION_CHECK_ATTEMPTS = 3
+
+    def __init__(
+        self,
+        hwnd: int,
+        buffs: List[BuffConfig],
+        jump_key: str = "alt",
+        sit_chair_enabled: bool = False,
+        chair_key: str = "=",
+        pre_skill_move_mode: str = "right_only",
+        manual_portal_pos: tuple = None,
+        portal_width_threshold: float = 2.5,
+    ):
         super().__init__()
         self.hwnd = hwnd
         self.buffs = [b for b in buffs if b.enabled and b.key]  # 只保留启用的buff
@@ -61,6 +79,9 @@ class DeadFlowerWorker(QThread):
         
         # 手动标记的传送门位置（优先于自动检测）
         self.manual_portal_pos = manual_portal_pos
+        self.portal_width_threshold = self._clamp_portal_width_threshold(
+            portal_width_threshold
+        )
         
         # Buff倒计时跟踪 {key: 下次释放时间戳}
         self.buff_next_cast: Dict[str, float] = {}
@@ -72,9 +93,7 @@ class DeadFlowerWorker(QThread):
         self._cached_portal_pos: Optional[tuple] = None            # 小地图内坐标
         
         # 导航参数
-        self.TOLERANCE = 5                   # 到达传送门的容差(像素)
-        self.DETECT_INTERVAL = (50, 100)
-        
+        self.TOLERANCE = self.portal_width_threshold  # 到达传送门的容差(小地图像素)
         # 时间参数
         self.BATCH_CAST_WINDOW = 10.0  # 10秒内的buff一起放
         self.BLACK_SCREEN_WAIT = 2.5   # 传送黑屏等待时间
@@ -85,6 +104,14 @@ class DeadFlowerWorker(QThread):
         self._dialog_miss_count = 0        # 连续未检测到弹窗次数
         self._dialog_check_done = False    # 本轮回市场后是否已停止检测
         self._last_dialog_check = 0.0      # 上次检测时间戳
+
+    @staticmethod
+    def _clamp_portal_width_threshold(value: float) -> float:
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            numeric = 2.5
+        return max(0.5, min(20.0, numeric))
 
     def _bring_window_to_front(self) -> bool:
         """将游戏窗口设置为前台"""
@@ -453,7 +480,7 @@ class DeadFlowerWorker(QThread):
             self._interruptible_sleep(sample_delay)
             if not self.is_running:
                 return None
-            return self.monitor.find_player_position()
+            return self.monitor.find_player_position_once()
         finally:
             try:
                 self.human.keyboard.release(self.jump_key)
@@ -540,24 +567,31 @@ class DeadFlowerWorker(QThread):
         self.log_update.emit(f"传送门位置: ({portal_x}, {portal_y})")
 
         self._jump_before_move()
+        self.log_update.emit("小地图导航已启用最高 30 FPS 识别")
 
         # 2. 导航到传送门
-        retry_count = 0
-        max_retries = 300
-        last_player_x = None
-        stuck_count = 0
-        miss_count = 0
+        navigation_started_at = time.monotonic()
+        max_navigation_seconds = 30.0
+        missing_since = None
+        last_recovery_jump_at = 0.0
+        last_missing_log_at = 0.0
+        progress_anchor_x = None
+        progress_anchor_at = None
         current_direction = None
+        direct_approach_direction = None
+        fine_adjusting = False
         entered_portal = False
 
         initial_player = None
-        for _ in range(10):
+        initial_deadline = time.monotonic() + 2.0
+        while self.is_running and time.monotonic() < initial_deadline:
             if not self.is_running:
                 return False
-            initial_player = self.monitor.find_player_position()
+            frame_started = time.monotonic()
+            initial_player = self.monitor.find_player_position_once()
             if initial_player:
                 break
-            self._interruptible_sleep(0.2)
+            self._sleep_navigation_frame(frame_started)
         if not initial_player:
             self.log_update.emit("导航前黄点被遮挡，尝试跳跃定位...")
             initial_player = self._find_player_position_during_jump()
@@ -576,22 +610,27 @@ class DeadFlowerWorker(QThread):
             f"传送门X={portal_x:.1f}，距离={initial_dx:.1f}"
         )
         if abs(initial_dx) <= self.TOLERANCE:
-            if not self._ensure_game_focus("进入传送门"):
-                return False
-            self.human.use_portal()
-            entered_portal = True
+            entered_portal = self._try_enter_portal()
+            if not entered_portal:
+                fine_adjusting = True
         else:
             current_direction = "right" if initial_dx > 0 else "left"
+            direct_approach_direction = current_direction
             if current_direction == "right":
                 self.human.move_right()
             else:
                 self.human.move_left()
         
-        while self.is_running and retry_count < max_retries and not entered_portal:
+        while (
+            self.is_running
+            and time.monotonic() - navigation_started_at < max_navigation_seconds
+            and not entered_portal
+        ):
+            frame_started = time.monotonic()
             if not self.window_selector.is_window_foreground(self.hwnd):
                 current_direction = None
-                last_player_x = None
-                stuck_count = 0
+                progress_anchor_x = None
+                progress_anchor_at = None
                 self.log_update.emit("⚠️ 检测到游戏窗口失去焦点，正在恢复")
                 if not self._ensure_game_focus("导航恢复"):
                     break
@@ -599,75 +638,114 @@ class DeadFlowerWorker(QThread):
                 self.human.release_all()
 
             recovered_by_jump = False
-            player_pos = self.monitor.find_player_position()
+            player_pos = self.monitor.find_player_position_once()
             
             if not player_pos:
-                miss_count += 1
+                now = time.monotonic()
+                if missing_since is None:
+                    missing_since = now
+                missing_duration = now - missing_since
+
+                if missing_duration < self.PLAYER_MISSING_GRACE_SECONDS:
+                    self._sleep_navigation_frame(frame_started)
+                    continue
+
                 if current_direction is not None:
                     self.human.stop_move()
                     current_direction = None
-                last_player_x = None
-                stuck_count = 0
-                if miss_count == 1 or miss_count % 5 == 0:
+                progress_anchor_x = None
+                progress_anchor_at = None
+                if now - last_missing_log_at >= 1.0:
                     self.log_update.emit(
-                        f"⚠️ 丢失玩家黄点 {miss_count} 次，已停止移动，尝试跳跃定位；"
+                        f"⚠️ 玩家黄点持续丢失 {missing_duration:.1f}s，"
+                        "已停止移动，尝试跳跃定位；"
                         f"{self.monitor.last_player_detection_summary}"
                     )
-                player_pos = self._find_player_position_during_jump()
-                recovered_by_jump = player_pos is not None
+                    last_missing_log_at = now
+                if now - last_recovery_jump_at >= self.PLAYER_RECOVERY_JUMP_INTERVAL:
+                    player_pos = self._find_player_position_during_jump()
+                    last_recovery_jump_at = time.monotonic()
+                    recovered_by_jump = player_pos is not None
                 if not player_pos:
-                    if miss_count >= 15:
+                    if missing_duration >= self.PLAYER_MISSING_ABORT_SECONDS:
                         self.log_update.emit("❌ 连续无法定位玩家，终止本次导航")
                         break
-                    self._random_sleep(0.15, 0.25)
-                    retry_count += 1
+                    self._sleep_navigation_frame(frame_started)
                     continue
             
-            if miss_count:
+            if missing_since is not None:
                 prefix = "跳跃时重新定位玩家" if recovered_by_jump else "已重新定位玩家"
                 self.log_update.emit(f"{prefix}: X={player_pos[0]:.1f}")
-            miss_count = 0
+            missing_since = None
             player_x, _ = player_pos
             dx = portal_x - player_x
-            if retry_count % 10 == 0:
+
+            # 按上键失败后已进入微调状态。即使当前 X 仍在容差内，
+            # 也先朝传送门中心多走一步，避免只在原地重复按上。
+            needed_direction = 'right' if dx > 0 else 'left'
+            if fine_adjusting:
+                if not self._ensure_game_focus("传送门微调"):
+                    break
                 self.log_update.emit(
-                    f"导航中: 玩家X={player_x:.1f}，目标X={portal_x:.1f}，距离={dx:.1f}"
+                    f"向{'右' if needed_direction == 'right' else '左'}微调后尝试进入传送门"
                 )
-            
+                self.human.tap_direction(
+                    needed_direction,
+                    self.FINE_ADJUST_DURATION_MS,
+                )
+                current_direction = None
+                progress_anchor_x = None
+                progress_anchor_at = None
+                entered_portal = self._try_enter_portal()
+                if entered_portal:
+                    break
+                continue
+
             if abs(dx) <= self.TOLERANCE:
                 self.log_update.emit("到达传送门，准备进入...")
                 self.human.stop_move()
                 current_direction = None
                 self._random_sleep(0.1, 0.3)
-                if not self._ensure_game_focus("进入传送门"):
+                entered_portal = self._try_enter_portal()
+                if entered_portal:
                     break
-                self.human.use_portal()
-                entered_portal = True
-                break
-            
-            # 检测是否卡住（黄点没动）
-            if last_player_x is not None and abs(player_x - last_player_x) <= 1:
-                stuck_count += 1
-            else:
-                stuck_count = 0
-            last_player_x = player_x
-            
-            if stuck_count >= 5:
-                self.log_update.emit(
-                    "检测到移动停滞（游戏焦点正常），重新按方向键："
-                    f"{self.monitor.last_player_detection_summary}"
-                )
-                self.human.stop_move()
-                current_direction = None
-                self._random_sleep(0.1, 0.3)
-                stuck_count = 0
-            
-            needed_direction = 'right' if dx > self.TOLERANCE else 'left'
-            if current_direction != needed_direction:
+                fine_adjusting = True
+                continue
+
+            if (
+                direct_approach_direction is not None
+                and needed_direction != direct_approach_direction
+            ):
                 if current_direction is not None:
-                    self.log_update.emit("已越过目标，切换移动方向")
                     self.human.stop_move()
-                    self._random_sleep(0.1, 0.2)
+                    current_direction = None
+                fine_adjusting = True
+                progress_anchor_x = None
+                progress_anchor_at = None
+                self.log_update.emit("已越过传送门，切换为长按微调并逐次试按上键")
+                self._sleep_navigation_frame(frame_started)
+                continue
+
+            now = time.monotonic()
+            if current_direction is not None:
+                if progress_anchor_x is None:
+                    progress_anchor_x = player_x
+                    progress_anchor_at = now
+                elif abs(player_x - progress_anchor_x) > 1:
+                    progress_anchor_x = player_x
+                    progress_anchor_at = now
+                elif now - progress_anchor_at >= self.STUCK_TIMEOUT_SECONDS:
+                    self.log_update.emit(
+                        "检测到移动停滞（游戏焦点正常），重新按方向键："
+                        f"{self.monitor.last_player_detection_summary}"
+                    )
+                    self.human.stop_move()
+                    current_direction = None
+                    progress_anchor_x = None
+                    progress_anchor_at = None
+                    self._random_sleep(0.1, 0.3)
+
+            if current_direction != needed_direction:
                 if not self._ensure_game_focus("方向移动"):
                     break
                 if needed_direction == 'right':
@@ -675,9 +753,10 @@ class DeadFlowerWorker(QThread):
                 else:
                     self.human.move_left()
                 current_direction = needed_direction
+                progress_anchor_x = player_x
+                progress_anchor_at = time.monotonic()
             
-            self._random_sleep(0.15, 0.25)
-            retry_count += 1
+            self._sleep_navigation_frame(frame_started)
         
         self.human.stop_move()
         if not entered_portal:
@@ -701,6 +780,34 @@ class DeadFlowerWorker(QThread):
         
         self.log_update.emit("⚠️ 离开市场超时")
         return False
+
+    def _try_enter_portal(self) -> bool:
+        """按上键后确认市场标志已连续消失，避免黑屏时继续微调。"""
+        if not self._ensure_game_focus("进入传送门"):
+            return False
+        self.human.use_portal()
+
+        consecutive_logo_misses = 0
+        for _ in range(self.PORTAL_TRANSITION_CHECK_ATTEMPTS):
+            if not self.is_running:
+                return False
+            if self._is_market_logo_visible():
+                consecutive_logo_misses = 0
+            else:
+                consecutive_logo_misses += 1
+                if consecutive_logo_misses >= 2:
+                    self.log_update.emit("已触发传送，等待切换场景")
+                    return True
+            self._interruptible_sleep(0.08)
+        return False
+
+    def _sleep_navigation_frame(self, frame_started: float):
+        """将导航采样限制在约 30 FPS，处理超时时不再额外等待。"""
+        remaining = self.NAVIGATION_TARGET_INTERVAL - (
+            time.monotonic() - frame_started
+        )
+        if remaining > 0:
+            self._interruptible_sleep(remaining)
 
 
     def _update_countdown_display(self, now: float = None):
@@ -740,6 +847,7 @@ class DeadFlowerWorker(QThread):
             self._interruptible_sleep(0.5)
             
             self.monitor.set_window_handle(self.hwnd)
+            self.monitor.start_capture()
             
             # 记录初始窗口大小
             self._cached_window_size = self._get_window_size()
@@ -888,6 +996,7 @@ class DeadFlowerWorker(QThread):
             self.error_signal.emit(str(e))
         finally:
             self.human.release_all()
+            self.monitor.close_capture()
 
     def stop(self):
         """停止Worker（非阻塞）"""

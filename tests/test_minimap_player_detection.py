@@ -1,9 +1,16 @@
+import sys
+import types
 import unittest
+from unittest import mock
 
 try:
     import cv2
     import numpy as np
 
+    # Color detection is platform-independent; these modules are only used by
+    # the live Windows capture methods.
+    sys.modules.setdefault("win32gui", types.SimpleNamespace())
+    sys.modules.setdefault("mss", types.SimpleNamespace())
     from detection.minimap_monitor import MinimapMonitor
 except ImportError:
     cv2 = None
@@ -13,6 +20,17 @@ except ImportError:
 
 @unittest.skipIf(cv2 is None, "OpenCV is not installed")
 class MinimapPlayerDetectionTests(unittest.TestCase):
+    def test_single_frame_detection_captures_only_once(self):
+        minimap = np.full((120, 260, 3), 30, dtype=np.uint8)
+        cv2.circle(minimap, (83, 61), 3, (8, 252, 255), -1)
+        monitor = MinimapMonitor()
+        monitor.capture_minimap = mock.Mock(return_value=minimap)
+
+        point = monitor.find_player_position_once()
+
+        self.assertEqual(point, (83, 61))
+        monitor.capture_minimap.assert_called_once_with()
+
     def test_finds_antialiased_dim_yellow_player_marker(self):
         minimap = np.full((120, 260, 3), 30, dtype=np.uint8)
         cv2.circle(minimap, (83, 61), 3, (38, 208, 218), -1)

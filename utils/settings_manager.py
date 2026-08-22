@@ -11,6 +11,9 @@ from typing import Optional, Tuple
 
 from config import DEFAULT_BUFF_SLOT_COUNT, MAX_BUFF_SLOT_COUNT
 
+DEFAULT_PORTAL_WIDTH_THRESHOLD = 2.5
+
+
 class SettingsManager:
     """设置管理器，负责保存和加载用户配置"""
     
@@ -60,6 +63,7 @@ class SettingsManager:
                       rope_party_is_leader: bool = False,
                       rope_party_invite_role_names: Optional[list] = None,
                       manual_portal_pos: Optional[Tuple[int, int]] = None,
+                      portal_width_threshold: float = DEFAULT_PORTAL_WIDTH_THRESHOLD,
                       monitor_display_mode: str = "minimap_with_annotations",
                       monitor_safe_zone: Optional[dict] = None):
         """
@@ -82,6 +86,7 @@ class SettingsManager:
             movement_mode: 移动模式 - "none"(原地不动), "right"(向右走开buff), "left"(向左走开buff)
             pre_skill_move_mode: 死花出市场后移动模式
             manual_portal_pos: 手动传送门小地图坐标，None 表示自动识别
+            portal_width_threshold: 传送门左右导航容差，单位为小地图像素
         """
         # 清空旧配置
         self.config.clear()
@@ -132,6 +137,7 @@ class SettingsManager:
             "rope_party_invite_role_names": json.dumps(rope_party_invite_role_names or [], ensure_ascii=False),
             "manual_portal_x": "" if manual_portal_pos is None else str(manual_portal_pos[0]),
             "manual_portal_y": "" if manual_portal_pos is None else str(manual_portal_pos[1]),
+            "portal_width_threshold": str(self._clamp_portal_width_threshold(portal_width_threshold)),
             "monitor_display_mode": monitor_display_mode,
             "monitor_safe_zone": (
                 json.dumps(monitor_safe_zone, ensure_ascii=False)
@@ -227,6 +233,7 @@ class SettingsManager:
                 "rope_party_is_leader": self.config.getboolean("General", "rope_party_is_leader", fallback=False),
                 "rope_party_invite_role_names": self._load_json_list("rope_party_invite_role_names"),
                 "manual_portal_pos": self._load_manual_portal_pos(),
+                "portal_width_threshold": self._load_portal_width_threshold(),
                 "monitor_display_mode": self.config.get(
                     "General",
                     "monitor_display_mode",
@@ -302,6 +309,25 @@ class SettingsManager:
             fallback=6.0,
         )
         return max(1.0, min(50.0, value))
+
+    def _load_portal_width_threshold(self):
+        try:
+            value = self.config.getfloat(
+                "General",
+                "portal_width_threshold",
+                fallback=DEFAULT_PORTAL_WIDTH_THRESHOLD,
+            )
+        except ValueError:
+            value = DEFAULT_PORTAL_WIDTH_THRESHOLD
+        return self._clamp_portal_width_threshold(value)
+
+    @staticmethod
+    def _clamp_portal_width_threshold(value: float) -> float:
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            numeric = DEFAULT_PORTAL_WIDTH_THRESHOLD
+        return max(0.5, min(20.0, numeric))
 
     def _load_optional_pair(self, x_key: str, y_key: str):
         x = self.config.get("General", x_key, fallback="").strip()

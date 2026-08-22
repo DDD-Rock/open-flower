@@ -54,6 +54,7 @@ class MainWindow(QMainWindow):
         self.movement_mode = "none"  # 移动模式: "none"(原地不动), "right"(向右走开buff), "left"(向左走开buff)
         self.pre_skill_move_mode = "right_left"  # 死花出市场后移动: "right_left" 或 "left_only"
         self.manual_portal_pos = None  # 手动标记的传送门位置 (x, y) 或 None
+        self.portal_width_threshold = 2.5  # 传送门左右导航容差（小地图像素）
         self.follow_heal_key = ""
         self.follow_heal_teleport_key = ""
         self.follow_heal_anchor_pos = None
@@ -125,6 +126,7 @@ class MainWindow(QMainWindow):
         self.follow_heal_return_strategy = settings.get(
             "follow_heal_return_strategy", "walk"
         )
+        self.portal_width_threshold = settings.get("portal_width_threshold", 2.5)
         self.auto_accept_party_invite = settings.get(
             "auto_accept_party_invite", False
         )
@@ -202,6 +204,7 @@ class MainWindow(QMainWindow):
         self.follow_heal_minimap_region = None
         self.follow_heal_boundary_tolerance = 6.0
         self.follow_heal_return_strategy = "walk"
+        self.portal_width_threshold = 2.5
         self.auto_accept_party_invite = False
         if hasattr(self, 'selected_jump_key'):
             self.selected_jump_key = "Alt"
@@ -257,6 +260,8 @@ class MainWindow(QMainWindow):
             movement_mode=self.movement_mode,
             pre_skill_move_mode=self.pre_skill_move_mode,
             auto_accept_party_invite=self.auto_accept_party_invite,
+            manual_portal_pos=getattr(self, "manual_portal_pos", None),
+            portal_width_threshold=getattr(self, "portal_width_threshold", 2.5),
         )
         self.logger.log("设置已保存")
         self.update_log_display()
@@ -825,15 +830,32 @@ class MainWindow(QMainWindow):
             dialog = PortalMarkerDialog(
                 self, minimap,
                 auto_portal_pos=auto_pos,
-                current_manual_pos=self.manual_portal_pos
+                current_manual_pos=self.manual_portal_pos,
+                hint_text=(
+                    "点击小地图标记传送门位置；也可以只调整宽度。"
+                    "蓝色=自动检测，红色=手动标记。"
+                ),
+                boundary_tolerance=getattr(self, "portal_width_threshold", 2.5),
+                boundary_title="传送门宽度（左右 ±）",
+                boundary_min=0.5,
+                boundary_max=20.0,
+                boundary_object_name="portalWidthThreshold",
+                allow_confirm_without_marker=True,
             )
             
             if dialog.exec() == QDialog.DialogCode.Accepted:
                 self.manual_portal_pos = dialog.get_marked_position()
+                self.portal_width_threshold = dialog.get_boundary_tolerance()
                 if self.manual_portal_pos:
-                    self.logger.log(f"已手动标记传送门位置: {self.manual_portal_pos}")
+                    self.logger.log(
+                        "已手动标记传送门位置: "
+                        f"{self.manual_portal_pos}，宽度 ±{self.portal_width_threshold:g}"
+                    )
                 else:
-                    self.logger.log("已清除手动标记，恢复自动检测传送门")
+                    self.logger.log(
+                        "已清除手动标记，恢复自动检测传送门，"
+                        f"宽度 ±{self.portal_width_threshold:g}"
+                    )
                 self.update_log_display()
                 
         except Exception as e:
@@ -1044,7 +1066,8 @@ class MainWindow(QMainWindow):
                 getattr(self, 'sit_chair_enabled', False),
                 getattr(self, 'selected_chair_key', '='),
                 getattr(self, 'pre_skill_move_mode', 'right_left'),
-                manual_portal_pos=self.manual_portal_pos
+                manual_portal_pos=self.manual_portal_pos,
+                portal_width_threshold=getattr(self, "portal_width_threshold", 2.5),
             )
             self.worker.log_update.connect(self.on_status_update)
             self.worker.finished_signal.connect(self.on_worker_finished)

@@ -48,6 +48,10 @@ class PortalMarkerDialog(QDialog):
         clear_button_text: str = "清除标记（恢复自动）",
         boundary_tolerance: float = None,
         boundary_title: str = "左右界限值（基准点 ±）",
+        boundary_min: float = 1.0,
+        boundary_max: float = 50.0,
+        boundary_object_name: str = "followHealBoundaryTolerance",
+        allow_confirm_without_marker: bool = False,
     ):
         """
         Args:
@@ -70,6 +74,10 @@ class PortalMarkerDialog(QDialog):
             None if boundary_tolerance is None else float(boundary_tolerance)
         )
         self.boundary_title = boundary_title
+        self.boundary_min = float(boundary_min)
+        self.boundary_max = float(boundary_max)
+        self.boundary_object_name = boundary_object_name
+        self.allow_confirm_without_marker = allow_confirm_without_marker
         
         self._init_ui()
         self._update_image()
@@ -103,12 +111,12 @@ class PortalMarkerDialog(QDialog):
             boundary_layout.addWidget(QLabel(self.boundary_title))
             boundary_layout.addStretch(1)
             self.boundary_input = QDoubleSpinBox()
-            self.boundary_input.setRange(1.0, 50.0)
+            self.boundary_input.setRange(self.boundary_min, self.boundary_max)
             self.boundary_input.setSingleStep(0.5)
             self.boundary_input.setDecimals(1)
             self.boundary_input.setValue(self.boundary_tolerance)
             self.boundary_input.setSuffix(" 点")
-            self.boundary_input.setObjectName("followHealBoundaryTolerance")
+            self.boundary_input.setObjectName(self.boundary_object_name)
             self.boundary_input.valueChanged.connect(self._on_boundary_changed)
             boundary_layout.addWidget(self.boundary_input)
             layout.addLayout(boundary_layout)
@@ -120,7 +128,9 @@ class PortalMarkerDialog(QDialog):
         self.confirm_btn = QPushButton(self.confirm_button_text)
         self.confirm_btn.setStyleSheet("background-color: #4CAF50; color: white; padding: 8px 16px;")
         self.confirm_btn.clicked.connect(self._on_confirm)
-        self.confirm_btn.setEnabled(self.manual_pos is not None)
+        self.confirm_btn.setEnabled(
+            self.manual_pos is not None or self.allow_confirm_without_marker
+        )
         btn_layout.addWidget(self.confirm_btn)
         
         self.clear_btn = QPushButton(self.clear_button_text)
@@ -156,6 +166,8 @@ class PortalMarkerDialog(QDialog):
         parts = []
         if self.show_auto_portal and self.auto_portal_pos:
             parts.append(f"自动检测: ({self.auto_portal_pos[0]}, {self.auto_portal_pos[1]})")
+            if self.boundary_tolerance is not None:
+                parts.append(f"允许范围: ±{self.boundary_tolerance:.1f}")
         elif self.show_auto_portal:
             parts.append("自动检测: 未找到")
         
@@ -181,6 +193,8 @@ class PortalMarkerDialog(QDialog):
         if self.show_auto_portal and self.auto_portal_pos:
             ax, ay = self.auto_portal_pos
             cx, cy = int(ax * self.SCALE + self.SCALE // 2), int(ay * self.SCALE + self.SCALE // 2)
+            if self.boundary_tolerance is not None:
+                self._draw_boundary_range(display_img, ax, (255, 100, 0))
             cv2.circle(display_img, (cx, cy), 8, (255, 100, 0), 2)       # 蓝色空心圆
             cv2.circle(display_img, (cx, cy), 3, (255, 100, 0), -1)      # 蓝色实心小点
         
@@ -189,17 +203,7 @@ class PortalMarkerDialog(QDialog):
             mx, my = self.manual_pos
             cx, cy = int(mx * self.SCALE + self.SCALE // 2), int(my * self.SCALE + self.SCALE // 2)
             if self.boundary_tolerance is not None:
-                display_h, display_w = display_img.shape[:2]
-                left = max(0, int((mx - self.boundary_tolerance) * self.SCALE))
-                right = min(
-                    display_w - 1,
-                    int((mx + self.boundary_tolerance) * self.SCALE),
-                )
-                overlay = display_img.copy()
-                cv2.rectangle(overlay, (left, 0), (right, display_h - 1), (0, 0, 255), -1)
-                cv2.addWeighted(overlay, 0.16, display_img, 0.84, 0, display_img)
-                cv2.line(display_img, (left, 0), (left, display_h - 1), (0, 0, 255), 2)
-                cv2.line(display_img, (right, 0), (right, display_h - 1), (0, 0, 255), 2)
+                self._draw_boundary_range(display_img, mx, (0, 0, 255))
             cv2.circle(display_img, (cx, cy), 8, (0, 0, 255), 2)         # 红色空心圆
             cv2.circle(display_img, (cx, cy), 3, (0, 0, 255), -1)        # 红色实心小点
         
@@ -209,10 +213,23 @@ class PortalMarkerDialog(QDialog):
         rgb_img = cv2.cvtColor(display_img, cv2.COLOR_BGR2RGB)
         q_image = QImage(rgb_img.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
         self.image_label.setPixmap(QPixmap.fromImage(q_image))
+
+    def _draw_boundary_range(self, display_img, center_x: float, color):
+        display_h, display_w = display_img.shape[:2]
+        left = max(0, int((center_x - self.boundary_tolerance) * self.SCALE))
+        right = min(
+            display_w - 1,
+            int((center_x + self.boundary_tolerance) * self.SCALE),
+        )
+        overlay = display_img.copy()
+        cv2.rectangle(overlay, (left, 0), (right, display_h - 1), color, -1)
+        cv2.addWeighted(overlay, 0.16, display_img, 0.84, 0, display_img)
+        cv2.line(display_img, (left, 0), (left, display_h - 1), color, 2)
+        cv2.line(display_img, (right, 0), (right, display_h - 1), color, 2)
     
     def _on_confirm(self):
         """确认使用手动标记的位置"""
-        if self.manual_pos:
+        if self.manual_pos is not None or self.allow_confirm_without_marker:
             self.result_pos = self.manual_pos
             self.accept()
 

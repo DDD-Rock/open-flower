@@ -95,13 +95,41 @@ class SettingsManagerTests(unittest.TestCase):
                     return_to_market=True,
                     pre_skill_move_mode="right_only",
                     manual_portal_pos=(37, 18),
+                    portal_width_threshold=7.5,
                 )
             )
             settings = SettingsManager(str(path)).load_settings()
 
             self.assertEqual(len(settings["buffs"]), 4)
             self.assertEqual(settings["manual_portal_pos"], (37, 18))
+            self.assertEqual(settings["portal_width_threshold"], 7.5)
             self.assertEqual(settings["pre_skill_move_mode"], "right_only")
+
+    def test_portal_width_threshold_defaults_and_clamps(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.ini"
+            config = configparser.ConfigParser()
+            config["General"] = {"portal_width_threshold": "99"}
+            config["Buff1"] = {"enabled": "True", "key": "1", "duration": "200"}
+            with path.open("w", encoding="utf-8") as stream:
+                config.write(stream)
+
+            settings = SettingsManager(str(path)).load_settings()
+            self.assertEqual(settings["portal_width_threshold"], 20.0)
+
+            config["General"] = {}
+            with path.open("w", encoding="utf-8") as stream:
+                config.write(stream)
+
+            settings = SettingsManager(str(path)).load_settings()
+            self.assertEqual(settings["portal_width_threshold"], 2.5)
+
+            config["General"] = {"portal_width_threshold": "abc"}
+            with path.open("w", encoding="utf-8") as stream:
+                config.write(stream)
+
+            settings = SettingsManager(str(path)).load_settings()
+            self.assertEqual(settings["portal_width_threshold"], 2.5)
 
     def test_legacy_return_to_market_migrates_to_mode(self):
         with tempfile.TemporaryDirectory() as directory:

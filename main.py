@@ -46,6 +46,7 @@ def resource_path(relative_path: str) -> str:
 
 class ClientAuthorizationWatcher(QObject):
     authorization_lost = pyqtSignal(str)
+    authorization_updated = pyqtSignal(object)
 
     def __init__(self, account_manager: AccountManager, parent=None):
         super().__init__(parent)
@@ -72,7 +73,9 @@ class ClientAuthorizationWatcher(QObject):
 
     def _run_check(self):
         try:
-            self.account_manager.validate_session()
+            authorization = self.account_manager.validate_session()
+            if self._active:
+                self.authorization_updated.emit(authorization)
         except AccountError as error:
             if self._active and error.code in {
                 "client_unbound",
@@ -102,8 +105,10 @@ class ApplicationController(QObject):
             on_status=self.remote_status_received.emit,
         )
         self.window = None
+        self._returning_to_login = False
         self.watcher = ClientAuthorizationWatcher(self.account_manager, self)
         self.watcher.authorization_lost.connect(self._return_to_login)
+        self.watcher.authorization_updated.connect(self._apply_authorization)
         self.remote_command_received.connect(self._handle_remote_command)
         self.remote_status_received.connect(self._handle_remote_status)
         self.remote_identity_received.connect(self._handle_remote_identity)
@@ -122,9 +127,11 @@ class ApplicationController(QObject):
         return dialog.exec() == QDialog.DialogCode.Accepted
 
     def _show_main_window(self):
+        credentials = self.account_manager.session_credentials()
         self.window = MainWindow(
             account_manager=self.account_manager,
             remote_monitor_client=self.remote_monitor_client,
+            authorized_modes=credentials["authorizedModes"],
         )
         if not self.app_icon.isNull():
             self.window.setWindowIcon(self.app_icon)
@@ -134,6 +141,15 @@ class ApplicationController(QObject):
         self.remote_monitor_client.publish_client_state(self.window.mode, False)
 
     def _handle_remote_command(self, command: dict):
+        action = str(command.get("action") or "")
+        if action in {"unbind", "kick"}:
+            default_message = (
+                "当前客户端已被管理员解绑，请重新登录"
+                if action == "unbind"
+                else "管理员已将当前客户端踢下线"
+            )
+            self._return_to_login(str(command.get("reason") or default_message))
+            return
         if self.window is not None:
             self.window.handle_remote_command(command)
 
@@ -146,7 +162,16 @@ class ApplicationController(QObject):
         if self.window is not None:
             self.window.setWindowTitle(f"{APP_NAME} · {name}")
 
+    def _apply_authorization(self, authorization: dict):
+        if self.window is not None:
+            self.window.apply_authorized_modes(
+                authorization.get("authorizedModes") or []
+            )
+
     def _return_to_login(self, message: str):
+        if self._returning_to_login:
+            return
+        self._returning_to_login = True
         self.watcher.stop()
         self.remote_monitor_client.stop()
         previous_window = self.window
@@ -166,6 +191,7 @@ class ApplicationController(QObject):
             if previous_window is not None:
                 previous_window.close()
             self.app.quit()
+        self._returning_to_login = False
 
 
 def main():

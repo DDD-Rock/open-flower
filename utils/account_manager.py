@@ -26,6 +26,8 @@ class AccountError(Exception):
 
 class AccountManager:
     DEFAULT_SERVER_BASE_URL = "https://buff.juanwang.cc"
+    ALL_CLIENT_MODES = ("dead", "live", "temple", "follow_heal", "monitor")
+    DEFAULT_AUTHORIZED_MODES = ("dead", "live", "temple")
     LEGACY_SERVER_BASE_URLS = {
         "http://106.52.208.129:28671",
         "https://106.52.208.129:28671",
@@ -60,10 +62,17 @@ class AccountManager:
         if not token or not account:
             raise AccountError("监控服务器返回了无效数据")
         binding = self._bind_client(token, client_id) or {}
+        is_super_admin = bool(user.get("isSuperAdmin"))
+        authorized_modes = self._authorized_modes_from(
+            binding,
+            user,
+            is_super_admin=is_super_admin,
+        )
         self._save(
             token, account, client_id, str(binding.get("name") or ""),
-            bool(user.get("isSuperAdmin")), nickname,
+            is_super_admin, nickname,
             str(binding.get("roleName") or ""),
+            authorized_modes,
         )
         return nickname
 
@@ -86,21 +95,31 @@ class AccountManager:
         if not account:
             self.logout()
             return None
+        is_super_admin = bool(response.get("isSuperAdmin"))
+        authorized_modes = self._authorized_modes_from(
+            authorization,
+            response,
+            is_super_admin=is_super_admin,
+        )
         self._save(
             token,
             account,
             client_id,
             str(credentials.get("clientName") or ""),
-            bool(response.get("isSuperAdmin")),
+            is_super_admin,
             nickname,
             str(authorization.get("roleName") or credentials.get("roleName") or ""),
+            authorized_modes,
         )
         return nickname
 
     def logout(self):
         credentials = self._load() or {}
         client_id = self._client_id_from(credentials)
-        self._save("", "", client_id, str(credentials.get("clientName") or ""), False, "", str(credentials.get("roleName") or ""))
+        self._save(
+            "", "", client_id, str(credentials.get("clientName") or ""),
+            False, "", str(credentials.get("roleName") or ""), []
+        )
 
     def validate_session(self):
         credentials = self._load() or {}
@@ -108,7 +127,23 @@ class AccountManager:
         client_id = self._client_id_from(credentials, create=False)
         if not token or not client_id:
             raise AccountError("登录已失效，请重新登录", "invalid_token")
-        self._validate_client(token, client_id)
+        authorization = self._validate_client(token, client_id) or {}
+        current = self._load() or {}
+        is_super_admin = bool(current.get("isSuperAdmin"))
+        authorized_modes = self._authorized_modes_from(
+            authorization,
+            current,
+            is_super_admin=is_super_admin,
+        )
+        self._save(
+            token,
+            str(current.get("username") or ""),
+            client_id,
+            str(current.get("clientName") or ""),
+            role_name=str(authorization.get("roleName") or current.get("roleName") or ""),
+            authorized_modes=authorized_modes,
+        )
+        return authorization
 
     @property
     def registration_url(self) -> str:
@@ -117,6 +152,7 @@ class AccountManager:
     def session_credentials(self) -> dict:
         """返回远程监控连接需要的当前会话，不暴露可写内部字典。"""
         credentials = dict(self._load() or {})
+        is_super_admin = bool(credentials.get("isSuperAdmin"))
         return {
             "accessToken": str(credentials.get("accessToken") or ""),
             "username": str(credentials.get("username") or ""),
@@ -125,8 +161,28 @@ class AccountManager:
             "clientName": str(credentials.get("clientName") or ""),
             "roleName": str(credentials.get("roleName") or ""),
             "serverBaseURL": self.server_base_url,
-            "isSuperAdmin": bool(credentials.get("isSuperAdmin")),
+            "isSuperAdmin": is_super_admin,
+            "authorizedModes": self._authorized_modes_from(
+                credentials,
+                is_super_admin=is_super_admin,
+            ),
         }
+
+    @classmethod
+    def _authorized_modes_from(cls, *sources, is_super_admin: bool = False) -> list[str]:
+        if is_super_admin:
+            return list(cls.ALL_CLIENT_MODES)
+        for source in sources:
+            if not isinstance(source, dict) or "authorizedModes" not in source:
+                continue
+            raw_modes = source.get("authorizedModes")
+            if not isinstance(raw_modes, (list, tuple, set)):
+                continue
+            allowed = set(cls.ALL_CLIENT_MODES)
+            return list(dict.fromkeys(
+                str(mode) for mode in raw_modes if str(mode) in allowed
+            ))
+        return list(cls.DEFAULT_AUTHORIZED_MODES)
 
     def list_cloud_maps(self) -> list[dict]:
         credentials = self.session_credentials()
@@ -280,6 +336,7 @@ class AccountManager:
         self, token: str, username: str, client_id: str,
         client_name: str = "", is_super_admin: Optional[bool] = None,
         nickname: Optional[str] = None, role_name: Optional[str] = None,
+        authorized_modes: Optional[list[str]] = None,
     ):
         existing = self._load() or {}
         if is_super_admin is None:
@@ -288,6 +345,8 @@ class AccountManager:
             nickname = str(existing.get("nickname") or "")
         if role_name is None:
             role_name = str(existing.get("roleName") or "")
+        if authorized_modes is None:
+            authorized_modes = list(existing.get("authorizedModes") or [])
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         self.storage_path.write_text(
             json.dumps(
@@ -299,6 +358,7 @@ class AccountManager:
                     "clientName": client_name,
                     "roleName": role_name,
                     "isSuperAdmin": is_super_admin,
+                    "authorizedModes": authorized_modes,
                 },
                 ensure_ascii=False,
             ),

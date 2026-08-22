@@ -65,35 +65,37 @@ class HumanInput:
             offset_y = random.randint(-offset_range, offset_range)
             target_x = x + offset_x
             target_y = y + offset_y
-            
+
             # 2. 拟人化移动鼠标（分步移动）
-            current_x, current_y = self.mouse.position
-            steps = random.randint(*self.mouse_move_steps)
-            
-            for i in range(1, steps + 1):
-                progress = i / steps
-                # 使用 ease-out 曲线，开始快结束慢
-                eased_progress = 1 - (1 - progress) ** 2
-                
-                new_x = int(current_x + (target_x - current_x) * eased_progress)
-                new_y = int(current_y + (target_y - current_y) * eased_progress)
-                
-                # 添加微小抖动
-                jitter_x = random.randint(-2, 2)
-                jitter_y = random.randint(-2, 2)
-                
-                self.mouse.position = (new_x + jitter_x, new_y + jitter_y)
-                self._sleep(random.uniform(0.01, 0.03))
-            
-            # 3. 最终位置（去除抖动）
-            self.mouse.position = (target_x, target_y)
+            self._move_mouse_to(target_x, target_y)
             self._sleep(random.uniform(0.05, 0.15))
             
-            # 4. 点击（按住一段时间再松开）
+            # 3. 点击（按住一段时间再松开）
             duration = self._random_duration(self.mouse_click_duration)
             self.mouse.press(Button.left)
             self._sleep(duration)
             self.mouse.release(Button.left)
+
+    def move_mouse_to(self, x: int, y: int):
+        """平滑移动鼠标到指定屏幕坐标，不执行点击。"""
+        with self._lock:
+            self._move_mouse_to(x, y)
+
+    def _move_mouse_to(self, target_x: int, target_y: int):
+        current_x, current_y = self.mouse.position
+        steps = random.randint(*self.mouse_move_steps)
+
+        for i in range(1, steps + 1):
+            progress = i / steps
+            eased_progress = 1 - (1 - progress) ** 2
+            new_x = int(current_x + (target_x - current_x) * eased_progress)
+            new_y = int(current_y + (target_y - current_y) * eased_progress)
+            jitter_x = random.randint(-2, 2)
+            jitter_y = random.randint(-2, 2)
+            self.mouse.position = (new_x + jitter_x, new_y + jitter_y)
+            self._sleep(random.uniform(0.01, 0.03))
+
+        self.mouse.position = (target_x, target_y)
 
     def move_left(self):
         """开始向左移动"""

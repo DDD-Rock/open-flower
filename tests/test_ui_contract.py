@@ -45,6 +45,15 @@ class ModernUIContractTests(unittest.TestCase):
     def test_entrypoint_uses_modern_window(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
         self.assertIn("from ui.modern_main_window import MainWindow", source)
+        self.assertIn('action in {"unbind", "kick"}', source)
+
+    def test_modes_are_gated_by_account_authorization(self):
+        source = (ROOT / "ui" / "modern_main_window.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("def apply_authorized_modes", source)
+        self.assertIn("if self.mode not in self.authorized_modes", source)
+        self.assertIn("button.setVisible(mode in self.authorized_modes)", source)
 
     def test_header_uses_packaged_icon_instead_of_emoji(self):
         source = (ROOT / "ui" / "modern_main_window.py").read_text(

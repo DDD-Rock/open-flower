@@ -72,6 +72,25 @@ class PartyInviteDetector:
         client_x, client_y = win32gui.ClientToScreen(self.hwnd, (0, 0))
         return client_x + game_point[0], client_y + game_point[1]
 
+    def get_safe_cursor_screen_point(self) -> Optional[Tuple[int, int]]:
+        """Return a client-relative safe point away from the invite controls."""
+        if not self.hwnd or win32gui is None:
+            return None
+        try:
+            rect = win32gui.GetClientRect(self.hwnd)
+            width, height = rect[2], rect[3]
+            if width <= 0 or height <= 0:
+                return None
+            client_x, client_y = win32gui.ClientToScreen(self.hwnd, (0, 0))
+            safe_x, safe_y = self.safe_cursor_client_point(width, height)
+            return client_x + safe_x, client_y + safe_y
+        except Exception:
+            return None
+
+    @staticmethod
+    def safe_cursor_client_point(width: int, height: int) -> Tuple[int, int]:
+        return int(width * 0.82), height // 2
+
     def capture_game_screen(self) -> Optional[np.ndarray]:
         if not self.hwnd or win32gui is None or mss is None:
             return None

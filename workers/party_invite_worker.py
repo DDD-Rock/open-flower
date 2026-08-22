@@ -79,6 +79,9 @@ class PartyInviteWorker(QThread):
                     f"第 {attempt} 次点击同意按钮：({click_point[0]}, {click_point[1]})"
                 )
                 self.human.click_at(click_point[0], click_point[1], offset_range=2)
+                safe_point = self.detector.get_safe_cursor_screen_point()
+                if safe_point is not None:
+                    self.human.move_mouse_to(safe_point[0], safe_point[1])
                 popup_gone_frames = 0
                 for _ in range(4):
                     if not self.is_running or self.isInterruptionRequested():

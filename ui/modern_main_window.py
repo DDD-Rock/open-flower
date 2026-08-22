@@ -69,7 +69,14 @@ def resource_path(relative_path: str) -> str:
 class MainWindow(LegacyMainWindow):
     """Modern compact shell while retaining the proven Windows workflows."""
 
-    def __init__(self, account_manager=None, remote_monitor_client=None):
+    DEFAULT_AUTHORIZED_MODES = ("dead", "live", "temple")
+
+    def __init__(
+        self,
+        account_manager=None,
+        remote_monitor_client=None,
+        authorized_modes=None,
+    ):
         self.account_manager = account_manager
         self.remote_monitor_client = remote_monitor_client
         self.monitor_worker = None
@@ -80,6 +87,13 @@ class MainWindow(LegacyMainWindow):
         self.monitor_zone_stabilizer = SafeZoneStabilizer()
         self._monitor_verification_present = False
         super().__init__()
+        if authorized_modes is None and self.account_manager:
+            authorized_modes = self.account_manager.session_credentials().get(
+                "authorizedModes"
+            )
+        if authorized_modes is None:
+            authorized_modes = self.DEFAULT_AUTHORIZED_MODES
+        self.apply_authorized_modes(authorized_modes)
 
     def init_ui(self):
         self._loading_settings = True
@@ -92,6 +106,7 @@ class MainWindow(LegacyMainWindow):
         self.follow_heal_minimap_region = None
         self.follow_heal_boundary_tolerance = 6.0
         self.follow_heal_return_strategy = "walk"
+        self.portal_width_threshold = 2.5
         self.temple_function = "rope_party"
         self.lounge_move_min_minutes = 15
         self.lounge_move_max_minutes = 30
@@ -550,6 +565,8 @@ class MainWindow(LegacyMainWindow):
             return
         if isinstance(mode, bool):
             mode = "dead" if mode else "live"
+        if mode not in self.authorized_modes:
+            return
         self.mode = mode
         self.return_to_market = self.mode == "dead"
         self._update_mode_tab_style()
@@ -559,6 +576,32 @@ class MainWindow(LegacyMainWindow):
         self.logger.log(f"切换到: {self._mode_title(self.mode)}")
         self.update_log_display()
         self._schedule_save()
+
+    def apply_authorized_modes(self, modes):
+        buttons = {
+            "dead": self.dead_flower_tab,
+            "live": self.live_flower_tab,
+            "temple": self.temple_tab,
+            "follow_heal": self.follow_heal_tab,
+            "monitor": self.monitor_tab,
+        }
+        self.authorized_modes = {
+            str(mode) for mode in (modes or []) if str(mode) in buttons
+        }
+        for mode, button in buttons.items():
+            button.setVisible(mode in self.authorized_modes)
+        if self.mode not in self.authorized_modes:
+            if self.is_worker_running:
+                self.logger.log("当前模式授权已被收回，本机已自动停止")
+                self.stop_worker()
+            next_mode = next((mode for mode in buttons if mode in self.authorized_modes), None)
+            if next_mode:
+                self.mode = next_mode
+                self.return_to_market = self.mode == "dead"
+                self._update_mode_tab_style()
+                self._update_movement_mode_visibility()
+                self._schedule_save()
+        self._refresh_primary_action()
 
     def _mode_title(self, mode: str) -> str:
         return {
@@ -1275,6 +1318,7 @@ class MainWindow(LegacyMainWindow):
             "pre_skill_move_mode", "right_only"
         )
         self.manual_portal_pos = settings.get("manual_portal_pos")
+        self.portal_width_threshold = settings.get("portal_width_threshold", 2.5)
         self.auto_accept_party_invite = settings.get(
             "auto_accept_party_invite", False
         )
@@ -1370,6 +1414,7 @@ class MainWindow(LegacyMainWindow):
         self.sit_chair_enabled = False
         self.selected_chair_key = "="
         self.manual_portal_pos = None
+        self.portal_width_threshold = 2.5
         self.auto_accept_party_invite = False
         self.temple_function = "rope_party"
         self.lounge_move_min_minutes = 15
@@ -1446,6 +1491,7 @@ class MainWindow(LegacyMainWindow):
             rope_party_is_leader=self.rope_party_is_leader,
             rope_party_invite_role_names=self.rope_party_invite_role_names,
             manual_portal_pos=self.manual_portal_pos,
+            portal_width_threshold=self.portal_width_threshold,
             monitor_display_mode=self.monitor_panel.display_mode.currentData(),
             monitor_safe_zone=(
                 self.monitor_safe_zone.to_dict()
@@ -1649,6 +1695,11 @@ class MainWindow(LegacyMainWindow):
         self.update_log_display()
 
     def start_worker(self):
+        if self.mode not in self.authorized_modes:
+            self.logger.log("当前账号未授权使用该模式")
+            self.update_log_display()
+            QMessageBox.warning(self, "模式未授权", "当前账号未授权使用该模式")
+            return
         if self.mode == "monitor":
             self._start_monitor_worker()
             return
@@ -1910,6 +1961,9 @@ class MainWindow(LegacyMainWindow):
         )
         self.toggle_btn.style().unpolish(self.toggle_btn)
         self.toggle_btn.style().polish(self.toggle_btn)
+        self.toggle_btn.setEnabled(
+            self.is_worker_running or self.mode in self.authorized_modes
+        )
         if hasattr(self, "footer_status_title"):
             self.footer_status_title.setText(
                 "●  正在运行" if self.is_worker_running else "●  准备就绪"
@@ -2443,8 +2497,12 @@ class MainWindow(LegacyMainWindow):
 
     def on_mark_portal(self):
         previous = self.manual_portal_pos
+        previous_threshold = self.portal_width_threshold
         super().on_mark_portal()
-        if self.manual_portal_pos != previous:
+        if (
+            self.manual_portal_pos != previous
+            or self.portal_width_threshold != previous_threshold
+        ):
             self._schedule_save()
 
     def eventFilter(self, obj, event):

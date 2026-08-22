@@ -101,6 +101,7 @@ class MainWindow(LegacyMainWindow):
         self.rope_party_is_leader = False
         self.rope_party_first_creation = False
         self.rope_party_invite_role_names = []
+        self.rope_party_event_id = ""
         self.buff_rows = []
         self.buff_remove_btns = []
         self.chair_checkboxes = []
@@ -1749,6 +1750,7 @@ class MainWindow(LegacyMainWindow):
         worker.error_signal.connect(self.on_error)
         worker.finished_signal.connect(lambda worker=worker: self.on_worker_finished(worker))
         worker.buff_due.connect(self._on_rope_party_buff_due)
+        worker.boss_invite_status.connect(self._on_rope_party_boss_invite_status)
         worker.boss_joined.connect(self._on_rope_party_boss_joined)
         worker.boss_buffs_completed.connect(self._on_rope_party_buffs_completed)
         worker.party_commands_finished.connect(self._on_rope_party_commands_finished)
@@ -1766,10 +1768,10 @@ class MainWindow(LegacyMainWindow):
             self.logger.log("建队和邀请命令已全部执行")
             self.update_log_display()
 
-    def _on_rope_party_rebuild_commands_finished(self, cycle_id):
+    def _on_rope_party_rebuild_commands_finished(self, event_id):
         if self.remote_monitor_client and self.rope_party_team_id > 0:
             self.remote_monitor_client.publish_rope_party_progress(
-                self.rope_party_team_id, "party_rebuild_commands_finished", cycle_id=cycle_id
+                self.rope_party_team_id, "rebuild_finished", event_id=event_id
             )
             self.logger.log("解散、重建和邀请命令已全部执行")
             self.update_log_display()
@@ -1783,22 +1785,31 @@ class MainWindow(LegacyMainWindow):
             self.logger.log("BUFF 即将到期，已请求老板邀请周期")
             self.update_log_display()
 
-    def _on_rope_party_boss_joined(self, cycle_id):
+    def _on_rope_party_boss_joined(self, event_id):
         if self.remote_monitor_client and self.rope_party_team_id > 0:
             self.remote_monitor_client.publish_rope_party_progress(
                 self.rope_party_team_id,
                 "boss_joined",
-                cycle_id=cycle_id,
+                event_id=event_id,
             )
             self.logger.log("已向服务器上报老板进队")
             self.update_log_display()
 
-    def _on_rope_party_buffs_completed(self, cycle_id):
+    def _on_rope_party_boss_invite_status(self, event_id, status):
+        if self.remote_monitor_client and self.rope_party_team_id > 0:
+            self.remote_monitor_client.publish_rope_party_progress(
+                self.rope_party_team_id,
+                "boss_invite_status",
+                role_name=status,
+                event_id=event_id,
+            )
+
+    def _on_rope_party_buffs_completed(self, event_id):
         if self.remote_monitor_client and self.rope_party_team_id > 0:
             self.remote_monitor_client.publish_rope_party_progress(
                 self.rope_party_team_id,
                 "buff_finished",
-                cycle_id=cycle_id,
+                event_id=event_id,
             )
             self.logger.log("本客户端老板 BUFF 已释放完毕并上报")
             self.update_log_display()
@@ -2133,6 +2144,7 @@ class MainWindow(LegacyMainWindow):
             self.rope_party_is_leader = bool(command.get("isLeader"))
             self.rope_party_first_creation = self.rope_party_is_leader
             self.rope_party_invite_role_names = list(command.get("inviteRoleNames") or [])
+            self.rope_party_event_id = ""
             self.character_name = str(command.get("roleName") or self.character_name).strip()
             self.character_name_input.setText(self.character_name)
             self.temple_function_combo.setCurrentIndex(max(0, self.temple_function_combo.findData("rope_party")))
@@ -2159,6 +2171,7 @@ class MainWindow(LegacyMainWindow):
             self.rope_party_team_id = 0
             self.rope_party_is_leader = False
             self.rope_party_invite_role_names = []
+            self.rope_party_event_id = ""
             self.pending_rope_party_disband_team_id = team_id
             self._persist_settings()
             self._start_rope_party_disband()
@@ -2171,6 +2184,7 @@ class MainWindow(LegacyMainWindow):
             self.rope_party_is_leader = False
             self.rope_party_first_creation = False
             self.rope_party_invite_role_names = []
+            self.rope_party_event_id = ""
             self._persist_settings()
             self._sync_party_invite_worker()
             self.logger.log("网页队伍已解散或本角色已被移除，挂绳组队状态已清理")
@@ -2193,18 +2207,28 @@ class MainWindow(LegacyMainWindow):
                 self.stop_worker()
             self._start_rope_party_remove_member(role_name)
         elif action in {"start_boss_invite_cycle", "invite_boss"}:
-            cycle_id = int(command.get("cycleId") or 0)
+            event_id = str(command.get("eventId") or "").strip()
             role_name = str(command.get("targetRoleName") or "").strip()
-            if isinstance(self.worker, RopePartyWorker) and self.worker.isRunning() and cycle_id > 0 and role_name:
-                self.logger.log(f"收到老板邀请周期 {cycle_id}，已加入执行队列：{role_name}")
+            if isinstance(self.worker, RopePartyWorker) and self.worker.isRunning() and event_id and role_name:
+                self.rope_party_event_id = event_id
+                if self.remote_monitor_client:
+                    self.remote_monitor_client.publish_rope_party_progress(
+                        self.rope_party_team_id, "invite_boss_ack", event_id=event_id
+                    )
+                self.logger.log(f"收到老板邀请事件 {event_id}，已加入执行队列：{role_name}")
                 self.update_log_display()
-                self.worker.start_boss_invite_cycle(cycle_id, role_name)
+                self.worker.start_boss_invite_cycle(event_id, role_name)
         elif action in {"cast_boss_buffs", "cast_buffs"}:
-            cycle_id = int(command.get("cycleId") or 0)
-            if isinstance(self.worker, RopePartyWorker) and self.worker.isRunning() and cycle_id > 0:
-                self.worker.cast_boss_buffs(cycle_id)
-        elif action in {"disband_boss_party", "rebuild_party", "restart_party_and_buff"}:
-            cycle_id = int(command.get("cycleId") or 0)
+            event_id = str(command.get("eventId") or "").strip()
+            if isinstance(self.worker, RopePartyWorker) and self.worker.isRunning() and event_id:
+                self.rope_party_event_id = event_id
+                if self.remote_monitor_client:
+                    self.remote_monitor_client.publish_rope_party_progress(
+                        self.rope_party_team_id, "cast_buffs_ack", event_id=event_id
+                    )
+                self.worker.cast_boss_buffs(event_id)
+        elif action in {"all_buffs_finished", "disband_boss_party", "rebuild_party", "restart_party_and_buff"}:
+            event_id = str(command.get("eventId") or "").strip()
             if action == "restart_party_and_buff" and not (
                 isinstance(self.worker, RopePartyWorker) and self.worker.isRunning()
             ):
@@ -2214,12 +2238,23 @@ class MainWindow(LegacyMainWindow):
                     self.logger.log("重新组队失败：挂绳组队未能启动，请检查游戏窗口和配置")
                     self.update_log_display()
                     return
-            if isinstance(self.worker, RopePartyWorker) and self.worker.isRunning() and cycle_id > 0:
+            if isinstance(self.worker, RopePartyWorker) and self.worker.isRunning() and event_id:
+                self.rope_party_event_id = event_id
+                if self.remote_monitor_client:
+                    ack_event = (
+                        "rebuild_command_ack"
+                        if action == "restart_party_and_buff"
+                        else "all_buffs_finished_ack"
+                    )
+                    self.remote_monitor_client.publish_rope_party_progress(
+                        self.rope_party_team_id, ack_event, event_id=event_id
+                    )
                 phase = rebuild_phase(action)
                 self.worker.disband_boss_party(
-                    cycle_id, phase, list(command.get("inviteRoleNames") or [])
+                    event_id, phase, list(command.get("inviteRoleNames") or [])
                 )
         elif action == "prepare_for_rebuild":
+            self.rope_party_event_id = str(command.get("eventId") or "").strip()
             self.logger.log("队长正在重新组队，本机等待新的组队邀请")
             self.update_log_display()
 
@@ -2277,7 +2312,9 @@ class MainWindow(LegacyMainWindow):
         elif self.mode == "temple" and self.temple_function == "rope_party" and self.rope_party_team_id > 0:
             role_name = self.character_name_input.text().strip()
             if self.remote_monitor_client and role_name:
-                self.remote_monitor_client.publish_team_joined(self.rope_party_team_id, role_name)
+                self.remote_monitor_client.publish_team_joined(
+                    self.rope_party_team_id, role_name, self.rope_party_event_id
+                )
                 self.logger.log("已向服务器上报成功进队")
                 self.update_log_display()
 

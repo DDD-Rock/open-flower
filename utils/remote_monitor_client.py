@@ -106,26 +106,52 @@ class RemoteMonitorClient:
     def publish_status(self, online: bool, message: str):
         self._enqueue("status", {"online": bool(online), "message": message})
 
-    def publish_team_joined(self, team_id: int, role_name: str):
+    def publish_team_joined(self, team_id: int, role_name: str, event_id: str = ""):
         if int(team_id) > 0 and role_name.strip():
-            self.publish_rope_party_progress(team_id, "team_joined")
+            self.publish_rope_party_progress(team_id, "team_joined", event_id=event_id)
 
-    def publish_rope_party_progress(self, team_id: int, event: str, role_name: str = "", cycle_id: int = 0):
+    def publish_rope_party_progress(
+        self,
+        team_id: int,
+        event: str,
+        role_name: str = "",
+        cycle_id: int = 0,
+        event_id: str = "",
+    ):
         if not self._enabled:
-            return
-        allowed = {"party_commands_finished", "team_joined", "buff_due", "boss_joined", "buff_finished", "party_rebuild_commands_finished"}
+            return None
+        allowed = {
+            "party_commands_finished", "team_joined", "buff_due",
+            "invite_boss_ack", "boss_invite_status", "boss_joined",
+            "cast_buffs_ack", "buff_finished", "all_buffs_finished_ack",
+            "rebuild_command_ack", "rebuild_finished",
+        }
         if int(team_id) <= 0 or event not in allowed:
-            return
+            return None
         payload = {"teamId": int(team_id), "event": event}
-        if int(cycle_id) > 0:
+        normalized_event_id = str(event_id or "").strip()
+        if normalized_event_id:
+            payload["eventId"] = normalized_event_id
+        elif int(cycle_id) > 0:  # Rolling-upgrade compatibility only.
             payload["cycleId"] = int(cycle_id)
-        reliable_events = set()
+        reliable_events = allowed - {"boss_invite_status"}
         if event in reliable_events:
-            receipt_id = str(uuid.uuid4())
-            payload["receiptId"] = receipt_id
+            dedupe_key = f"{team_id}:{event}:{normalized_event_id}"
             with self._condition:
-                self._pending_rope_progress[receipt_id] = payload.copy()
+                for pending in self._pending_rope_progress.values():
+                    if pending["dedupe_key"] == dedupe_key:
+                        return pending["payload"]["messageId"]
+                message_id = str(uuid.uuid4())
+                payload["messageId"] = message_id
+                retry_interval = 5.0 if event in {"buff_due", "boss_joined"} else 3.0
+                self._pending_rope_progress[message_id] = {
+                    "payload": payload.copy(),
+                    "dedupe_key": dedupe_key,
+                    "retry_interval": retry_interval,
+                    "next_retry_at": time.monotonic() + retry_interval,
+                }
         self._enqueue("rope_party_progress", payload)
+        return payload.get("messageId")
 
     def publish_map(self, topology: MapTopology, content_size: tuple[int, int]):
         map_id = topology.map_name or f"map-{content_size[0]}x{content_size[1]}"
@@ -290,9 +316,9 @@ class RemoteMonitorClient:
         if self._pending_team_joined:
             self._enqueue("team_joined", self._pending_team_joined)
         with self._condition:
-            pending_progress = list(self._pending_rope_progress.values())
-        for payload in pending_progress:
-            self._enqueue("rope_party_progress", payload)
+            pending_progress = [item["payload"] for item in self._pending_rope_progress.values()]
+        for pending_payload in pending_progress:
+            self._enqueue("rope_party_progress", pending_payload)
         self._notify("远程监控已连接")
 
     def _on_message(self, app, message):
@@ -321,11 +347,24 @@ class RemoteMonitorClient:
                     with self._condition:
                         self._pending_rope_progress.pop(receipt_id, None)
                 return
+            if action == "rope_event_ack":
+                message_id = str(payload.get("messageId") or "")
+                if message_id:
+                    with self._condition:
+                        self._pending_rope_progress.pop(message_id, None)
+                        self._condition.notify_all()
+                return
+            if action in {"unbind", "kick"}:
+                # Forced logout must win the race with the reconnect loop.
+                self._enabled = False
+                if self.on_command:
+                    self.on_command(payload)
+                return
             if action in {
                 "start", "stop", "configure_rope_party", "disband_rope_party",
                 "clear_rope_party", "remove_member", "invite_boss", "cast_buffs",
                 "disband_boss_party", "rebuild_party", "prepare_for_rebuild",
-                "restart_party_and_buff",
+                "restart_party_and_buff", "all_buffs_finished",
             } and self.on_command:
                 self.on_command(payload)
 
@@ -362,7 +401,6 @@ class RemoteMonitorClient:
 
     def _sender_loop(self, app):
         next_team_joined_retry_at = time.monotonic() + 3.0
-        next_rope_progress_retry_at = time.monotonic() + 3.0
         while self._enabled and self._connected and app is self._socket_app:
             with self._condition:
                 if self._control_messages:
@@ -370,10 +408,20 @@ class RemoteMonitorClient:
                 elif self._pending_team_joined and time.monotonic() >= next_team_joined_retry_at:
                     message = self._encode("team_joined", self._pending_team_joined)
                     next_team_joined_retry_at = time.monotonic() + 3.0
-                elif self._pending_rope_progress and time.monotonic() >= next_rope_progress_retry_at:
-                    payload = next(iter(self._pending_rope_progress.values()))
-                    message = self._encode("rope_party_progress", payload)
-                    next_rope_progress_retry_at = time.monotonic() + 3.0
+                elif self._pending_rope_progress:
+                    now = time.monotonic()
+                    pending = next(
+                        (
+                            item for item in self._pending_rope_progress.values()
+                            if now >= item["next_retry_at"]
+                        ),
+                        None,
+                    )
+                    if pending is not None:
+                        message = self._encode("rope_party_progress", pending["payload"])
+                        pending["next_retry_at"] = now + pending["retry_interval"]
+                    else:
+                        message = None
                 else:
                     message = next(
                         (

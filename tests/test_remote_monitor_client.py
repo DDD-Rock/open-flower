@@ -162,31 +162,64 @@ class RemoteMonitorClientTests(unittest.TestCase):
             self.assertEqual(envelope["payload"]["teamId"], 7)
             self.assertEqual(envelope["payload"]["event"], "team_joined")
             self.assertIsNone(client._pending_team_joined)
+            self.assertIn(envelope["payload"]["messageId"], client._pending_rope_progress)
 
             client.publish_rope_party_progress(7, "party_commands_finished")
             created = json.loads(client._control_messages[-1])
             self.assertEqual(created["type"], "rope_party_progress")
             self.assertEqual(created["payload"]["teamId"], 7)
             self.assertEqual(created["payload"]["event"], "party_commands_finished")
-            self.assertNotIn("receiptId", created["payload"])
+            self.assertIn("messageId", created["payload"])
 
-            client.publish_rope_party_progress(7, "boss_joined", cycle_id=4)
+            client.publish_rope_party_progress(7, "boss_joined", event_id="event-123")
             boss_joined = json.loads(client._control_messages[-1])
-            self.assertEqual(boss_joined["payload"], {
-                "teamId": 7, "cycleId": 4, "event": "boss_joined",
-            })
+            self.assertEqual(boss_joined["payload"]["eventId"], "event-123")
+            self.assertEqual(boss_joined["payload"]["event"], "boss_joined")
+            message_id = boss_joined["payload"]["messageId"]
+            client._on_message(None, json.dumps({
+                "type": "command", "action": "rope_event_ack",
+                "teamId": 7, "eventId": "event-123", "messageId": message_id,
+            }))
+            self.assertNotIn(message_id, client._pending_rope_progress)
 
             client._on_message(None, json.dumps({
                 "type": "command", "action": "restart_party_and_buff",
-                "teamId": 7, "cycleId": 5,
+                "teamId": 7, "eventId": "event-124",
             }))
             self.assertEqual(commands[-1]["action"], "restart_party_and_buff")
 
             client._on_message(None, json.dumps({
                 "type": "command", "action": "cast_buffs",
-                "teamId": 7, "cycleId": 4,
+                "teamId": 7, "eventId": "event-123",
             }))
-            self.assertEqual(commands[-1]["cycleId"], 4)
+            self.assertEqual(commands[-1]["eventId"], "event-123")
+
+    def test_forced_logout_commands_are_forwarded_and_disable_reconnect(self):
+        with tempfile.TemporaryDirectory() as directory:
+            commands = []
+            client = RemoteMonitorClient(
+                self._manager(directory),
+                on_command=commands.append,
+            )
+            client._enabled = True
+
+            client._on_message(None, json.dumps({
+                "type": "command",
+                "action": "kick",
+                "reason": "管理员已将当前客户端踢下线",
+            }))
+
+            self.assertFalse(client._enabled)
+            self.assertEqual(commands[-1]["action"], "kick")
+
+            client._enabled = True
+            client._on_message(None, json.dumps({
+                "type": "command",
+                "action": "unbind",
+            }))
+
+            self.assertFalse(client._enabled)
+            self.assertEqual(commands[-1]["action"], "unbind")
 
     def test_control_messages_are_not_silently_evicted(self):
         with tempfile.TemporaryDirectory() as directory:

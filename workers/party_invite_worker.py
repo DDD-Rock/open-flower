@@ -18,7 +18,6 @@ class PartyInviteWorker(QThread):
     finished_signal = pyqtSignal()
     invite_accepted = pyqtSignal()
 
-    CONFIRMATION_CONFIDENCE = 0.84
     SAME_POPUP_TOLERANCE = 18
 
     def __init__(self, hwnd: int):
@@ -65,34 +64,40 @@ class PartyInviteWorker(QThread):
     def _accept_invite(self, initial_point):
         with input_transaction_lock:
             self.log_update.emit("检测到队伍邀请，自动同意")
-            if not self.window_selector.bring_window_to_front(self.hwnd):
-                self.log_update.emit("无法将游戏窗口置于前台，仍会尝试同意组队")
-            self._sleep(0.15)
+            self.window_selector.bring_window_to_front(self.hwnd)
+            if not self.window_selector.ensure_window_focus(
+                self.hwnd,
+                attempts=8,
+                delay=0.15,
+            ):
+                self.log_update.emit("无法确认游戏窗口焦点，本次不点击也不报告入队")
+                return
 
-            self.human.click_at(initial_point[0], initial_point[1], offset_range=2)
-            popup_gone_frames = 0
-            for _ in range(14):
-                if not self.is_running or self.isInterruptionRequested():
-                    return
-                self._sleep(0.15)
-                current_point = self.detector.find_accept_button(
-                    minimum_confidence=max(
-                        self.CONFIRMATION_CONFIDENCE,
-                        self.detector.confidence + 0.08,
-                    )
+            click_point = initial_point
+            for attempt in range(1, 4):
+                self.log_update.emit(
+                    f"第 {attempt} 次点击同意按钮：({click_point[0]}, {click_point[1]})"
                 )
-                if self.detector.is_same_popup(
-                    initial_point,
-                    current_point,
-                    self.SAME_POPUP_TOLERANCE,
-                ):
-                    popup_gone_frames = 0
-                    continue
-                popup_gone_frames += 1
-                if popup_gone_frames >= 2:
-                    self.log_update.emit("已同意队伍邀请")
-                    self.invite_accepted.emit()
-                    return
+                self.human.click_at(click_point[0], click_point[1], offset_range=2)
+                popup_gone_frames = 0
+                for _ in range(4):
+                    if not self.is_running or self.isInterruptionRequested():
+                        return
+                    self._sleep(0.15)
+                    current_point = self.detector.find_accept_button()
+                    if self.detector.is_same_popup(
+                        click_point,
+                        current_point,
+                        self.SAME_POPUP_TOLERANCE,
+                    ):
+                        popup_gone_frames = 0
+                        click_point = current_point
+                        continue
+                    popup_gone_frames += 1
+                    if popup_gone_frames >= 2:
+                        self.log_update.emit("已同意队伍邀请")
+                        self.invite_accepted.emit()
+                        return
             self.log_update.emit("邀请弹窗点击后仍未消失，本次不报告入队成功")
 
     def _sleep(self, seconds: float):

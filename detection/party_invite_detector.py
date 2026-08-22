@@ -33,8 +33,13 @@ class PartyInviteDetector:
     def __init__(self, hwnd: Optional[int] = None, confidence: float = 0.76):
         self.hwnd = hwnd
         self.confidence = confidence
+        self._cached_game_point = None
+        self._cached_client_size = None
 
     def set_window_handle(self, hwnd: int):
+        if self.hwnd != hwnd:
+            self._cached_game_point = None
+            self._cached_client_size = None
         self.hwnd = hwnd
 
     @staticmethod
@@ -100,6 +105,13 @@ class PartyInviteDetector:
             return None
 
         height, width = image.shape[:2]
+        client_size = (width, height)
+        if self._cached_client_size != client_size:
+            self._cached_game_point = None
+            self._cached_client_size = client_size
+        elif include_template and self._cached_game_point is not None:
+            return self._find_near_cached_point(image, minimum_confidence)
+
         search_x = max(0, int(width * 0.43))
         search_y = max(0, int(height * 0.67))
         region = image[search_y:, search_x:]
@@ -115,7 +127,30 @@ class PartyInviteDetector:
         )
         if point is None:
             return None
-        return search_x + point[0], search_y + point[1]
+        result = search_x + point[0], search_y + point[1]
+        self._cached_game_point = result
+        return result
+
+    def _find_near_cached_point(
+        self,
+        image: np.ndarray,
+        minimum_confidence: Optional[float],
+    ) -> Optional[Tuple[int, int]]:
+        center_x, center_y = self._cached_game_point
+        height, width = image.shape[:2]
+        search_x = max(0, int(center_x) - 90)
+        search_y = max(0, int(center_y) - 70)
+        search_right = min(width, int(center_x) + 90)
+        search_bottom = min(height, int(center_y) + 180)
+        region = image[search_y:search_bottom, search_x:search_right]
+        if region.size == 0:
+            return None
+        point = self._find_by_template(region, minimum_confidence)
+        if point is None:
+            return None
+        result = search_x + point[0], search_y + point[1]
+        self._cached_game_point = result
+        return result
 
     @staticmethod
     def _find_by_color(region: np.ndarray) -> Optional[Tuple[int, int]]:

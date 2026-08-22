@@ -72,6 +72,24 @@ class PartyInviteDetectorTests(unittest.TestCase):
         self.assertFalse(self.detector.is_same_popup((100, 200), (140, 200)))
         self.assertFalse(self.detector.is_same_popup((100, 200), None))
 
+    def test_reuses_cached_position_while_resolution_is_unchanged(self):
+        image = np.full((500, 800, 3), 35, dtype=np.uint8)
+        accept = cv2.imread(self.detector.ACCEPT_TEMPLATE)
+        decline = cv2.imread(self.detector.DECLINE_TEMPLATE)
+        image[350:404, 650:704] = accept
+        image[418:472, 650:704] = decline
+
+        self.assertEqual(self.detector.find_accept_button_in_image(image), (677, 377))
+        without_popup = np.full_like(image, 35)
+        self.assertIsNone(self.detector.find_accept_button_in_image(without_popup))
+
+        image_with_distant_decoy = without_popup.copy()
+        image_with_distant_decoy[350:404, 480:534] = accept
+        image_with_distant_decoy[418:472, 480:534] = decline
+        self.assertIsNone(
+            self.detector.find_accept_button_in_image(image_with_distant_decoy)
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

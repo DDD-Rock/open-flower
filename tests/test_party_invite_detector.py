@@ -67,6 +67,11 @@ class PartyInviteDetectorTests(unittest.TestCase):
         self.assertIsNotNone(cv2.imread(self.detector.ACCEPT_TEMPLATE))
         self.assertIsNotNone(cv2.imread(self.detector.DECLINE_TEMPLATE))
 
+    def test_confirmation_tracks_only_the_clicked_popup(self):
+        self.assertTrue(self.detector.is_same_popup((100, 200), (112, 186)))
+        self.assertFalse(self.detector.is_same_popup((100, 200), (140, 200)))
+        self.assertFalse(self.detector.is_same_popup((100, 200), None))
+
 
 if __name__ == "__main__":
     unittest.main()

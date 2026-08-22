@@ -37,15 +37,30 @@ class PartyInviteDetector:
     def set_window_handle(self, hwnd: int):
         self.hwnd = hwnd
 
+    @staticmethod
+    def is_same_popup(initial_point, current_point, tolerance: int = 18) -> bool:
+        if current_point is None:
+            return False
+        return (
+            abs(current_point[0] - initial_point[0]) <= tolerance
+            and abs(current_point[1] - initial_point[1]) <= tolerance
+        )
+
     def find_accept_button(
-        self, include_template: bool = True
+        self,
+        include_template: bool = True,
+        minimum_confidence: Optional[float] = None,
     ) -> Optional[Tuple[int, int]]:
         """Return the accept button center in absolute screen coordinates."""
         image = self.capture_game_screen()
         if image is None:
             return None
 
-        game_point = self.find_accept_button_in_image(image, include_template)
+        game_point = self.find_accept_button_in_image(
+            image,
+            include_template,
+            minimum_confidence,
+        )
         if game_point is None or win32gui is None:
             return None
 
@@ -75,7 +90,10 @@ class PartyInviteDetector:
             return None
 
     def find_accept_button_in_image(
-        self, image: np.ndarray, include_template: bool = True
+        self,
+        image: np.ndarray,
+        include_template: bool = True,
+        minimum_confidence: Optional[float] = None,
     ) -> Optional[Tuple[int, int]]:
         """Find the button center in client-image coordinates."""
         if image is None or image.ndim != 3 or image.size == 0:
@@ -90,7 +108,11 @@ class PartyInviteDetector:
 
         # 橙色在技能栏和常驻 UI 中非常常见，不能仅凭两个橙色色块就判定为
         # 邀请。必须同时匹配“接受”和“拒绝”两个不同图标及其相对位置。
-        point = self._find_by_template(region) if include_template else None
+        point = (
+            self._find_by_template(region, minimum_confidence)
+            if include_template
+            else None
+        )
         if point is None:
             return None
         return search_x + point[0], search_y + point[1]
@@ -168,12 +190,17 @@ class PartyInviteDetector:
             return None
         return int(round(best[1])), int(round(best[2]))
 
-    def _find_by_template(self, region: np.ndarray) -> Optional[Tuple[int, int]]:
+    def _find_by_template(
+        self,
+        region: np.ndarray,
+        minimum_confidence: Optional[float] = None,
+    ) -> Optional[Tuple[int, int]]:
         accept_template = cv2.imread(self.ACCEPT_TEMPLATE)
         decline_template = cv2.imread(self.DECLINE_TEMPLATE)
         if accept_template is None or decline_template is None:
             return None
 
+        threshold = self.confidence if minimum_confidence is None else minimum_confidence
         scales = (
             0.45,
             0.55,
@@ -197,7 +224,7 @@ class PartyInviteDetector:
 
             result = cv2.matchTemplate(region, accept, cv2.TM_CCOEFF_NORMED)
             _, score, _, location = cv2.minMaxLoc(result)
-            if score < self.confidence:
+            if score < threshold:
                 continue
 
             accept_h, accept_w = accept.shape[:2]
@@ -219,7 +246,7 @@ class PartyInviteDetector:
                 decline_region, decline, cv2.TM_CCOEFF_NORMED
             )
             _, decline_score, _, decline_location = cv2.minMaxLoc(decline_result)
-            if decline_score < self.confidence:
+            if decline_score < threshold:
                 continue
 
             decline_center_x = search_x + decline_location[0] + decline_w // 2

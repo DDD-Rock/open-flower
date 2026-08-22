@@ -18,6 +18,9 @@ class PartyInviteWorker(QThread):
     finished_signal = pyqtSignal()
     invite_accepted = pyqtSignal()
 
+    CONFIRMATION_CONFIDENCE = 0.84
+    SAME_POPUP_TOLERANCE = 18
+
     def __init__(self, hwnd: int):
         super().__init__()
         self.hwnd = hwnd
@@ -67,11 +70,26 @@ class PartyInviteWorker(QThread):
             self._sleep(0.15)
 
             self.human.click_at(initial_point[0], initial_point[1], offset_range=2)
+            popup_gone_frames = 0
             for _ in range(14):
                 if not self.is_running or self.isInterruptionRequested():
                     return
                 self._sleep(0.15)
-                if self.detector.find_accept_button() is None:
+                current_point = self.detector.find_accept_button(
+                    minimum_confidence=max(
+                        self.CONFIRMATION_CONFIDENCE,
+                        self.detector.confidence + 0.08,
+                    )
+                )
+                if self.detector.is_same_popup(
+                    initial_point,
+                    current_point,
+                    self.SAME_POPUP_TOLERANCE,
+                ):
+                    popup_gone_frames = 0
+                    continue
+                popup_gone_frames += 1
+                if popup_gone_frames >= 2:
                     self.log_update.emit("已同意队伍邀请")
                     self.invite_accepted.emit()
                     return

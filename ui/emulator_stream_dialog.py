@@ -60,8 +60,8 @@ class EmulatorStreamDialog(QDialog):
         self._minimap_rect = None
         self.smart_walk_anchor = None
         self.smart_walk_half_width = 10
-        self.smart_walk_min_minutes = 15
-        self.smart_walk_max_minutes = 30
+        self.smart_walk_min_minutes = 16
+        self.smart_walk_max_minutes = 18
         self.smart_walk_jump_key = "Alt"
         self._active_mode = "live_flower"
         self._last_countdowns = {}
@@ -519,8 +519,8 @@ class EmulatorStreamDialog(QDialog):
         anchor = config.get("anchor")
         self.smart_walk_anchor = tuple(anchor) if anchor else None
         half_width = max(1, int(config.get("half_width", 10)))
-        self.smart_walk_min_minutes = max(1, min(1440, int(config.get("min_minutes", 15))))
-        self.smart_walk_max_minutes = max(self.smart_walk_min_minutes, min(1440, int(config.get("max_minutes", 30))))
+        self.smart_walk_min_minutes = max(1, min(1440, int(config.get("min_minutes", 16))))
+        self.smart_walk_max_minutes = max(self.smart_walk_min_minutes, min(1440, int(config.get("max_minutes", 18))))
         random_enabled = bool(config.get("random_behavior_enabled", True))
         random_value = max(1, min(60, int(config.get("random_behavior_value", 20))))
         self.smart_walk_jump_key = str(config.get("jump_key") or "Alt")

@@ -13,6 +13,10 @@ import win32gui
 
 from utils.countdown import next_release_time, remaining_seconds
 from utils.keyboard_utils import KEY_HOLD_MAX_MS, KEY_HOLD_MIN_MS
+
+# Emulator buffs need a longer hold than the Windows live-flower tap.
+BUFF_HOLD_MIN_MS = 300
+BUFF_HOLD_MAX_MS = 500
 from utils.smart_walk import next_smart_walk_deadline, smart_walk_can_continue, smart_walk_direction
 
 
@@ -50,7 +54,7 @@ class MumuSmartWalkWorker:
         self.countdown_callback = countdown_callback
         self.status_callback = status_callback
         self._lock = threading.RLock()
-        self._config = {"enabled": False, "anchor": None, "half_width": 10, "min_minutes": 15, "max_minutes": 30, "buffs": [], "random_behavior_enabled": True, "random_behavior_value": 20, "jump_key": "Alt"}
+        self._config = {"enabled": False, "anchor": None, "half_width": 10, "min_minutes": 16, "max_minutes": 18, "buffs": [], "random_behavior_enabled": True, "random_behavior_value": 20, "jump_key": "Alt"}
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._deadline = None
@@ -67,8 +71,8 @@ class MumuSmartWalkWorker:
                 "enabled": bool(config.get("enabled")),
                 "anchor": tuple(config.get("anchor")) if config.get("anchor") else None,
                 "half_width": max(1, int(config.get("half_width", 10))),
-                "min_minutes": max(1, min(1440, int(config.get("min_minutes", 15)))),
-                "max_minutes": max(1, min(1440, int(config.get("max_minutes", 30)))),
+                "min_minutes": max(1, min(1440, int(config.get("min_minutes", 16)))),
+                "max_minutes": max(1, min(1440, int(config.get("max_minutes", 18)))),
                 # Preserve the UI slot indexes, including empty slots, so one
                 # stream can never show another slot's countdown/status.
                 "buffs": [
@@ -175,16 +179,16 @@ class MumuSmartWalkWorker:
             lparam |= (1 << 30) | (1 << 31)
         win32gui.PostMessage(hwnd, message, virtual_key, lparam)
 
-    def _press_key(self, key: str):
+    def _press_key(self, key: str, hold_range_ms: tuple[int, int] | None = None):
         virtual_key = self._virtual_key(key)
         hwnd = self._get_window_handle()
         if virtual_key is None or hwnd is None:
             return False
+        minimum, maximum = hold_range_ms or (KEY_HOLD_MIN_MS, KEY_HOLD_MAX_MS)
         try:
             with _MUMU_INPUT_LOCK:
                 self._post_key(hwnd, virtual_key, True)
-                # Same hold as Windows live-flower press_key: 50–150 ms.
-                time.sleep(random.randint(KEY_HOLD_MIN_MS, KEY_HOLD_MAX_MS) / 1000.0)
+                time.sleep(random.randint(minimum, maximum) / 1000.0)
                 self._post_key(hwnd, virtual_key, False)
             return True
         except Exception:
@@ -287,11 +291,12 @@ class MumuSmartWalkWorker:
             self._emit_status(f"准备释放 BUFF {index + 1}：{buff['key']}")
             # Match live flower: two short taps, 100–300 ms apart.
             # The countdown starts at the second key-down.
-            first_sent = self._press_key(buff["key"])
+            hold = (BUFF_HOLD_MIN_MS, BUFF_HOLD_MAX_MS)
+            first_sent = self._press_key(buff["key"], hold)
             pressed_at = None
             if first_sent and not self._stop.wait(random.uniform(0.1, 0.3)):
                 pressed_at = time.monotonic()
-                second_sent = self._press_key(buff["key"])
+                second_sent = self._press_key(buff["key"], hold)
             else:
                 second_sent = False
             if not (first_sent and second_sent):

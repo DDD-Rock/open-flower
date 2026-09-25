@@ -174,6 +174,8 @@ class MumuMonitorWorkerTests(unittest.TestCase):
 
         self.assertIn("half_width", config)
         self.assertNotIn("half_height", config)
+        self.assertEqual(config["min_minutes"], 16)
+        self.assertEqual(config["max_minutes"], 18)
         self.assertFalse(hasattr(dialog, "smart_walk_height_input"))
         dialog.close()
 

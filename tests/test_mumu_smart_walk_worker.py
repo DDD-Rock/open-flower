@@ -3,8 +3,11 @@ import unittest
 from unittest.mock import Mock, patch
 from types import SimpleNamespace
 
-from utils.keyboard_utils import KEY_HOLD_MAX_MS, KEY_HOLD_MIN_MS
-from workers.mumu_smart_walk_worker import MumuSmartWalkWorker
+from workers.mumu_smart_walk_worker import (
+    BUFF_HOLD_MAX_MS,
+    BUFF_HOLD_MIN_MS,
+    MumuSmartWalkWorker,
+)
 
 
 class MumuSmartWalkWorkerTests(unittest.TestCase):
@@ -54,7 +57,7 @@ class MumuSmartWalkWorkerTests(unittest.TestCase):
         self.assertEqual(countdowns[-1], {0: 260, 1: 270})
         self.assertTrue(any("BUFF 2" in status and "已释放" in status for status in statuses))
 
-    def test_buff_hold_matches_windows_live_flower(self):
+    def test_buff_hold_is_300_to_500_milliseconds(self):
         worker = self._worker()
         worker._virtual_key = Mock(return_value=0x31)
         worker._get_window_handle = Mock(return_value=1)
@@ -62,14 +65,16 @@ class MumuSmartWalkWorkerTests(unittest.TestCase):
 
         with patch(
             "workers.mumu_smart_walk_worker.random.randint",
-            return_value=120,
+            return_value=400,
         ) as randint, patch(
             "workers.mumu_smart_walk_worker.time.sleep",
         ) as sleep:
-            self.assertTrue(worker._press_key("1"))
+            self.assertTrue(
+                worker._press_key("1", (BUFF_HOLD_MIN_MS, BUFF_HOLD_MAX_MS))
+            )
 
-        randint.assert_called_once_with(KEY_HOLD_MIN_MS, KEY_HOLD_MAX_MS)
-        sleep.assert_called_once_with(0.12)
+        randint.assert_called_once_with(300, 500)
+        sleep.assert_called_once_with(0.4)
         self.assertEqual(
             [call.args[2] for call in worker._post_key.call_args_list],
             [True, False],

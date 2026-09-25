@@ -1,4 +1,3 @@
-import time
 import unittest
 from unittest.mock import Mock, patch
 from types import SimpleNamespace
@@ -223,32 +222,52 @@ class MumuSmartWalkWorkerTests(unittest.TestCase):
 
         self.assertEqual(countdowns[-1], {1: 40})
 
-    def test_turning_controller_off_and_on_keeps_showing_remaining_time(self):
-        countdowns = []
-        worker = self._worker(countdowns)
-        worker._buff_identity = [("1", 270.0)]
-        worker._move_into_horizontal_range = Mock(return_value=False)
-        worker._release_due_buffs = Mock()
-        future = time.monotonic() + 80
-        stopped = {
-            "enabled": False,
-            "anchor": (40, 10),
-            "buffs": [{"enabled": True, "key": "1", "duration": 270}],
-        }
-        running = dict(stopped, enabled=True)
-        worker.update_config(stopped)
+    def test_starting_releases_configured_buffs_and_resets_their_timers(self):
+        worker = self._worker()
+        worker._buff_identity = [("1", 270.0), ("2", 200.0), ("3", 270.0)]
+        worker._press_key = Mock(return_value=True)
+        worker._stop.wait = Mock(return_value=False)
+        worker._move_into_horizontal_range = Mock(return_value=True)
+        future = 5000.0
+        worker.update_config(
+            {
+                "enabled": True,
+                "anchor": (40, 10),
+                "min_minutes": 16,
+                "max_minutes": 18,
+                "random_behavior_enabled": False,
+                "random_behavior_value": 20,
+                "buffs": [
+                    {"enabled": True, "key": "1", "duration": 270},
+                    {"enabled": True, "key": "2", "duration": 200},
+                    {"enabled": False, "key": "3", "duration": 270},
+                ],
+            }
+        )
 
-        due, was_enabled, pending = worker._service_once({0: future}, True, False)
+        with patch(
+            "workers.mumu_smart_walk_worker.random.uniform",
+            return_value=0.2,
+        ), patch(
+            "workers.mumu_smart_walk_worker.random.randint",
+            return_value=2500,
+        ):
+            due, _was_enabled, pending = worker._service_once(
+                {0: future, 1: future, 2: future},
+                False,
+                False,
+            )
 
-        self.assertEqual(due[0], future)
-        self.assertEqual(countdowns[-1], {})
-        worker.update_config(running)
-        due, was_enabled, pending = worker._service_once(due, was_enabled, pending)
-
-        self.assertEqual(due[0], future)
-        self.assertTrue(pending)
-        self.assertGreater(countdowns[-1][0], 0)
-        worker._release_due_buffs.assert_not_called()
+        self.assertFalse(pending)
+        self.assertEqual(
+            [call.args[0] for call in worker._press_key.call_args_list],
+            ["1", "1", "2", "2"],
+        )
+        self.assertNotEqual(due[0], future)
+        self.assertNotEqual(due[1], future)
+        self.assertGreater(due[0], 0)
+        self.assertGreater(due[1], 0)
+        self.assertEqual(due[2], future)
 
     def test_settle_uses_ranges_and_ignores_a_hidden_marker(self):
         provider = Mock(return_value=None)

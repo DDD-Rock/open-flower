@@ -407,6 +407,10 @@ class MumuSmartWalkWorker:
         just_enabled = bool(config.get("enabled") and not was_enabled)
         if just_enabled:
             initial_position_pending = bool(config.get("anchor"))
+            # Every start releases the configured buffs and starts a new timer.
+            for index, buff in enumerate(config.get("buffs") or []):
+                if buff.get("enabled") and buff.get("key"):
+                    due_buffs[index] = 0.0
         was_enabled = bool(config.get("enabled"))
         if not config.get("enabled"):
             self._emit_countdown({})

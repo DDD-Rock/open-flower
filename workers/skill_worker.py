@@ -6,10 +6,12 @@
 import time
 import random
 import threading
-from typing import List
+from typing import List, Optional, Tuple
 
 from PyQt6.QtCore import QObject, pyqtSignal
+from pynput.keyboard import Key
 
+from detection.minimap_monitor import MinimapMonitor
 from models.skill_config import SkillConfig
 from utils.keyboard_utils import press_key
 from utils.key_names import normalize_key_name
@@ -20,6 +22,11 @@ from utils.countdown import (
 )
 from config import THREAD_SLEEP_INTERVAL, CYCLE_PAUSE_TIME, INITIAL_WAIT_TIME
 from automation.human_input import HumanInput
+from utils.smart_walk import (
+    next_smart_walk_deadline,
+    smart_walk_can_continue,
+    smart_walk_direction,
+)
 
 # 技能之间的间隔时间范围（毫秒），模拟人按完一个技能后等待再按下一个
 SKILL_GAP_MIN_MS = 2000   # 最小间隔
@@ -33,6 +40,10 @@ PRE_SKILL_MOVE_RIGHT_MAX_MS = 1000  # 最大1秒
 POST_SKILL_MOVE_LEFT_MIN_MS = 2000  # 最小2秒
 POST_SKILL_MOVE_LEFT_MAX_MS = 3000  # 最大3秒
 
+# 智能走的单段短走时长。
+SMART_WALK_MIN_MS = 300
+SMART_WALK_MAX_MS = 600
+
 
 class SkillWorker(QObject):
     """技能释放工作线程类"""
@@ -41,6 +52,7 @@ class SkillWorker(QObject):
     MOVEMENT_NONE = "none"      # 原地不动
     MOVEMENT_RIGHT = "right"    # 向右走开buff，然后向左回
     MOVEMENT_LEFT = "left"      # 向左走开buff，然后向右回
+    MOVEMENT_SMART = "smart"    # 定时识别黄点并向区域中心短走
     
     # 定义信号，用于更新UI状态
     status_update = pyqtSignal(str)
@@ -50,7 +62,13 @@ class SkillWorker(QObject):
     
     def __init__(self, skills: List[SkillConfig], window_selector=None, game_window_hwnd=None,
                  movement_mode: str = "none",
-                 sit_chair_enabled: bool = False, chair_key: str = "="):
+                 sit_chair_enabled: bool = False, chair_key: str = "=",
+                 jump_key: str = "Alt",
+                 smart_walk_anchor_pos: Optional[Tuple[int, int]] = None,
+                 smart_walk_minimap_region: Optional[Tuple[int, int, int, int]] = None,
+                 smart_walk_boundary_tolerance: float = 6.0,
+                 smart_walk_min_minutes: int = 15,
+                 smart_walk_max_minutes: int = 30):
         """
         初始化工作线程
         
@@ -79,6 +97,28 @@ class SkillWorker(QObject):
         self.chair_key = self._resolve_key(chair_key)
         self.is_sitting = False
 
+        self.jump_key = self._resolve_keyboard_key(jump_key)
+        self.smart_walk_anchor_pos = smart_walk_anchor_pos
+        self.smart_walk_minimap_region = smart_walk_minimap_region
+        self.smart_walk_boundary_tolerance = max(
+            1.0, min(50.0, float(smart_walk_boundary_tolerance))
+        )
+        self.smart_walk_min_minutes = max(1, min(1440, int(smart_walk_min_minutes)))
+        self.smart_walk_max_minutes = max(
+            self.smart_walk_min_minutes,
+            min(1440, int(smart_walk_max_minutes)),
+        )
+        self.next_smart_walk_at = None
+        self.smart_walk_monitor = None
+        if self.movement_mode == self.MOVEMENT_SMART:
+            self.smart_walk_monitor = MinimapMonitor()
+            if self.game_window_hwnd:
+                self.smart_walk_monitor.set_window_handle(self.game_window_hwnd)
+            if self.smart_walk_minimap_region:
+                self.smart_walk_monitor.set_minimap_region(
+                    *self.smart_walk_minimap_region
+                )
+
     def _resolve_key(self, key_str: str):
         """将按键字符串转换为可识别的按键"""
         normalized_key = normalize_key_name(key_str)
@@ -92,6 +132,34 @@ class SkillWorker(QObject):
             '=': '='
         }
         return mapping.get(normalized_key.lower(), normalized_key)
+
+    @staticmethod
+    def _resolve_keyboard_key(key_str: str):
+        """Resolve a configured key for direct pynput press/release calls."""
+        normalized = normalize_key_name(key_str or "Alt").lower()
+        special = {
+            "shift": Key.shift,
+            "ctrl": Key.ctrl,
+            "control": Key.ctrl,
+            "alt": Key.alt,
+            "tab": Key.tab,
+            "space": Key.space,
+            "enter": Key.enter,
+            "backspace": Key.backspace,
+            "delete": Key.delete,
+            "insert": Key.insert,
+            "home": Key.home,
+            "end": Key.end,
+            "page up": Key.page_up,
+            "page_up": Key.page_up,
+            "pageup": Key.page_up,
+            "page down": Key.page_down,
+            "page_down": Key.page_down,
+            "pagedown": Key.page_down,
+        }
+        for number in range(1, 13):
+            special[f"f{number}"] = getattr(Key, f"f{number}")
+        return special.get(normalized, normalized[:1] or Key.alt)
         
     def _sit_chair(self):
         """空闲时坐下"""
@@ -123,6 +191,8 @@ class SkillWorker(QObject):
         
         self.is_running = True
         self.next_release_times = {}
+        if self.movement_mode == self.MOVEMENT_SMART:
+            self._schedule_next_smart_walk()
         self.countdown_thread = threading.Thread(
             target=self._countdown_loop,
             daemon=True,
@@ -174,6 +244,14 @@ class SkillWorker(QObject):
                 # 批量释放需要释放的技能（只移动一次）
                 if skills_to_release:
                     self._release_skills_batch(skills_to_release, self.next_release_times)
+
+                if (
+                    self.movement_mode == self.MOVEMENT_SMART
+                    and self.next_smart_walk_at is not None
+                    and time.monotonic() >= self.next_smart_walk_at
+                ):
+                    self._perform_smart_walk()
+                    self._schedule_next_smart_walk()
                 
                 # 倒计时由独立线程持续发布，这里只计算椅子逻辑。
                 chair_check_time = time.time()
@@ -225,7 +303,7 @@ class SkillWorker(QObject):
             self._move_before_skill()
             
             # === 2. 停止移动后再释放技能，避免按键冲突 ===
-            if self.movement_mode != self.MOVEMENT_NONE:
+            if self.movement_mode in {self.MOVEMENT_RIGHT, self.MOVEMENT_LEFT}:
                 self.human_input.stop_move()
                 # 等待0.3到0.5秒的随机数
                 time.sleep(random.uniform(0.3, 0.5))
@@ -353,6 +431,110 @@ class SkillWorker(QObject):
         elif self.movement_mode == self.MOVEMENT_LEFT:
             # 向左走开buff后，向右回去
             self._move_direction("right", POST_SKILL_MOVE_LEFT_MIN_MS, POST_SKILL_MOVE_LEFT_MAX_MS)
+
+    def _schedule_next_smart_walk(self):
+        self.next_smart_walk_at = next_smart_walk_deadline(
+            time.monotonic(),
+            self.smart_walk_min_minutes,
+            self.smart_walk_max_minutes,
+        )
+        delay_minutes = max(
+            0.0,
+            (self.next_smart_walk_at - time.monotonic()) / 60.0,
+        )
+        self.status_update.emit(f"智能走将在约 {delay_minutes:.1f} 分钟后触发")
+
+    def _perform_smart_walk(self):
+        """Locate the player and make one boundary-constrained short walk."""
+        if not self.is_running or not self.smart_walk_monitor:
+            return
+        if not self.smart_walk_anchor_pos or not self.smart_walk_minimap_region:
+            self.status_update.emit("智能走未设置中心点或小地图区域，跳过本轮")
+            return
+        if not self._ensure_game_window_focus("智能走定位"):
+            return
+
+        player_pos = self.smart_walk_monitor.find_player_position_once()
+        if player_pos is None:
+            self.status_update.emit("智能走未识别到黄点，跳一下重新定位")
+            player_pos = self._find_smart_walk_player_during_jump()
+        if player_pos is None:
+            self.status_update.emit(
+                "智能走跳跃后仍无法定位黄点，已取消本轮移动："
+                f"{self.smart_walk_monitor.last_player_detection_summary}"
+            )
+            return
+
+        result = self._smart_walk_from_position(player_pos)
+        if result == "lost" and self.is_running:
+            self.status_update.emit("智能走途中黄点被遮挡，跳一下重新确认位置")
+            recovered = self._find_smart_walk_player_during_jump()
+            if recovered is None:
+                self.status_update.emit("智能走重新定位失败，已停止本轮移动")
+                return
+            self._smart_walk_from_position(recovered)
+
+    def _smart_walk_from_position(self, player_pos: Tuple[int, int]) -> str:
+        center_x = float(self.smart_walk_anchor_pos[0])
+        direction = smart_walk_direction(player_pos[0], center_x)
+        direction_cn = "左" if direction == "left" else "右"
+        duration = random.randint(
+            SMART_WALK_MIN_MS,
+            SMART_WALK_MAX_MS,
+        ) / 1000.0
+        self.status_update.emit(
+            f"智能走：当前 X={player_pos[0]:.1f}，向{direction_cn}朝中心短走"
+        )
+        if not self._ensure_game_window_focus("智能走"):
+            return "focus_failed"
+
+        if direction == "left":
+            self.human_input.move_left()
+        else:
+            self.human_input.move_right()
+        self.is_sitting = False
+
+        missing_frames = 0
+        started_at = time.monotonic()
+        try:
+            while self.is_running and time.monotonic() - started_at < duration:
+                time.sleep(0.04)
+                latest = self.smart_walk_monitor.find_player_position_once()
+                if latest is None:
+                    missing_frames += 1
+                    if missing_frames >= 2:
+                        return "lost"
+                    continue
+                missing_frames = 0
+                if not smart_walk_can_continue(
+                    direction,
+                    latest[0],
+                    center_x,
+                    self.smart_walk_boundary_tolerance,
+                ):
+                    return "boundary"
+            return "complete"
+        finally:
+            self.human_input.stop_move()
+
+    def _find_smart_walk_player_during_jump(self) -> Optional[Tuple[int, int]]:
+        """Jump once, sampling while airborne to reveal an obscured marker."""
+        if not self.is_running or not self._ensure_game_window_focus("跳跃定位"):
+            return None
+        self.human_input.stop_move()
+        self.human_input.keyboard.press(self.jump_key)
+        try:
+            for _ in range(3):
+                time.sleep(0.05)
+                if not self.is_running:
+                    return None
+                position = self.smart_walk_monitor.find_player_position_once()
+                if position is not None:
+                    return position
+        finally:
+            self.human_input.keyboard.release(self.jump_key)
+        time.sleep(0.05)
+        return self.smart_walk_monitor.find_player_position_once()
     
     def _move_direction(self, direction: str, min_ms: int, max_ms: int):
         """

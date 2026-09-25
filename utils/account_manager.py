@@ -26,7 +26,7 @@ class AccountError(Exception):
 
 class AccountManager:
     DEFAULT_SERVER_BASE_URL = "https://buff.juanwang.cc"
-    ALL_CLIENT_MODES = ("dead", "live", "temple", "follow_heal", "monitor")
+    ALL_CLIENT_MODES = ("dead", "live", "temple", "follow_heal", "monitor", "emulator")
     DEFAULT_AUTHORIZED_MODES = ("dead", "live", "temple")
     LEGACY_SERVER_BASE_URLS = {
         "http://106.52.208.129:28671",

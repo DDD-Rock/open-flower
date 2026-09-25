@@ -52,6 +52,11 @@ class MainWindow(QMainWindow):
         self.return_to_market = True  # 是否释放后回到市场
         self.mode = "dead"  # dead/live/follow_heal/monitor
         self.movement_mode = "none"  # 移动模式: "none"(原地不动), "right"(向右走开buff), "left"(向左走开buff)
+        self.smart_walk_anchor_pos = None
+        self.smart_walk_minimap_region = None
+        self.smart_walk_boundary_tolerance = 6.0
+        self.smart_walk_min_minutes = 15
+        self.smart_walk_max_minutes = 30
         self.pre_skill_move_mode = "right_left"  # 死花出市场后移动: "right_left" 或 "left_only"
         self.manual_portal_pos = None  # 手动标记的传送门位置 (x, y) 或 None
         self.portal_width_threshold = 2.5  # 传送门左右导航容差（小地图像素）
@@ -157,6 +162,13 @@ class MainWindow(QMainWindow):
         
         # 加载移动模式设置
         self.movement_mode = settings.get("movement_mode", "none")
+        self.smart_walk_anchor_pos = settings.get("smart_walk_anchor_pos")
+        self.smart_walk_minimap_region = settings.get("smart_walk_minimap_region")
+        self.smart_walk_boundary_tolerance = settings.get(
+            "smart_walk_boundary_tolerance", 6.0
+        )
+        self.smart_walk_min_minutes = settings.get("smart_walk_min_minutes", 15)
+        self.smart_walk_max_minutes = settings.get("smart_walk_max_minutes", 30)
         self._set_movement_mode_radio(self.movement_mode)
         
         # 加载死花出市场后移动模式
@@ -204,6 +216,11 @@ class MainWindow(QMainWindow):
         self.follow_heal_minimap_region = None
         self.follow_heal_boundary_tolerance = 6.0
         self.follow_heal_return_strategy = "walk"
+        self.smart_walk_anchor_pos = None
+        self.smart_walk_minimap_region = None
+        self.smart_walk_boundary_tolerance = 6.0
+        self.smart_walk_min_minutes = 15
+        self.smart_walk_max_minutes = 30
         self.portal_width_threshold = 2.5
         self.auto_accept_party_invite = False
         if hasattr(self, 'selected_jump_key'):
@@ -258,6 +275,15 @@ class MainWindow(QMainWindow):
             random_behavior_enabled=self.random_behavior_checkbox.isChecked(),
             random_behavior_value=random_value,
             movement_mode=self.movement_mode,
+            smart_walk_anchor_pos=getattr(self, "smart_walk_anchor_pos", None),
+            smart_walk_minimap_region=getattr(
+                self, "smart_walk_minimap_region", None
+            ),
+            smart_walk_boundary_tolerance=getattr(
+                self, "smart_walk_boundary_tolerance", 6.0
+            ),
+            smart_walk_min_minutes=getattr(self, "smart_walk_min_minutes", 15),
+            smart_walk_max_minutes=getattr(self, "smart_walk_max_minutes", 30),
             pre_skill_move_mode=self.pre_skill_move_mode,
             auto_accept_party_invite=self.auto_accept_party_invite,
             manual_portal_pos=getattr(self, "manual_portal_pos", None),
@@ -484,8 +510,8 @@ class MainWindow(QMainWindow):
     
     def start_test_return_to_market(self):
         """测试回到市场功能（点击自由市场按钮）"""
-        if not self.game_window_hwnd:
-            QMessageBox.warning(self, "错误", "请先确保游戏窗口已被识别")
+        if not self._ensure_game_window_available("测试回到市场"):
+            QMessageBox.warning(self, "错误", "未找到游戏窗口，请确保游戏已启动")
             return
         
         # 先检测当前位置
@@ -708,7 +734,7 @@ class MainWindow(QMainWindow):
                 
                 
                 self.is_window_identified = True
-                self.logger.log(f"启动时自动识别成功: {window_title}")
+                self.logger.log(f"自动识别成功: {window_title}")
                 self.logger.log(f"窗口大小: {window_size[0]}x{window_size[1]}")
                 self.logger.log(f"现在游戏分辨率为: {self.game_config.get_resolution_str()}")
                 self.update_log_display()
@@ -719,7 +745,7 @@ class MainWindow(QMainWindow):
                 self._sync_party_invite_worker()
             else:
                 self._stop_party_invite_worker()
-                self.logger.log("启动时未找到游戏窗口")
+                self.logger.log("自动识别未找到游戏窗口")
                 self.update_log_display()
                 self.is_window_identified = False
                 self.game_window_hwnd = None
@@ -727,12 +753,42 @@ class MainWindow(QMainWindow):
                 
         except Exception as e:
             self._stop_party_invite_worker()
-            error_msg = f"启动时识别窗口出错: {str(e)}"
+            error_msg = f"自动识别窗口出错: {str(e)}"
             self.logger.log(error_msg)
             self.update_log_display()
             self.is_window_identified = False
             self.game_window_hwnd = None
             self.update_window_status_display(f"状态: 识别失败\n错误: {str(e)}")
+
+    def _ensure_game_window_available(self, reason: str = "当前操作") -> bool:
+        """Reuse a valid handle or automatically find a restarted game."""
+        if not self.window_selector:
+            self.is_window_identified = False
+            self.game_window_hwnd = None
+            return False
+
+        if (
+            self.game_window_hwnd
+            and self.window_selector.is_window_valid(self.game_window_hwnd)
+        ):
+            self.is_window_identified = True
+            return True
+
+        if self.game_window_hwnd or self.is_window_identified:
+            self.logger.log(f"{reason}：原游戏窗口已失效，正在自动重新识别...")
+        else:
+            self.logger.log(f"{reason}：正在自动识别游戏窗口...")
+        self.update_log_display()
+        self._stop_party_invite_worker()
+        self.is_window_identified = False
+        self.game_window_hwnd = None
+        self.auto_identify_on_startup()
+
+        return bool(
+            self.is_window_identified
+            and self.game_window_hwnd
+            and self.window_selector.is_window_valid(self.game_window_hwnd)
+        )
     
     def on_identify_window(self):
         """手动识别游戏窗口"""
@@ -777,7 +833,7 @@ class MainWindow(QMainWindow):
                 self.game_window_hwnd = None
                 self.update_window_status_display("状态: 未识别\n提示: 请确保游戏已启动")
                 QMessageBox.warning(self, "识别失败", 
-                    "未找到游戏窗口，请确保：\n1. 游戏已启动\n2. 游戏窗口可见\n3. 游戏窗口标题包含'冒险岛'、'Maple'等关键词")
+                    "未找到游戏窗口，请确保：\n1. 游戏已启动\n2. 游戏窗口可见")
                 
         except Exception as e:
             self._stop_party_invite_worker()
@@ -791,8 +847,8 @@ class MainWindow(QMainWindow):
     
     def on_mark_portal(self):
         """手动标记市场传送门位置"""
-        if not self.game_window_hwnd:
-            QMessageBox.warning(self, "提示", "请先识别游戏窗口")
+        if not self._ensure_game_window_available("标记传送门"):
+            QMessageBox.warning(self, "提示", "未找到游戏窗口，请确保游戏已启动")
             return
         
         try:
@@ -887,8 +943,8 @@ class MainWindow(QMainWindow):
 
     def on_mark_follow_anchor(self):
         """手动标记跟补基准点，并保存当时的小地图区域"""
-        if not self.game_window_hwnd:
-            QMessageBox.warning(self, "提示", "请先识别游戏窗口")
+        if not self._ensure_game_window_available("标记跟补基准点"):
+            QMessageBox.warning(self, "提示", "未找到游戏窗口，请确保游戏已启动")
             return
 
         try:
@@ -1018,29 +1074,9 @@ class MainWindow(QMainWindow):
     
     def start_worker(self):
         """启动技能释放"""
-        # 如果之前没有识别到窗口，再次尝试自动识别
-        if not self.is_window_identified:
-            self.logger.log("未识别窗口，尝试自动识别...")
-            self.update_log_display()
-            self.auto_identify_on_startup()
-        
-        # 再次检查是否识别成功
-        if not self.is_window_identified:
+        if not self._ensure_game_window_available("开始运行"):
             QMessageBox.warning(self, "警告", "未找到游戏窗口，请确保游戏已启动！")
             return
-        
-        # 检查窗口是否仍然有效
-        if self.window_selector and self.game_window_hwnd:
-            if not self.window_selector.is_window_valid(self.game_window_hwnd):
-                self.logger.log("窗口已关闭，尝试重新识别...")
-                self.update_log_display()
-                self.is_window_identified = False
-                self.game_window_hwnd = None
-                self.auto_identify_on_startup()
-                
-                if not self.is_window_identified:
-                    QMessageBox.warning(self, "警告", "游戏窗口已关闭，请重新启动游戏！")
-                    return
         
         # 收集启用的buff
         enabled_buffs = [buff for buff in self.buffs if buff.enabled and buff.key]
@@ -1149,7 +1185,21 @@ class MainWindow(QMainWindow):
                 self.game_window_hwnd,
                 movement_mode=self.movement_mode,
                 sit_chair_enabled=getattr(self, 'sit_chair_enabled', False),
-                chair_key=getattr(self, 'selected_chair_key', '=')
+                chair_key=getattr(self, 'selected_chair_key', '='),
+                jump_key=getattr(self, 'selected_jump_key', 'Alt'),
+                smart_walk_anchor_pos=getattr(self, 'smart_walk_anchor_pos', None),
+                smart_walk_minimap_region=getattr(
+                    self, 'smart_walk_minimap_region', None
+                ),
+                smart_walk_boundary_tolerance=getattr(
+                    self, 'smart_walk_boundary_tolerance', 6.0
+                ),
+                smart_walk_min_minutes=getattr(
+                    self, 'smart_walk_min_minutes', 15
+                ),
+                smart_walk_max_minutes=getattr(
+                    self, 'smart_walk_max_minutes', 30
+                ),
             )
             self.worker.status_update.connect(self.on_status_update)
             self.worker.skill_pressed.connect(self.on_skill_pressed)
@@ -1191,9 +1241,9 @@ class MainWindow(QMainWindow):
     
     def start_test_market_nav(self):
         """开始市场移动测试"""
-        if not self.game_window_hwnd:
-             QMessageBox.warning(self, "错误", "请先确保游戏窗口已被识别")
-             return
+        if not self._ensure_game_window_available("测试离开市场"):
+            QMessageBox.warning(self, "错误", "未找到游戏窗口，请确保游戏已启动")
+            return
         
         # 先检测当前位置
         from detection.market_button import MarketButtonDetector
@@ -1225,8 +1275,8 @@ class MainWindow(QMainWindow):
 
     def start_test_dismiss_dialog(self):
         """测试检测并关闭游戏内弹窗"""
-        if not self.game_window_hwnd:
-            QMessageBox.warning(self, "错误", "请先确保游戏窗口已被识别")
+        if not self._ensure_game_window_available("测试关闭弹窗"):
+            QMessageBox.warning(self, "错误", "未找到游戏窗口，请确保游戏已启动")
             return
         
         self.test_dialog_btn.setEnabled(False)
@@ -1294,8 +1344,6 @@ class MainWindow(QMainWindow):
         if hasattr(self, "_schedule_save"):
             self._schedule_save()
         if checked:
-            if not self.is_window_identified:
-                self.auto_identify_on_startup()
             self._sync_party_invite_worker(log_missing_requirements=True)
             if self.party_invite_worker is not None:
                 self.logger.log("自动同意组队已开启")
@@ -1308,19 +1356,10 @@ class MainWindow(QMainWindow):
         if not self.auto_accept_party_invite:
             self._stop_party_invite_worker()
             return
-        if (
-            not self.is_window_identified
-            or not self.game_window_hwnd
-            or not self.window_selector
-        ):
+        if not self._ensure_game_window_available("自动同意组队"):
             self._stop_party_invite_worker()
             if log_missing_requirements:
-                self.logger.log("请先识别游戏窗口后再开启自动同意组队")
-            return
-        if not self.window_selector.is_window_valid(self.game_window_hwnd):
-            self._stop_party_invite_worker()
-            if log_missing_requirements:
-                self.logger.log("游戏窗口已失效，请重新识别后开启自动同意组队")
+                self.logger.log("未找到游戏窗口，自动同意组队暂未启动")
             return
         if (
             self.party_invite_worker is not None

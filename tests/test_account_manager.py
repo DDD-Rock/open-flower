@@ -76,6 +76,20 @@ class AccountManagerTests(unittest.TestCase):
                 ["dead", "live", "temple"],
             )
 
+    def test_emulator_mode_follows_account_authorization(self):
+        self.assertIn("emulator", AccountManager.ALL_CLIENT_MODES)
+        self.assertNotIn("emulator", AccountManager.DEFAULT_AUTHORIZED_MODES)
+
+        granted = AccountManager._authorized_modes_from(
+            {"authorizedModes": ["dead", "emulator"]}
+        )
+        denied = AccountManager._authorized_modes_from(
+            {"authorizedModes": ["dead", "live"]}
+        )
+
+        self.assertEqual(granted, ["dead", "emulator"])
+        self.assertNotIn("emulator", denied)
+
     def test_super_admin_without_cached_modes_receives_all_modes(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = AccountManager(
@@ -101,7 +115,10 @@ class AccountManagerTests(unittest.TestCase):
 
         request = urlopen.call_args.args[0]
         self.assertEqual(request.get_header("X-autobuff-client-platform"), "windows")
-        self.assertEqual(request.get_header("X-autobuff-client-version"), "2.1.5")
+        self.assertEqual(
+            request.get_header("X-autobuff-client-version"),
+            ACCOUNT_MODULE.APP_VERSION,
+        )
         self.assertIs(urlopen.call_args.kwargs["context"], manager.ssl_context)
 
     def test_certificate_errors_are_reported_separately(self):

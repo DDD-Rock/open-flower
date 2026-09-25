@@ -12,6 +12,8 @@ CENTER_ADJUST_INTERVAL_RANGE = (4.0, 7.0)
 HEAL_HOLD_RANGE = (8.0, 12.0)
 HEAL_GAP_RANGE = (0.25, 0.60)
 NEW_COLLISION_DISTANCE = 1.0
+NEW_COLLISION_CONFIRMATION_FRAMES = 2
+MINIMUM_CONFIRMED_TELEPORT_DISTANCE = 2.0
 PROTECTIVE_BOUNDARY_RATIO = 0.75
 NEAR_ANCHOR_EXCURSION_RATIO = 0.5
 WALKING_KEEPALIVE_INTERVAL_RANGE = (5.0, 8.0)
@@ -59,6 +61,11 @@ def next_walking_keepalive_interval() -> float:
     return random.uniform(*WALKING_KEEPALIVE_INTERVAL_RANGE)
 
 
+def next_walking_keepalive_deadline(now: float) -> float:
+    """走路或瞬移完成后，从当前时刻重新安排下一次防卡小走。"""
+    return float(now) + next_walking_keepalive_interval()
+
+
 def is_outside_anchor_band(current_x: float, base_x: float, tolerance: float) -> bool:
     """是否走出了用户配置的 base_x +/- tolerance 允许区域。"""
     return abs(current_x - base_x) > max(0.0, float(tolerance))
@@ -85,6 +92,22 @@ def outward_teleport_direction(current_x: float, base_x: float) -> str:
 
 def opposite_direction(direction: str) -> str:
     return "right" if direction == "left" else "left"
+
+
+def confirms_directional_teleport(
+    before_x: float,
+    after_x: float,
+    direction: str,
+    minimum_distance: float = MINIMUM_CONFIRMED_TELEPORT_DISTANCE,
+) -> bool:
+    """确认技能确实让黄点沿预期方向产生了足够位移。"""
+    required = max(0.0, float(minimum_distance))
+    displacement = float(after_x) - float(before_x)
+    if direction == "left":
+        return displacement <= -required
+    if direction == "right":
+        return displacement >= required
+    return False
 
 
 def requires_immediate_left_recovery(
@@ -120,12 +143,14 @@ class TeleportExcursionGuard:
     awaiting_stable_position: bool = False
     guarded_reverse_direction: Optional[str] = None
     guarded_distance: Optional[float] = None
+    outward_confirmation_frames: int = 0
 
     def record_teleport(self, direction: str) -> None:
         self.last_teleport_direction = direction
         self.awaiting_stable_position = True
         self.guarded_reverse_direction = None
         self.guarded_distance = None
+        self.outward_confirmation_frames = 0
 
     def should_correct(
         self,
@@ -159,28 +184,36 @@ class TeleportExcursionGuard:
             if direction == self.last_teleport_direction:
                 self.guarded_reverse_direction = None
                 self.guarded_distance = None
+                self.outward_confirmation_frames = 0
                 return True
 
             # 瞬移跨过基准点：保护这次反向结果，避免马上瞬移回去。
             self.guarded_reverse_direction = direction
             self.guarded_distance = distance
+            self.outward_confirmation_frames = 0
             return False
 
         if direction == self.guarded_reverse_direction:
             baseline = self.guarded_distance if self.guarded_distance is not None else distance
             if distance >= baseline + NEW_COLLISION_DISTANCE:
-                # 黄点在被保护的一侧继续向外移动，视为一次新的撞击。
-                self.guarded_reverse_direction = None
-                self.guarded_distance = None
-                return True
-            self.guarded_distance = min(baseline, distance)
+                self.outward_confirmation_frames += 1
+                if self.outward_confirmation_frames >= NEW_COLLISION_CONFIRMATION_FRAMES:
+                    # 连续帧都超过原始落点，才视为一次新的撞击。
+                    self.guarded_reverse_direction = None
+                    self.guarded_distance = None
+                    self.outward_confirmation_frames = 0
+                    return True
+            else:
+                self.outward_confirmation_frames = 0
             return False
 
         self.guarded_reverse_direction = None
         self.guarded_distance = None
+        self.outward_confirmation_frames = 0
         return True
 
     def _clear_guard(self) -> None:
         self.awaiting_stable_position = False
         self.guarded_reverse_direction = None
         self.guarded_distance = None
+        self.outward_confirmation_frames = 0

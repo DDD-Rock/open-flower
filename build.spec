@@ -1,11 +1,12 @@
 # -*- mode: python ; coding: utf-8 -*-
 import importlib.util
+import os
 
 from PyInstaller.utils.hooks import collect_all, collect_data_files
 
 block_cipher = None
 
-required_packages = ("websocket", "certifi")
+required_packages = ("websocket", "certifi", "av")
 missing_packages = [
     package for package in required_packages
     if importlib.util.find_spec(package) is None
@@ -20,6 +21,19 @@ if missing_packages:
 numpy_datas, numpy_binaries, numpy_hiddenimports = collect_all('numpy')
 cv2_datas, cv2_binaries, cv2_hiddenimports = collect_all('cv2')
 certifi_datas = collect_data_files('certifi')
+av_datas, av_binaries, av_hiddenimports = collect_all('av')
+
+scrcpy_dir = os.environ.get('SCRCPY_DIR', r'D:\scrcpy-win64-v4.1')
+scrcpy_datas = []
+scrcpy_binaries = []
+for filename in ('scrcpy-server',):
+    path = os.path.join(scrcpy_dir, filename)
+    if os.path.isfile(path):
+        scrcpy_datas.append((path, '.'))
+for filename in ('adb.exe', 'AdbWinApi.dll', 'AdbWinUsbApi.dll'):
+    path = os.path.join(scrcpy_dir, filename)
+    if os.path.isfile(path):
+        scrcpy_binaries.append((path, '.'))
 
 a = Analysis(
     ['main.py'],
@@ -31,10 +45,10 @@ a = Analysis(
         ('resources/rapidocr/THIRD_PARTY_NOTICES.md', 'resources/rapidocr'),
         ('resources/rapidocr/LICENSE-RapidOCR-json.txt', 'resources/rapidocr'),
         ('resources/rapidocr/LICENSE-PaddleOCR.txt', 'resources/rapidocr'),
-    ] + numpy_datas + cv2_datas + certifi_datas,
+    ] + numpy_datas + cv2_datas + certifi_datas + av_datas + scrcpy_datas,
     binaries=[
         ('resources/rapidocr/RapidOCR-json.exe', 'resources/rapidocr'),
-    ] + numpy_binaries + cv2_binaries,
+    ] + numpy_binaries + cv2_binaries + av_binaries + scrcpy_binaries,
     hiddenimports=[
         'pynput.keyboard._win32',
         'pynput.mouse._win32',
@@ -46,7 +60,7 @@ a = Analysis(
         'win32process',
         'websocket',
         'certifi',
-    ] + numpy_hiddenimports + cv2_hiddenimports,
+    ] + numpy_hiddenimports + cv2_hiddenimports + av_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=['hooks/runtime_hook.py'],
@@ -107,7 +121,6 @@ exe = EXE(
     icon='resources/app_icon.ico',
 )
 
-import os
 import re
 
 # 动态读取版本号

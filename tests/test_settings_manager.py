@@ -223,6 +223,34 @@ class SettingsManagerTests(unittest.TestCase):
 
             self.assertTrue(settings["auto_accept_party_invite"])
 
+    def test_smart_walk_settings_round_trip(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.ini"
+            manager = SettingsManager(str(path))
+
+            self.assertTrue(
+                manager.save_settings(
+                    buffs=[BuffConfig(True, "1", 200), BuffConfig(), BuffConfig()],
+                    mode="live",
+                    movement_mode="smart",
+                    smart_walk_anchor_pos=(84, 51),
+                    smart_walk_minimap_region=(7, 120, 180, 92),
+                    smart_walk_boundary_tolerance=8.5,
+                    smart_walk_min_minutes=15,
+                    smart_walk_max_minutes=30,
+                )
+            )
+            settings = manager.load_settings()
+
+            self.assertEqual(settings["movement_mode"], "smart")
+            self.assertEqual(settings["smart_walk_anchor_pos"], (84, 51))
+            self.assertEqual(
+                settings["smart_walk_minimap_region"], (7, 120, 180, 92)
+            )
+            self.assertEqual(settings["smart_walk_boundary_tolerance"], 8.5)
+            self.assertEqual(settings["smart_walk_min_minutes"], 15)
+            self.assertEqual(settings["smart_walk_max_minutes"], 30)
+
     def test_rope_party_settings_round_trip(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "settings.ini"

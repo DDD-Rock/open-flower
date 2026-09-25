@@ -251,6 +251,7 @@ class MapEditorDialog(QDialog):
         hwnd=None,
         window_selector=None,
         parent=None,
+        game_window_resolver=None,
     ):
         super().__init__(parent)
         self.setWindowTitle(f"地图标注 · {topology.map_name}")
@@ -258,6 +259,7 @@ class MapEditorDialog(QDialog):
         self.maps = list(maps or [])
         self.hwnd = hwnd
         self.window_selector = window_selector
+        self.game_window_resolver = game_window_resolver
         self.trace_worker = None
         self.trace_samples = []
         self.image = self._reference_image(self.topology)
@@ -366,8 +368,10 @@ class MapEditorDialog(QDialog):
         if self.trace_worker is not None:
             self._finish_trace()
             return
+        if self.game_window_resolver is not None:
+            self.hwnd = self.game_window_resolver()
         if not self.hwnd:
-            QMessageBox.information(self, "提示", "请先识别游戏窗口")
+            QMessageBox.information(self, "提示", "未找到游戏窗口，请确保游戏已启动")
             return
         self.trace_samples = []
         worker = MapTraceWorker(self.hwnd, self.window_selector, self)
@@ -479,6 +483,7 @@ class MapLibraryDialog(QDialog):
         window_selector=None,
         account_manager=None,
         parent=None,
+        game_window_resolver=None,
     ):
         super().__init__(parent)
         self.setWindowTitle("地图管理")
@@ -488,6 +493,7 @@ class MapLibraryDialog(QDialog):
         self.current_image = current_image.copy() if current_image is not None else None
         self.hwnd = hwnd
         self.window_selector = window_selector
+        self.game_window_resolver = game_window_resolver
         self.account_manager = account_manager
         self.is_super_admin = bool(
             self.account_manager
@@ -592,9 +598,10 @@ class MapLibraryDialog(QDialog):
         editor = MapEditorDialog(
             topology,
             self.maps + [topology],
-            self.hwnd,
-            self.window_selector,
-            self,
+            hwnd=self.hwnd,
+            window_selector=self.window_selector,
+            game_window_resolver=self.game_window_resolver,
+            parent=self,
         )
         if editor.exec() == QDialog.DialogCode.Accepted:
             self.maps.append(editor.topology)
@@ -610,9 +617,10 @@ class MapLibraryDialog(QDialog):
         editor = MapEditorDialog(
             self.maps[index],
             self.maps,
-            self.hwnd,
-            self.window_selector,
-            self,
+            hwnd=self.hwnd,
+            window_selector=self.window_selector,
+            game_window_resolver=self.game_window_resolver,
+            parent=self,
         )
         if editor.exec() == QDialog.DialogCode.Accepted:
             self.maps[index] = editor.topology

@@ -13,6 +13,7 @@ is_outside_anchor_band = NAVIGATION_MODULE.is_outside_anchor_band
 next_center_adjust_interval = NAVIGATION_MODULE.next_center_adjust_interval
 teleport_direction_to_base = NAVIGATION_MODULE.teleport_direction_to_base
 TeleportExcursionGuard = NAVIGATION_MODULE.TeleportExcursionGuard
+confirms_directional_teleport = NAVIGATION_MODULE.confirms_directional_teleport
 updated_center_adjust_deadline = NAVIGATION_MODULE.updated_center_adjust_deadline
 protective_anchor_tolerance = NAVIGATION_MODULE.protective_anchor_tolerance
 requires_immediate_left_recovery = NAVIGATION_MODULE.requires_immediate_left_recovery
@@ -23,6 +24,7 @@ opposite_walking_direction = NAVIGATION_MODULE.opposite_walking_direction
 walking_direction_to_base = NAVIGATION_MODULE.walking_direction_to_base
 is_outside_walking_boundary = NAVIGATION_MODULE.is_outside_walking_boundary
 next_walking_keepalive_interval = NAVIGATION_MODULE.next_walking_keepalive_interval
+next_walking_keepalive_deadline = NAVIGATION_MODULE.next_walking_keepalive_deadline
 
 
 class FollowHealNavigationTests(unittest.TestCase):
@@ -54,6 +56,12 @@ class FollowHealNavigationTests(unittest.TestCase):
             interval = next_walking_keepalive_interval()
             self.assertGreaterEqual(interval, 5)
             self.assertLessEqual(interval, 8)
+
+    def test_movement_restarts_keepalive_deadline(self):
+        for _ in range(20):
+            deadline = next_walking_keepalive_deadline(100)
+            self.assertGreaterEqual(deadline, 105)
+            self.assertLessEqual(deadline, 108)
 
     def test_anchor_band_uses_configured_tolerance(self):
         self.assertFalse(is_outside_anchor_band(109.5, 100, 9.5))
@@ -115,6 +123,13 @@ class FollowHealNavigationTests(unittest.TestCase):
         self.assertEqual(opposite_direction("left"), "right")
         self.assertEqual(opposite_direction("right"), "left")
 
+    def test_near_anchor_return_requires_confirmed_first_teleport(self):
+        self.assertTrue(confirms_directional_teleport(100, 80, "left"))
+        self.assertTrue(confirms_directional_teleport(100, 120, "right"))
+        self.assertFalse(confirms_directional_teleport(100, 99, "left"))
+        self.assertFalse(confirms_directional_teleport(100, 101, "right"))
+        self.assertFalse(confirms_directional_teleport(100, 120, "left"))
+
     def test_new_excursion_is_corrected_immediately(self):
         guard = TeleportExcursionGuard()
 
@@ -127,12 +142,22 @@ class FollowHealNavigationTests(unittest.TestCase):
         self.assertFalse(guard.should_correct(108, 100, 6))
         self.assertFalse(guard.should_correct(108.5, 100, 6))
 
-    def test_new_collision_breaks_reverse_guard_immediately(self):
+    def test_new_collision_breaks_reverse_guard_after_confirmation(self):
         guard = TeleportExcursionGuard()
         guard.record_teleport("right")
         self.assertFalse(guard.should_correct(108, 100, 6))
 
-        self.assertTrue(guard.should_correct(109.1, 100, 6))
+        self.assertFalse(guard.should_correct(109.1, 100, 6))
+        self.assertTrue(guard.should_correct(109.2, 100, 6))
+
+    def test_inward_drift_does_not_lower_reverse_guard_baseline(self):
+        guard = TeleportExcursionGuard()
+        guard.record_teleport("right")
+        self.assertFalse(guard.should_correct(110, 100, 6))
+
+        self.assertFalse(guard.should_correct(107, 100, 6))
+        self.assertFalse(guard.should_correct(108.1, 100, 6))
+        self.assertFalse(guard.should_correct(108.2, 100, 6))
 
     def test_same_direction_can_retry_after_marker_settles(self):
         guard = TeleportExcursionGuard()

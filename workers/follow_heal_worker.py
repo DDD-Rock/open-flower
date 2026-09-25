@@ -16,12 +16,12 @@ from utils.follow_heal_navigation import (
     HEAL_GAP_RANGE as FOLLOW_HEAL_GAP_RANGE,
     HEAL_HOLD_RANGE as FOLLOW_HEAL_HOLD_RANGE,
     TeleportExcursionGuard,
+    confirms_directional_teleport,
     is_near_anchor,
     is_outside_walking_boundary,
     next_center_adjust_interval,
-    next_walking_keepalive_interval,
+    next_walking_keepalive_deadline,
     opposite_walking_direction,
-    opposite_direction,
     outward_teleport_direction,
     protective_anchor_tolerance,
     requires_immediate_left_recovery,
@@ -147,7 +147,7 @@ class FollowHealWorker(QThread):
                 self.log_update.emit("未保存小地图区域，将在补血后再识别，避免开局空等")
 
             next_adjust_at = time.time() + next_center_adjust_interval()
-            next_walking_keepalive_at = time.time() + next_walking_keepalive_interval()
+            next_walking_keepalive_at = next_walking_keepalive_deadline(time.time())
             excursion_guard = TeleportExcursionGuard()
             self.buff_next_cast.clear()
 
@@ -235,12 +235,18 @@ class FollowHealWorker(QThread):
                         ):
                             self._release_held_heal_key()
                             self._teleport_back_for_walking_strategy(player_x)
+                            # 瞬移已经完成了本轮回位/防卡动作。重新计时，避免
+                            # 旧的左右走截止时间让新一轮补血刚开始就再次断开。
+                            next_walking_keepalive_at = next_walking_keepalive_deadline(
+                                time.time()
+                            )
+                            self.log_update.emit("混合模式瞬移结束，优先恢复补血")
                             return next_adjust_at, next_walking_keepalive_at
                         if now >= next_walking_keepalive_at:
                             self._release_held_heal_key()
                             self._walk_for_skill_keepalive(player_x)
-                            next_walking_keepalive_at = (
-                                time.time() + next_walking_keepalive_interval()
+                            next_walking_keepalive_at = next_walking_keepalive_deadline(
+                                time.time()
                             )
                             return next_adjust_at, next_walking_keepalive_at
                         self._random_sleep(*self.POSITION_POLL_RANGE)
@@ -331,9 +337,19 @@ class FollowHealWorker(QThread):
         )
 
     def _wait_for_walking_strategy_landing(self) -> Optional[float]:
+        return self._wait_for_stable_player_x(
+            minimum_wait=0.15,
+            maximum_wait=0.45,
+        )
+
+    def _wait_for_stable_player_x(
+        self,
+        minimum_wait: float,
+        maximum_wait: float,
+    ) -> Optional[float]:
         started_at = time.time()
-        minimum_end = started_at + 0.15
-        deadline = started_at + 0.45
+        minimum_end = started_at + minimum_wait
+        deadline = started_at + maximum_wait
         previous_x = None
         latest_x = None
         stable_frames = 0
@@ -420,7 +436,6 @@ class FollowHealWorker(QThread):
 
     def _perform_near_anchor_excursion(self, player_x: float) -> Optional[str]:
         outward = outward_teleport_direction(player_x, self.base_x)
-        return_direction = opposite_direction(outward)
         self.log_update.emit(
             f"近点拟人往返：先向{'左' if outward == 'left' else '右'}侧瞬移，"
             "短暂间隔后回位"
@@ -432,9 +447,29 @@ class FollowHealWorker(QThread):
             settle_range=(0.12, 0.24),
         ):
             return None
+
+        landing_x = self._wait_for_stable_player_x(
+            minimum_wait=0.08,
+            maximum_wait=0.30,
+        )
+        if landing_x is None:
+            self.log_update.emit("⚠️ 往返瞬移未识别到第一跳落点，取消盲目反向瞬移")
+            return None
+        if not confirms_directional_teleport(player_x, landing_x, outward):
+            self.log_update.emit(
+                f"⚠️ 往返瞬移第一跳未确认生效（{player_x:.1f} → {landing_x:.1f}），"
+                "取消第二跳"
+            )
+            return None
+
+        return_direction = teleport_direction_to_base(landing_x, self.base_x)
+        if return_direction is None:
+            self.log_update.emit("往返瞬移第一跳仍在基准点，无需再次瞬移")
+            return outward
+
         if not self._teleport_toward_base(
             return_direction,
-            player_x,
+            landing_x,
             urgent=False,
             settle_range=(0.15, 0.28),
         ):

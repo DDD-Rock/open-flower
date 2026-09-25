@@ -3,6 +3,7 @@
 import ctypes
 import os
 import sys
+import time
 import webbrowser
 from typing import List, Optional
 
@@ -46,14 +47,18 @@ from models.map_library import MapLibraryStore
 from models.map_topology import NormalizedMapPoint
 from models.monitor_state import MonitorSafeZone, SafeZoneStabilizer
 from ui.monitor_panel import MonitorPanel
+from ui.emulator_panel import EmulatorPanel
+from ui.emulator_stream_dialog import EmulatorStreamDialog
 from ui.main_window import MainWindow as LegacyMainWindow
 from ui.virtual_keyboard import VirtualKeyboardDialog
 from utils.screen_utils import get_screen_resolution
 from workers.monitor_worker import MonitorWorker
+from workers.mumu_monitor_worker import MumuMonitorWorker
 from workers.rope_party_worker import RopePartyWorker
 from workers.lounge_worker import LoungeWorker
 from utils.account_manager import AccountError
 from utils.rope_party import rebuild_phase
+from utils.mumu_settings import MumuSettingsStore
 
 
 def resource_path(relative_path: str) -> str:
@@ -80,6 +85,18 @@ class MainWindow(LegacyMainWindow):
         self.account_manager = account_manager
         self.remote_monitor_client = remote_monitor_client
         self.monitor_worker = None
+        self.emulator_worker = None
+        self._emulator_settings_dialogs = {}
+        self._emulator_devices_snapshot = []
+        self._emulator_ui_timer = None
+        self._emulator_analysis_sequences = {}
+        self._emulator_dialog_frame_sequences = {}
+        self._emulator_row_frame_sequences = {}
+        self._emulator_row_updated_at = {}
+        self._emulator_smart_walk_configs = {}
+        self._emulator_live_countdowns = {}
+        self._mumu_settings_store = MumuSettingsStore()
+        self._emulator_smart_walk_configs.update(self._mumu_settings_store.load())
         self.map_library_store = MapLibraryStore()
         self.map_topologies = self.map_library_store.load()
         self.monitor_matched_topology = None
@@ -87,6 +104,9 @@ class MainWindow(LegacyMainWindow):
         self.monitor_zone_stabilizer = SafeZoneStabilizer()
         self._monitor_verification_present = False
         super().__init__()
+        self._emulator_ui_timer = QTimer(self)
+        self._emulator_ui_timer.setInterval(40)
+        self._emulator_ui_timer.timeout.connect(self._poll_emulator_latest)
         if authorized_modes is None and self.account_manager:
             authorized_modes = self.account_manager.session_credentials().get(
                 "authorizedModes"
@@ -99,7 +119,13 @@ class MainWindow(LegacyMainWindow):
         self._loading_settings = True
         self.buffs = [BuffConfig() for _ in range(DEFAULT_BUFF_SLOT_COUNT)]
         self.mode = "dead"
+        self._last_non_emulator_mode = "dead"
         self.pre_skill_move_mode = "right_only"
+        self.smart_walk_anchor_pos = None
+        self.smart_walk_minimap_region = None
+        self.smart_walk_boundary_tolerance = 6.0
+        self.smart_walk_min_minutes = 15
+        self.smart_walk_max_minutes = 30
         self.follow_heal_key = ""
         self.follow_heal_teleport_key = ""
         self.follow_heal_anchor_pos = None
@@ -195,6 +221,19 @@ class MainWindow(LegacyMainWindow):
         self._create_debug_section(tools_page_layout)
         tools_page_layout.addStretch(1)
         self.content_stack.addWidget(tools_page)
+
+        emulator_page = QWidget()
+        emulator_page_layout = QVBoxLayout(emulator_page)
+        emulator_page_layout.setContentsMargins(22, 18, 22, 18)
+        emulator_page_layout.setSpacing(12)
+        self.emulator_panel = EmulatorPanel()
+        self.emulator_panel.refresh_requested.connect(self._refresh_emulator_devices)
+        self.emulator_panel.start_requested.connect(self._start_mumu_instance)
+        self.emulator_panel.settings_requested.connect(
+            self._open_emulator_stream_settings
+        )
+        emulator_page_layout.addWidget(self.emulator_panel, 1)
+        self.content_stack.addWidget(emulator_page)
 
         content_layout.addWidget(self.content_stack, 1)
         self.create_control_section(content_layout)
@@ -417,12 +456,14 @@ class MainWindow(LegacyMainWindow):
         QTimer.singleShot(0, lambda: self._show_content_page(0))
 
     def _show_content_page(self, index: int):
+        if self.mode == "emulator" and index == 0:
+            index = 3
         if hasattr(self, "content_stack"):
             self.content_stack.setCurrentIndex(index)
         selected = "background:#AEB0B3;color:white;border-radius:7px;"
         normal = "background:transparent;color:#4F596B;"
         if hasattr(self, "config_page_btn"):
-            self.config_page_btn.setStyleSheet(selected if index == 0 else normal)
+            self.config_page_btn.setStyleSheet(selected if index in {0, 3} else normal)
             self.log_page_btn.setStyleSheet(selected if index == 1 else normal)
             self.tools_page_btn.setStyleSheet(selected if index == 2 else normal)
 
@@ -515,12 +556,14 @@ class MainWindow(LegacyMainWindow):
         self.temple_tab = QPushButton("神殿模式")
         self.follow_heal_tab = QPushButton("跟补模式")
         self.monitor_tab = QPushButton("监控模式")
+        self.emulator_tab = QPushButton("模拟器模式")
         self.mode_icon_specs = (
             (self.dead_flower_tab, QStyle.StandardPixmap.SP_ArrowBack),
             (self.live_flower_tab, QStyle.StandardPixmap.SP_BrowserReload),
             (self.temple_tab, QStyle.StandardPixmap.SP_DirHomeIcon),
             (self.follow_heal_tab, QStyle.StandardPixmap.SP_DialogYesButton),
             (self.monitor_tab, QStyle.StandardPixmap.SP_ComputerIcon),
+            (self.emulator_tab, QStyle.StandardPixmap.SP_DesktopIcon),
         )
         for button, standard_icon in self.mode_icon_specs:
             button.setIcon(self._tinted_standard_icon(standard_icon, "#748096"))
@@ -531,6 +574,7 @@ class MainWindow(LegacyMainWindow):
             self.temple_tab,
             self.follow_heal_tab,
             self.monitor_tab,
+            self.emulator_tab,
         ):
             button.setObjectName("modeCard")
             button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -546,6 +590,9 @@ class MainWindow(LegacyMainWindow):
         )
         self.monitor_tab.clicked.connect(
             lambda: self._switch_mode_tab("monitor")
+        )
+        self.emulator_tab.clicked.connect(
+            lambda: self._switch_mode_tab("emulator")
         )
         self.temple_tab.clicked.connect(
             lambda: self._switch_mode_tab("temple")
@@ -568,10 +615,15 @@ class MainWindow(LegacyMainWindow):
         if mode not in self.authorized_modes:
             return
         self.mode = mode
+        if mode != "emulator":
+            self._last_non_emulator_mode = mode
         self.return_to_market = self.mode == "dead"
         self._update_mode_tab_style()
         self._update_movement_mode_visibility()
-        if self.remote_monitor_client:
+        if mode == "emulator":
+            self._show_content_page(3)
+            self._start_emulator_worker()
+        if self.remote_monitor_client and self.mode != "emulator":
             self.remote_monitor_client.publish_client_state(self.mode, False)
         self.logger.log(f"切换到: {self._mode_title(self.mode)}")
         self.update_log_display()
@@ -584,10 +636,13 @@ class MainWindow(LegacyMainWindow):
             "temple": self.temple_tab,
             "follow_heal": self.follow_heal_tab,
             "monitor": self.monitor_tab,
+            "emulator": self.emulator_tab,
         }
         self.authorized_modes = {
             str(mode) for mode in (modes or []) if str(mode) in buttons
         }
+        if "emulator" not in self.authorized_modes:
+            self._close_emulator_session()
         for mode, button in buttons.items():
             button.setVisible(mode in self.authorized_modes)
         if self.mode not in self.authorized_modes:
@@ -603,6 +658,9 @@ class MainWindow(LegacyMainWindow):
                 self._schedule_save()
         self._refresh_primary_action()
 
+        if self.mode == "emulator":
+            QTimer.singleShot(0, self._start_emulator_worker)
+
     def _mode_title(self, mode: str) -> str:
         return {
             "dead": "死花模式",
@@ -610,6 +668,7 @@ class MainWindow(LegacyMainWindow):
             "follow_heal": "跟补模式",
             "monitor": "监控模式",
             "temple": "神殿模式",
+            "emulator": "模拟器模式",
         }.get(mode, "活花模式")
 
     def _mode_description(self, mode: str) -> str:
@@ -619,6 +678,7 @@ class MainWindow(LegacyMainWindow):
             "follow_heal": "自动补血、位置修正并回到基准点",
             "monitor": "只读取游戏画面并显示实时地图",
             "temple": "为时间神殿地图配置专用 BUFF 行为",
+            "emulator": "连接 ADB 并识别多个 MuMu 模拟器画面",
         }.get(mode, "在当前地图循环释放 BUFF")
 
     def _update_mode_tab_style(self):
@@ -642,6 +702,7 @@ class MainWindow(LegacyMainWindow):
         )
         self.monitor_tab.setStyleSheet(selected if self.mode == "monitor" else normal)
         self.temple_tab.setStyleSheet(selected if self.mode == "temple" else normal)
+        self.emulator_tab.setStyleSheet(selected if self.mode == "emulator" else normal)
         if hasattr(self, "mode_icon_specs"):
             selected_button = {
                 "dead": self.dead_flower_tab,
@@ -649,6 +710,7 @@ class MainWindow(LegacyMainWindow):
                 "temple": self.temple_tab,
                 "follow_heal": self.follow_heal_tab,
                 "monitor": self.monitor_tab,
+                "emulator": self.emulator_tab,
             }.get(self.mode)
             for button, standard_icon in self.mode_icon_specs:
                 button.setIcon(
@@ -661,11 +723,18 @@ class MainWindow(LegacyMainWindow):
             self.mode_heading.setText(self._mode_title(self.mode))
             self.mode_subtitle.setText(self._mode_description(self.mode))
         if hasattr(self, "tools_page_btn"):
-            self.tools_page_btn.setVisible(self.mode != "monitor")
-            if self.mode == "monitor" and self.content_stack.currentIndex() == 2:
+            self.config_page_btn.setText("设备" if self.mode == "emulator" else "配置")
+            self.tools_page_btn.setVisible(self.mode not in {"monitor", "emulator"})
+            if self.mode in {"monitor", "emulator"} and self.content_stack.currentIndex() == 2:
+                self._show_content_page(0)
+            if self.mode == "emulator":
+                self._show_content_page(3)
+            elif self.content_stack.currentIndex() == 3:
                 self._show_content_page(0)
         if hasattr(self, "footer_status_mode"):
             self.footer_status_mode.setText(self._mode_title(self.mode))
+        if hasattr(self, "control_footer"):
+            self.control_footer.setVisible(self.mode != "emulator")
 
     def create_settings_section(self, parent_layout):
         card = QFrame()
@@ -901,7 +970,10 @@ class MainWindow(LegacyMainWindow):
 
     def _create_live_options(self):
         panel = QWidget()
-        row = QHBoxLayout(panel)
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(10)
 
@@ -910,6 +982,7 @@ class MainWindow(LegacyMainWindow):
             ("原地不动", "none"),
             ("右走（回左）", "right"),
             ("左走（回右）", "left"),
+            ("智能走", "smart"),
         ):
             self.movement_combo.addItem(text, value)
         self.movement_combo.currentIndexChanged.connect(
@@ -938,6 +1011,54 @@ class MainWindow(LegacyMainWindow):
 
         chair_row = self._create_chair_controls()
         row.addWidget(self._option_column("空闲时坐椅子", chair_row), 1)
+        layout.addLayout(row)
+
+        self.smart_walk_options_widget = QWidget()
+        smart_layout = QVBoxLayout(self.smart_walk_options_widget)
+        smart_layout.setContentsMargins(0, 0, 0, 0)
+        smart_layout.setSpacing(5)
+        area_row = QHBoxLayout()
+        area_row.setSpacing(6)
+        area_row.addWidget(QLabel("智能走区域"))
+        self.smart_walk_anchor_label = QLabel("未标记")
+        self.smart_walk_anchor_label.setStyleSheet("color:#747D8D;font-size:9px;")
+        area_row.addWidget(self.smart_walk_anchor_label)
+        mark_button = QPushButton("识别并标记")
+        mark_button.setToolTip("识别小地图并选择智能走中心点和允许宽度")
+        mark_button.clicked.connect(self.on_mark_smart_walk)
+        area_row.addWidget(mark_button)
+        area_row.addStretch(1)
+        area_row.addWidget(QLabel("跳跃键"))
+        self.smart_walk_jump_key_btn = QPushButton("Alt")
+        self.smart_walk_jump_key_btn.setFixedWidth(54)
+        self.smart_walk_jump_key_btn.clicked.connect(self.on_select_jump_key)
+        area_row.addWidget(self.smart_walk_jump_key_btn)
+        smart_layout.addLayout(area_row)
+
+        interval_row = QHBoxLayout()
+        interval_row.setSpacing(6)
+        interval_row.addWidget(QLabel("触发间隔"))
+        self.smart_walk_min_input = QSpinBox()
+        self.smart_walk_min_input.setRange(1, 1440)
+        self.smart_walk_min_input.setSuffix(" 分钟")
+        self.smart_walk_min_input.setFixedWidth(92)
+        self.smart_walk_min_input.valueChanged.connect(
+            self._on_smart_walk_interval_changed
+        )
+        interval_row.addWidget(self.smart_walk_min_input)
+        interval_row.addWidget(QLabel("至"))
+        self.smart_walk_max_input = QSpinBox()
+        self.smart_walk_max_input.setRange(1, 1440)
+        self.smart_walk_max_input.setSuffix(" 分钟")
+        self.smart_walk_max_input.setFixedWidth(92)
+        self.smart_walk_max_input.valueChanged.connect(
+            self._on_smart_walk_interval_changed
+        )
+        interval_row.addWidget(self.smart_walk_max_input)
+        interval_row.addStretch(1)
+        smart_layout.addLayout(interval_row)
+        layout.addWidget(self.smart_walk_options_widget)
+        self.smart_walk_options_widget.setVisible(False)
         return panel
 
     def _create_dead_options(self):
@@ -1248,6 +1369,7 @@ class MainWindow(LegacyMainWindow):
 
     def create_control_section(self, parent_layout):
         footer = QFrame()
+        self.control_footer = footer
         footer.setObjectName("footer")
         footer.setStyleSheet(
             "QFrame#footer{background:rgba(255,255,255,245);"
@@ -1299,6 +1421,7 @@ class MainWindow(LegacyMainWindow):
             "mode",
             "dead" if settings.get("return_to_market", True) else "live",
         )
+        self._last_non_emulator_mode = self.mode
         self.return_to_market = self.mode == "dead"
         self.selected_jump_key = settings.get("jump_key", "Alt")
         self.follow_heal_key = settings.get("heal_skill_key", "")
@@ -1314,6 +1437,18 @@ class MainWindow(LegacyMainWindow):
         self.sit_chair_enabled = settings.get("sit_chair_enabled", False)
         self.selected_chair_key = settings.get("chair_key", "=")
         self.movement_mode = settings.get("movement_mode", "none")
+        self.smart_walk_anchor_pos = settings.get("smart_walk_anchor_pos")
+        self.smart_walk_minimap_region = settings.get("smart_walk_minimap_region")
+        self.smart_walk_boundary_tolerance = settings.get(
+            "smart_walk_boundary_tolerance", 6.0
+        )
+        self.smart_walk_min_minutes = max(
+            1, min(1440, int(settings.get("smart_walk_min_minutes", 15)))
+        )
+        self.smart_walk_max_minutes = max(
+            self.smart_walk_min_minutes,
+            min(1440, int(settings.get("smart_walk_max_minutes", 30))),
+        )
         self.pre_skill_move_mode = settings.get(
             "pre_skill_move_mode", "right_only"
         )
@@ -1355,6 +1490,14 @@ class MainWindow(LegacyMainWindow):
         self._rebuild_buff_rows()
 
         self.jump_key_btn.setText(self.selected_jump_key)
+        self.smart_walk_jump_key_btn.setText(self.selected_jump_key)
+        self._update_smart_walk_anchor_label()
+        self.smart_walk_min_input.blockSignals(True)
+        self.smart_walk_max_input.blockSignals(True)
+        self.smart_walk_min_input.setValue(self.smart_walk_min_minutes)
+        self.smart_walk_max_input.setValue(self.smart_walk_max_minutes)
+        self.smart_walk_min_input.blockSignals(False)
+        self.smart_walk_max_input.blockSignals(False)
         self.heal_key_btn.setText(self.follow_heal_key or "选键")
         self.teleport_key_btn.setText(self.follow_heal_teleport_key or "选键")
         strategy_index = self.follow_heal_return_combo.findData(
@@ -1401,8 +1544,14 @@ class MainWindow(LegacyMainWindow):
 
     def _apply_default_settings(self):
         self.mode = "dead"
+        self._last_non_emulator_mode = "dead"
         self.return_to_market = True
         self.movement_mode = "none"
+        self.smart_walk_anchor_pos = None
+        self.smart_walk_minimap_region = None
+        self.smart_walk_boundary_tolerance = 6.0
+        self.smart_walk_min_minutes = 15
+        self.smart_walk_max_minutes = 30
         self.pre_skill_move_mode = "right_only"
         self.selected_jump_key = "Alt"
         self.follow_heal_key = ""
@@ -1434,6 +1583,14 @@ class MainWindow(LegacyMainWindow):
         ]
         self._rebuild_buff_rows()
         self.jump_key_btn.setText("Alt")
+        self.smart_walk_jump_key_btn.setText("Alt")
+        self._update_smart_walk_anchor_label()
+        self.smart_walk_min_input.blockSignals(True)
+        self.smart_walk_max_input.blockSignals(True)
+        self.smart_walk_min_input.setValue(15)
+        self.smart_walk_max_input.setValue(30)
+        self.smart_walk_min_input.blockSignals(False)
+        self.smart_walk_max_input.blockSignals(False)
         self.heal_key_btn.setText("选键")
         self.teleport_key_btn.setText("选键")
         self.follow_heal_return_combo.setCurrentIndex(0)
@@ -1467,7 +1624,11 @@ class MainWindow(LegacyMainWindow):
             random_value = 20
         self.settings_manager.save_settings(
             buffs=self.buffs,
-            mode=self.mode,
+            mode=(
+                self._last_non_emulator_mode
+                if self.mode == "emulator"
+                else self.mode
+            ),
             return_to_market=self.return_to_market,
             jump_key=self.selected_jump_key,
             heal_skill_key=self.follow_heal_key,
@@ -1481,6 +1642,11 @@ class MainWindow(LegacyMainWindow):
             random_behavior_enabled=self.random_behavior_checkbox.isChecked(),
             random_behavior_value=random_value,
             movement_mode=self.movement_mode,
+            smart_walk_anchor_pos=self.smart_walk_anchor_pos,
+            smart_walk_minimap_region=self.smart_walk_minimap_region,
+            smart_walk_boundary_tolerance=self.smart_walk_boundary_tolerance,
+            smart_walk_min_minutes=self.smart_walk_min_input.value(),
+            smart_walk_max_minutes=self.smart_walk_max_input.value(),
             pre_skill_move_mode=self.pre_skill_move_mode,
             auto_accept_party_invite=self.auto_accept_party_invite,
             temple_function=self.temple_function,
@@ -1546,6 +1712,14 @@ class MainWindow(LegacyMainWindow):
 
     def _on_movement_combo_changed(self):
         self.movement_mode = self.movement_combo.currentData() or "none"
+        self.smart_walk_options_widget.setVisible(
+            self.movement_mode == "smart" and self.mode == "live"
+        )
+        self._schedule_save()
+
+    def _on_smart_walk_interval_changed(self):
+        self.smart_walk_min_minutes = self.smart_walk_min_input.value()
+        self.smart_walk_max_minutes = self.smart_walk_max_input.value()
         self._schedule_save()
 
     def _on_pre_skill_combo_changed(self):
@@ -1586,7 +1760,79 @@ class MainWindow(LegacyMainWindow):
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.selected_jump_key = dialog.get_selected_key()
             self.jump_key_btn.setText(self.selected_jump_key)
+            self.smart_walk_jump_key_btn.setText(self.selected_jump_key)
             self._schedule_save()
+
+    def on_mark_smart_walk(self):
+        """Recognize the minimap and mark the smart-walk center and width."""
+        if not self._ensure_game_window_available("设置智能走区域"):
+            QMessageBox.warning(self, "提示", "未找到游戏窗口，请确保游戏已启动")
+            return
+        try:
+            from detection.minimap_monitor import MinimapMonitor
+            from ui.portal_marker_dialog import PortalMarkerDialog
+
+            monitor = MinimapMonitor()
+            monitor.set_window_handle(self.game_window_hwnd)
+            region = monitor.auto_detect_dark_region()
+            if region is None:
+                QMessageBox.warning(
+                    self, "错误", "无法检测到小地图区域，请确保游戏窗口可见"
+                )
+                return
+            minimap = monitor.capture_minimap()
+            if minimap is None:
+                QMessageBox.warning(self, "错误", "截取小地图失败")
+                return
+            dialog = PortalMarkerDialog(
+                self,
+                minimap,
+                auto_portal_pos=None,
+                current_manual_pos=self.smart_walk_anchor_pos,
+                title="设置智能走区域",
+                hint_text=(
+                    "点击小地图选择中心点，并设置左右允许宽度。"
+                    "每次按起始位置朝中心方向短走，经过中心不会提前停止，"
+                    "但不会越过区域边界。"
+                ),
+                show_auto_portal=False,
+                confirm_button_text="使用此区域",
+                clear_button_text="清除区域",
+                boundary_tolerance=self.smart_walk_boundary_tolerance,
+                boundary_title="左右允许宽度（中心点 ±）",
+                boundary_object_name="smartWalkBoundaryTolerance",
+            )
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+            self.smart_walk_anchor_pos = dialog.get_marked_position()
+            self.smart_walk_boundary_tolerance = dialog.get_boundary_tolerance()
+            self.smart_walk_minimap_region = (
+                region if self.smart_walk_anchor_pos else None
+            )
+            self._update_smart_walk_anchor_label()
+            if self.smart_walk_anchor_pos:
+                self.logger.log(
+                    f"智能走区域已设置: 中心 {self.smart_walk_anchor_pos}，"
+                    f"左右宽度 ±{self.smart_walk_boundary_tolerance:.1f}"
+                )
+            else:
+                self.logger.log("已清除智能走区域")
+            self.update_log_display()
+            self._schedule_save()
+        except Exception as error:
+            self.logger.log(f"设置智能走区域失败: {error}")
+            self.update_log_display()
+
+    def _update_smart_walk_anchor_label(self):
+        if not hasattr(self, "smart_walk_anchor_label"):
+            return
+        if self.smart_walk_anchor_pos:
+            center_x, _ = self.smart_walk_anchor_pos
+            self.smart_walk_anchor_label.setText(
+                f"X={center_x} · ±{self.smart_walk_boundary_tolerance:g}"
+            )
+        else:
+            self.smart_walk_anchor_label.setText("未标记")
 
     def on_select_heal_key(self):
         previous = self.follow_heal_key
@@ -1653,8 +1899,12 @@ class MainWindow(LegacyMainWindow):
         else:
             self.movement_stack.setCurrentIndex(0)
         is_monitor = self.mode == "monitor"
-        self.settings_card.setVisible(not is_monitor)
+        is_emulator = self.mode == "emulator"
+        self.settings_card.setVisible(not is_monitor and not is_emulator)
         self.monitor_panel.setVisible(is_monitor)
+        self.smart_walk_options_widget.setVisible(
+            self.mode == "live" and self.movement_mode == "smart"
+        )
         self.portal_marker_btn.setVisible(
             self.mode == "dead"
             or (self.mode == "temple" and self.temple_function == "free_entry")
@@ -1695,6 +1945,9 @@ class MainWindow(LegacyMainWindow):
         self.update_log_display()
 
     def start_worker(self):
+        if self.mode == "emulator":
+            self._start_emulator_worker()
+            return
         if self.mode not in self.authorized_modes:
             self.logger.log("当前账号未授权使用该模式")
             self.update_log_display()
@@ -1741,6 +1994,13 @@ class MainWindow(LegacyMainWindow):
                 errors.append("请先标记跟补基准点")
             if not 1.0 <= self.follow_heal_boundary_tolerance <= 50.0:
                 errors.append("跟补左右界限值必须在 1 到 50 之间")
+        if self.mode == "live" and self.movement_mode == "smart":
+            if not self.smart_walk_anchor_pos or not self.smart_walk_minimap_region:
+                errors.append("请先识别并标记智能走区域")
+            if not 1.0 <= self.smart_walk_boundary_tolerance <= 50.0:
+                errors.append("智能走左右宽度必须在 1 到 50 之间")
+            if self.smart_walk_max_input.value() < self.smart_walk_min_input.value():
+                errors.append("智能走最大触发间隔不能小于最小间隔")
         if errors:
             QMessageBox.warning(self, "配置有误", "\n".join(errors))
             return
@@ -1750,6 +2010,249 @@ class MainWindow(LegacyMainWindow):
         if self.is_worker_running and self.remote_monitor_client:
             self.remote_monitor_client.publish_client_state(self.mode, True)
         self._refresh_primary_action()
+
+    def _start_emulator_worker(self):
+        if self.mode != "emulator" or self.emulator_worker is not None:
+            return
+        worker = MumuMonitorWorker(parent=self)
+        self.emulator_worker = worker
+        self._emulator_analysis_sequences.clear()
+        self._emulator_dialog_frame_sequences.clear()
+        self._emulator_row_frame_sequences.clear()
+        self._emulator_row_updated_at.clear()
+        worker.devices_update.connect(self._on_emulator_devices)
+        worker.status_update.connect(self._on_emulator_status)
+        worker.error_signal.connect(self._on_emulator_error)
+        worker.smart_walk_countdown.connect(
+            self._on_emulator_smart_walk_countdown
+        )
+        worker.smart_walk_status.connect(self._on_emulator_smart_walk_status)
+        worker.stopped.connect(lambda current=worker: self._on_emulator_stopped(current))
+        self.emulator_panel.set_running(True)
+        self.logger.log("模拟器模式已启动，正在读取 MuMu 实例和 ADB 设备")
+        self.update_log_display()
+        worker.start()
+        self._emulator_ui_timer.start()
+
+    def _refresh_emulator_devices(self):
+        if self.emulator_worker is not None:
+            self.emulator_worker.request_refresh()
+            return
+        self._start_emulator_worker()
+
+    def _start_mumu_instance(self, vm_index):
+        if self.emulator_worker is None:
+            self.logger.log("模拟器模式尚未启动，无法启动 MuMu 实例")
+            self.update_log_display()
+            return
+        self.emulator_worker.request_launch(vm_index)
+        self.logger.log(f"正在启动 MuMu-{vm_index}")
+        self.update_log_display()
+        self.emulator_worker.request_refresh()
+
+    def _on_emulator_devices(self, devices):
+        if self.emulator_worker is None:
+            return
+        self._emulator_devices_snapshot = list(devices or [])
+        self.emulator_panel.update_devices(devices)
+        for device in self._emulator_devices_snapshot:
+            serial = device.get("serial") or ""
+            saved = self._emulator_smart_walk_configs.get(serial)
+            if serial and saved:
+                self.emulator_worker.update_smart_walk_config(serial, saved)
+
+    def _poll_emulator_latest(self):
+        """Render only the newest frame/result, dropping queued stale updates."""
+        worker = self.emulator_worker
+        if worker is None:
+            return
+        serials = set(worker.get_latest_stream_serials())
+        serials.update(
+            str(device.get("serial") or "")
+            for device in self._emulator_devices_snapshot
+            if device.get("serial")
+        )
+        now = time.monotonic()
+        for serial in serials:
+            snapshot = worker.get_latest_stream_snapshot(serial)
+            analysis = snapshot["analysis"]
+            analysis_sequence = snapshot["analysis_sequence"]
+            if (
+                analysis is not None
+                and analysis_sequence
+                != self._emulator_analysis_sequences.get(serial)
+            ):
+                self._emulator_analysis_sequences[serial] = analysis_sequence
+                self.emulator_panel.update_analysis(serial, analysis)
+                dialog = self._emulator_settings_dialogs.get(serial)
+                if dialog is not None:
+                    dialog.update_analysis(analysis)
+            # Draw the newest decoded frame last. The analysis result is
+            # intentionally older than this frame and must never overwrite it.
+            frame = snapshot["frame"]
+            frame_sequence = snapshot["frame_sequence"]
+            dialog = self._emulator_settings_dialogs.get(serial)
+            if dialog is not None:
+                dialog.update_stream_metrics(
+                    snapshot["fps"],
+                    snapshot["frame_age_ms"],
+                    snapshot["analysis_age_ms"],
+                    snapshot["analysis_processing_ms"],
+                    snapshot["dropped_analysis"],
+                )
+            if (
+                dialog is not None
+                and frame is not None
+                and frame_sequence
+                != self._emulator_dialog_frame_sequences.get(serial)
+            ):
+                self._emulator_dialog_frame_sequences[serial] = frame_sequence
+                dialog.update_raw_frame(frame)
+
+            row_due = now - self._emulator_row_updated_at.get(serial, 0) >= 0.25
+            if (
+                row_due
+                and frame is not None
+                and frame_sequence != self._emulator_row_frame_sequences.get(serial)
+            ):
+                self._emulator_row_updated_at[serial] = now
+                self._emulator_row_frame_sequences[serial] = frame_sequence
+                self.emulator_panel.update_frame(
+                    serial, frame, snapshot["fps"]
+                )
+
+    def _on_emulator_analysis(self, serial, analysis):
+        self.emulator_panel.update_analysis(serial, analysis)
+        dialog = self._emulator_settings_dialogs.get(serial)
+        if dialog is not None:
+            dialog.update_analysis(analysis)
+
+    def _on_emulator_frame(self, serial, frame, fps):
+        self.emulator_panel.update_frame(serial, frame, fps)
+        dialog = self._emulator_settings_dialogs.get(serial)
+        if dialog is not None:
+            dialog.update_raw_frame(frame)
+
+    def _on_emulator_minimap_frame(self, serial, minimap, rect):
+        dialog = self._emulator_settings_dialogs.get(serial)
+        if dialog is not None:
+            dialog.update_minimap_frame(minimap, rect)
+
+    def _open_emulator_stream_settings(self, device):
+        serial = device.get("serial") or ""
+        if not serial:
+            return
+        dialog = self._emulator_settings_dialogs.get(serial)
+        if dialog is None:
+            dialog = EmulatorStreamDialog(device, self)
+            self._emulator_settings_dialogs[serial] = dialog
+            dialog.redetect_minimap_requested.connect(
+                self._redetect_emulator_minimap
+            )
+            dialog.smart_walk_config_changed.connect(
+                self._update_emulator_smart_walk_config
+            )
+            dialog.destroyed.connect(
+                lambda _=None, current=serial, owner=dialog: (
+                    self._forget_emulator_settings_dialog(current, owner)
+                )
+            )
+            if self.emulator_worker is not None:
+                analysis = self.emulator_worker.get_latest_analysis(serial)
+                if analysis is not None:
+                    dialog.update_analysis(analysis)
+            saved_config = self._emulator_smart_walk_configs.get(serial)
+            if saved_config:
+                dialog.set_smart_walk_config(saved_config)
+            if saved_config and saved_config.get("enabled"):
+                dialog.update_buff_countdown(
+                    self._emulator_live_countdowns.get(serial) or {}
+                )
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _forget_emulator_settings_dialog(self, serial, dialog):
+        """Drop a closed settings window without forgetting the one just reopened."""
+        if self._emulator_settings_dialogs.get(serial) is dialog:
+            self._emulator_settings_dialogs.pop(serial, None)
+
+    def _redetect_emulator_minimap(self, serial):
+        worker = self.emulator_worker
+        if worker is None:
+            return
+        dialog = self._emulator_settings_dialogs.get(serial)
+        if dialog is not None:
+            dialog.begin_minimap_redetection()
+        worker.request_minimap_redetection(serial)
+        self.logger.log(f"{serial}：正在重新识别小地图范围")
+        self.update_log_display()
+
+    def _update_emulator_smart_walk_config(self, serial, config):
+        """Pass one dialog's smart-walk settings to its matching ADB stream."""
+        if not serial:
+            return
+        self._emulator_smart_walk_configs[serial] = dict(config or {})
+        self._mumu_settings_store.save(self._emulator_smart_walk_configs)
+        worker = self.emulator_worker
+        if worker is None:
+            return
+        worker.update_smart_walk_config(serial, config or {})
+
+    def _on_emulator_smart_walk_countdown(self, serial, countdowns):
+        normalized = {}
+        for key, value in dict(countdowns or {}).items():
+            try:
+                normalized[int(key)] = int(value)
+            except (TypeError, ValueError):
+                continue
+        if normalized:
+            merged = dict(self._emulator_live_countdowns.get(serial) or {})
+            merged.update(normalized)
+            self._emulator_live_countdowns[serial] = merged
+        dialog = self._emulator_settings_dialogs.get(serial)
+        if dialog is not None:
+            dialog.update_buff_countdown(normalized)
+
+    def _on_emulator_smart_walk_status(self, serial, message):
+        dialog = self._emulator_settings_dialogs.get(serial)
+        if dialog is not None:
+            dialog.update_smart_walk_status(message)
+        self.logger.log(f"{serial}：{message}")
+        self.update_log_display()
+
+    def _on_emulator_status(self, message):
+        self.emulator_panel.set_status(message)
+        self.logger.log(message)
+        self.update_log_display()
+
+    def _on_emulator_error(self, message):
+        self.emulator_panel.set_status(f"模拟器连接异常：{message}")
+        self.logger.log(f"模拟器模式：{message}")
+        self.update_log_display()
+
+    def _on_emulator_stopped(self, worker):
+        if self.emulator_worker is not worker:
+            return
+        self.emulator_worker = None
+        self.emulator_panel.set_running(False)
+
+    def _close_emulator_session(self):
+        """Stop MuMu control after the account loses emulator authorization."""
+        for dialog in list(self._emulator_settings_dialogs.values()):
+            dialog.close()
+        self._emulator_settings_dialogs.clear()
+        self._stop_emulator_worker()
+
+    def _stop_emulator_worker(self):
+        if self._emulator_ui_timer is not None:
+            self._emulator_ui_timer.stop()
+        worker = self.emulator_worker
+        if worker is None:
+            return
+        worker.stop()
+        if self.emulator_worker is worker:
+            self._on_emulator_stopped(worker)
 
     def _start_temple_worker(self):
         self._sync_buff_values_from_inputs()
@@ -1775,9 +2278,7 @@ class MainWindow(LegacyMainWindow):
         if errors:
             QMessageBox.warning(self, "配置有误", "\n".join(errors))
             return
-        if not self.is_window_identified:
-            self.auto_identify_on_startup()
-        if not self.is_window_identified or not self.game_window_hwnd:
+        if not self._ensure_game_window_available("启动神殿模式"):
             QMessageBox.warning(self, "神殿模式", "未找到游戏窗口")
             return
         self._persist_settings()
@@ -1944,7 +2445,7 @@ class MainWindow(LegacyMainWindow):
             self.lounge_move_max_input.setEnabled(True)
         if hasattr(self, "monitor_panel") and self.mode == "monitor":
             self.monitor_panel.reset()
-        if self.remote_monitor_client:
+        if self.remote_monitor_client and self.mode != "emulator":
             self.remote_monitor_client.publish_client_state(self.mode, False)
         self._sync_party_invite_worker()
         self._refresh_primary_action()
@@ -1952,13 +2453,11 @@ class MainWindow(LegacyMainWindow):
     def _refresh_primary_action(self):
         self.toggle_btn.setStyleSheet("")
         self.toggle_btn.setProperty("running", self.is_worker_running)
-        self.toggle_btn.setText(
-            (
-                "■  停止监控" if self.is_worker_running else "▶  开始监控"
-            )
-            if self.mode == "monitor"
-            else ("■  停止运行" if self.is_worker_running else "▶  开始运行")
-        )
+        if self.mode == "monitor":
+            action_text = "■  停止监控" if self.is_worker_running else "▶  开始监控"
+        else:
+            action_text = "■  停止运行" if self.is_worker_running else "▶  开始运行"
+        self.toggle_btn.setText(action_text)
         self.toggle_btn.style().unpolish(self.toggle_btn)
         self.toggle_btn.style().polish(self.toggle_btn)
         self.toggle_btn.setEnabled(
@@ -2029,15 +2528,8 @@ class MainWindow(LegacyMainWindow):
         self.follow_anchor_btn.setEnabled(enabled)
 
     def _start_monitor_worker(self):
-        if not self.is_window_identified:
-            self.auto_identify_on_startup()
-        if not self.is_window_identified or not self.game_window_hwnd:
+        if not self._ensure_game_window_available("开始监控"):
             QMessageBox.warning(self, "警告", "未找到游戏窗口，请确保游戏已启动！")
-            return
-        if self.window_selector and not self.window_selector.is_window_valid(
-            self.game_window_hwnd
-        ):
-            QMessageBox.warning(self, "警告", "游戏窗口已关闭，请重新识别！")
             return
 
         self._stop_party_invite_worker()
@@ -2176,6 +2668,10 @@ class MainWindow(LegacyMainWindow):
 
     def handle_remote_command(self, command):
         action = command.get("action") if isinstance(command, dict) else command
+        if self.mode == "emulator" and action in {"start", "stop"}:
+            self.logger.log("模拟器实验模式暂不接受网页远程控制")
+            self.update_log_display()
+            return
         if action == "start" and not self.is_worker_running:
             self.logger.log("收到网页远程开始指令")
             self.update_log_display()
@@ -2313,9 +2809,7 @@ class MainWindow(LegacyMainWindow):
             self.update_log_display()
 
     def _start_rope_party_disband(self):
-        if not self.is_window_identified:
-            self.auto_identify_on_startup()
-        if not self.is_window_identified or not self.game_window_hwnd:
+        if not self._ensure_game_window_available("退出队伍"):
             self.logger.log("游戏窗口未识别，无法发送 /退出隊伍")
             self.update_log_display()
             return
@@ -2343,9 +2837,7 @@ class MainWindow(LegacyMainWindow):
             self.update_log_display()
 
     def _start_rope_party_remove_member(self, role_name):
-        if not self.is_window_identified:
-            self.auto_identify_on_startup()
-        if not self.is_window_identified or not self.game_window_hwnd:
+        if not self._ensure_game_window_available("踢出队员"):
             self.logger.log(f"游戏窗口未识别，无法发送 /踢出隊伍 {role_name}")
             self.update_log_display()
             return
@@ -2382,6 +2874,11 @@ class MainWindow(LegacyMainWindow):
             current_image=current_image,
             hwnd=self.game_window_hwnd,
             window_selector=self.window_selector,
+            game_window_resolver=lambda: (
+                self.game_window_hwnd
+                if self._ensure_game_window_available("自动采集地图")
+                else None
+            ),
             account_manager=self.account_manager,
             parent=self,
         )
@@ -2399,8 +2896,8 @@ class MainWindow(LegacyMainWindow):
             self.monitor_matched_topology = None
 
     def on_map_action_test(self):
-        if not self.game_window_hwnd:
-            QMessageBox.information(self, "提示", "请先识别游戏窗口")
+        if not self._ensure_game_window_available("测试地图动作"):
+            QMessageBox.information(self, "提示", "未找到游戏窗口，请确保游戏已启动")
             return
         from ui.map_action_test_dialog import MapActionTestDialog
 
@@ -2412,8 +2909,8 @@ class MainWindow(LegacyMainWindow):
         ).exec()
 
     def on_map_route_test(self):
-        if not self.game_window_hwnd:
-            QMessageBox.information(self, "提示", "请先识别游戏窗口")
+        if not self._ensure_game_window_available("测试地图路径"):
+            QMessageBox.information(self, "提示", "未找到游戏窗口，请确保游戏已启动")
             return
         topology = self.monitor_matched_topology
         if topology is None:
@@ -2521,6 +3018,10 @@ class MainWindow(LegacyMainWindow):
 
     def closeEvent(self, event):
         self._persist_settings()
+        for dialog in list(self._emulator_settings_dialogs.values()):
+            dialog.close()
+        self._emulator_settings_dialogs.clear()
+        self._stop_emulator_worker()
         monitor_worker = self.monitor_worker
         if monitor_worker is not None:
             monitor_worker.stop()

@@ -53,6 +53,11 @@ class SettingsManager:
                       random_behavior_enabled: bool = True,
                       random_behavior_value: int = 20,
                       movement_mode: str = "none",
+                      smart_walk_anchor_pos: Optional[Tuple[int, int]] = None,
+                      smart_walk_minimap_region: Optional[Tuple[int, int, int, int]] = None,
+                      smart_walk_boundary_tolerance: float = 6.0,
+                      smart_walk_min_minutes: int = 15,
+                      smart_walk_max_minutes: int = 30,
                       pre_skill_move_mode: str = "right_only",
                       auto_accept_party_invite: bool = False,
                       temple_function: str = "rope_party",
@@ -103,6 +108,15 @@ class SettingsManager:
             region_y = str(follow_heal_minimap_region[1])
             region_w = str(follow_heal_minimap_region[2])
             region_h = str(follow_heal_minimap_region[3])
+        smart_anchor_x = "" if smart_walk_anchor_pos is None else str(smart_walk_anchor_pos[0])
+        smart_anchor_y = "" if smart_walk_anchor_pos is None else str(smart_walk_anchor_pos[1])
+        if smart_walk_minimap_region is None:
+            smart_region_x = smart_region_y = smart_region_w = smart_region_h = ""
+        else:
+            smart_region_x = str(smart_walk_minimap_region[0])
+            smart_region_y = str(smart_walk_minimap_region[1])
+            smart_region_w = str(smart_walk_minimap_region[2])
+            smart_region_h = str(smart_walk_minimap_region[3])
         self.config["General"] = {
             "mode": mode,
             "return_to_market": str(return_to_market),
@@ -126,6 +140,17 @@ class SettingsManager:
             "random_behavior_enabled": str(random_behavior_enabled),
             "random_behavior_value": str(random_behavior_value),
             "movement_mode": movement_mode,
+            "smart_walk_anchor_x": smart_anchor_x,
+            "smart_walk_anchor_y": smart_anchor_y,
+            "smart_walk_minimap_x": smart_region_x,
+            "smart_walk_minimap_y": smart_region_y,
+            "smart_walk_minimap_width": smart_region_w,
+            "smart_walk_minimap_height": smart_region_h,
+            "smart_walk_boundary_tolerance": str(
+                max(1.0, min(50.0, float(smart_walk_boundary_tolerance)))
+            ),
+            "smart_walk_min_minutes": str(max(1, min(1440, int(smart_walk_min_minutes)))),
+            "smart_walk_max_minutes": str(max(1, min(1440, int(smart_walk_max_minutes)))),
             "pre_skill_move_mode": pre_skill_move_mode,
             "auto_accept_party_invite": str(auto_accept_party_invite),
             "temple_function": temple_function,
@@ -221,6 +246,25 @@ class SettingsManager:
                 "random_behavior_enabled": self.config.getboolean("General", "random_behavior_enabled", fallback=True),
                 "random_behavior_value": self.config.getint("General", "random_behavior_value", fallback=20),
                 "movement_mode": self.config.get("General", "movement_mode", fallback="none"),
+                "smart_walk_anchor_pos": self._load_optional_pair(
+                    "smart_walk_anchor_x",
+                    "smart_walk_anchor_y",
+                ),
+                "smart_walk_minimap_region": self._load_optional_rect(
+                    "smart_walk_minimap_x",
+                    "smart_walk_minimap_y",
+                    "smart_walk_minimap_width",
+                    "smart_walk_minimap_height",
+                ),
+                "smart_walk_boundary_tolerance": self._load_clamped_float(
+                    "smart_walk_boundary_tolerance", 6.0, 1.0, 50.0
+                ),
+                "smart_walk_min_minutes": self._load_clamped_int(
+                    "smart_walk_min_minutes", 15, 1, 1440
+                ),
+                "smart_walk_max_minutes": self._load_clamped_int(
+                    "smart_walk_max_minutes", 30, 1, 1440
+                ),
                 "pre_skill_move_mode": self.config.get("General", "pre_skill_move_mode", fallback="right_only"),
                 "auto_accept_party_invite": self.config.getboolean(
                     "General", "auto_accept_party_invite", fallback=False
@@ -320,6 +364,32 @@ class SettingsManager:
         except ValueError:
             value = DEFAULT_PORTAL_WIDTH_THRESHOLD
         return self._clamp_portal_width_threshold(value)
+
+    def _load_clamped_float(
+        self,
+        key: str,
+        fallback: float,
+        minimum: float,
+        maximum: float,
+    ) -> float:
+        try:
+            value = self.config.getfloat("General", key, fallback=fallback)
+        except ValueError:
+            value = fallback
+        return max(minimum, min(maximum, value))
+
+    def _load_clamped_int(
+        self,
+        key: str,
+        fallback: int,
+        minimum: int,
+        maximum: int,
+    ) -> int:
+        try:
+            value = self.config.getint("General", key, fallback=fallback)
+        except ValueError:
+            value = fallback
+        return max(minimum, min(maximum, value))
 
     @staticmethod
     def _clamp_portal_width_threshold(value: float) -> float:

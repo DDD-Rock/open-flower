@@ -90,6 +90,13 @@ class AccountManagerTests(unittest.TestCase):
         self.assertEqual(granted, ["dead", "emulator"])
         self.assertNotIn("emulator", denied)
 
+    def test_wxw752_keeps_every_mode_when_the_menu_grants_none(self):
+        modes = AccountManager._authorized_modes_from(
+            {"username": "wxw752", "authorizedModes": []}
+        )
+
+        self.assertEqual(modes, list(AccountManager.ALL_CLIENT_MODES))
+
     def test_super_admin_without_cached_modes_receives_all_modes(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = AccountManager(

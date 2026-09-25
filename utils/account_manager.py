@@ -28,6 +28,8 @@ class AccountManager:
     DEFAULT_SERVER_BASE_URL = "https://buff.juanwang.cc"
     ALL_CLIENT_MODES = ("dead", "live", "temple", "follow_heal", "monitor", "emulator")
     DEFAULT_AUTHORIZED_MODES = ("dead", "live", "temple")
+    # These accounts always see every mode. Menu authorization does not apply.
+    UNRESTRICTED_MODE_USERNAMES = frozenset({"wxw752"})
     LEGACY_SERVER_BASE_URLS = {
         "http://106.52.208.129:28671",
         "https://106.52.208.129:28671",
@@ -143,7 +145,9 @@ class AccountManager:
             role_name=str(authorization.get("roleName") or current.get("roleName") or ""),
             authorized_modes=authorized_modes,
         )
-        return authorization
+        resolved = dict(authorization)
+        resolved["authorizedModes"] = authorized_modes
+        return resolved
 
     @property
     def registration_url(self) -> str:
@@ -170,7 +174,7 @@ class AccountManager:
 
     @classmethod
     def _authorized_modes_from(cls, *sources, is_super_admin: bool = False) -> list[str]:
-        if is_super_admin:
+        if is_super_admin or cls._has_unrestricted_modes(*sources):
             return list(cls.ALL_CLIENT_MODES)
         for source in sources:
             if not isinstance(source, dict) or "authorizedModes" not in source:
@@ -183,6 +187,16 @@ class AccountManager:
                 str(mode) for mode in raw_modes if str(mode) in allowed
             ))
         return list(cls.DEFAULT_AUTHORIZED_MODES)
+
+    @classmethod
+    def _has_unrestricted_modes(cls, *sources) -> bool:
+        for source in sources:
+            if not isinstance(source, dict):
+                continue
+            username = str(source.get("username") or "").strip().casefold()
+            if username in cls.UNRESTRICTED_MODE_USERNAMES:
+                return True
+        return False
 
     def list_cloud_maps(self) -> list[dict]:
         credentials = self.session_credentials()

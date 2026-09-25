@@ -5,6 +5,8 @@ from types import SimpleNamespace
 from workers.mumu_smart_walk_worker import (
     BUFF_HOLD_MAX_MS,
     BUFF_HOLD_MIN_MS,
+    SHORT_WALK_MAX_SECONDS,
+    SHORT_WALK_MIN_SECONDS,
     MumuSmartWalkWorker,
 )
 
@@ -78,6 +80,17 @@ class MumuSmartWalkWorkerTests(unittest.TestCase):
             [call.args[2] for call in worker._post_key.call_args_list],
             [True, False],
         )
+
+    def test_short_walk_lasts_about_one_second(self):
+        with patch(
+            "workers.mumu_smart_walk_worker.random.uniform",
+            return_value=1.0,
+        ) as uniform:
+            duration = MumuSmartWalkWorker._short_walk_duration()
+
+        uniform.assert_called_once_with(SHORT_WALK_MIN_SECONDS, SHORT_WALK_MAX_SECONDS)
+        self.assertEqual(duration, 1.0)
+        self.assertEqual((SHORT_WALK_MIN_SECONDS, SHORT_WALK_MAX_SECONDS), (0.8, 1.2))
 
     def test_failed_double_press_is_not_given_a_false_countdown(self):
         countdowns = []

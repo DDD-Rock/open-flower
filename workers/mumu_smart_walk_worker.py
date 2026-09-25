@@ -13,11 +13,14 @@ import win32gui
 
 from utils.countdown import next_release_time, remaining_seconds
 from utils.keyboard_utils import KEY_HOLD_MAX_MS, KEY_HOLD_MIN_MS
+from utils.smart_walk import next_smart_walk_deadline, smart_walk_can_continue, smart_walk_direction
 
 # Emulator buffs need a longer hold than the Windows live-flower tap.
 BUFF_HOLD_MIN_MS = 300
 BUFF_HOLD_MAX_MS = 500
-from utils.smart_walk import next_smart_walk_deadline, smart_walk_can_continue, smart_walk_direction
+# One short left/right step is about one second, not a fixed value.
+SHORT_WALK_MIN_SECONDS = 0.8
+SHORT_WALK_MAX_SECONDS = 1.2
 
 
 _KEYCODES = {
@@ -326,6 +329,10 @@ class MumuSmartWalkWorker:
                 if self._stop.wait(gap):
                     return
 
+    @staticmethod
+    def _short_walk_duration() -> float:
+        return random.uniform(SHORT_WALK_MIN_SECONDS, SHORT_WALK_MAX_SECONDS)
+
     def _walk_once(self, direction: str, duration: float):
         virtual_key = win32con.VK_LEFT if direction == "left" else win32con.VK_RIGHT
         hwnd = self._get_window_handle()
@@ -375,7 +382,7 @@ class MumuSmartWalkWorker:
             if self._stop.is_set():
                 return False
             direction = smart_walk_direction(float(position[0]), center_x)
-            if not self._walk_once(direction, random.uniform(0.3, 0.6)):
+            if not self._walk_once(direction, self._short_walk_duration()):
                 return False
             if self._stop.wait(0.08):
                 return False
@@ -451,7 +458,7 @@ class MumuSmartWalkWorker:
         if position is not None:
             direction = smart_walk_direction(position[0], anchor[0])
             started = time.monotonic()
-            self._walk_once(direction, random.uniform(0.3, 0.6))
+            self._walk_once(direction, self._short_walk_duration())
             while not self._stop.is_set() and time.monotonic() - started < 1.2:
                 current = self.analysis_provider()
                 current_position = getattr(current, "player_position", None) if current is not None else None

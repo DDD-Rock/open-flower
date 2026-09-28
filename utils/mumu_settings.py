@@ -37,6 +37,9 @@ class MumuSettingsStore:
         saved = dict(config or {})
         saved["enabled"] = False
         saved.pop("half_height", None)
+        smoke = saved.get("smoke")
+        if isinstance(smoke, dict):
+            saved["smoke"] = {**smoke, "enabled": False}
         # Remove legacy emulator-only chair settings now that the option no
         # longer exists in the MuMu live-flower mode.
         saved.pop("sit_chair_enabled", None)

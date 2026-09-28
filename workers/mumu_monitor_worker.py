@@ -23,6 +23,7 @@ from utils.mumu_manager import (
 )
 from utils.mumu_scrcpy_stream import ScrcpyVideoStream
 from workers.mumu_smart_walk_worker import MumuSmartWalkWorker
+from workers.mumu_smoke_worker import MumuSmokeWorker
 
 
 class MumuMonitorWorker(QThread):
@@ -32,6 +33,8 @@ class MumuMonitorWorker(QThread):
     minimap_frame_ready = pyqtSignal(str, object, object)
     smart_walk_countdown = pyqtSignal(str, object)
     smart_walk_status = pyqtSignal(str, str)
+    smoke_status = pyqtSignal(str, str)
+    smoke_finished = pyqtSignal(str, bool)
     status_update = pyqtSignal(str)
     error_signal = pyqtSignal(str)
     stopped = pyqtSignal()
@@ -75,6 +78,7 @@ class MumuMonitorWorker(QThread):
         self._restart_after = {}
         self._stream_errors = {}
         self._smart_walk_workers = {}
+        self._smoke_workers = {}
         self._window_handles = {}
         self._pending_launches = set()
         self._launching = set()
@@ -106,6 +110,8 @@ class MumuMonitorWorker(QThread):
         """Update one stream's smart-walk configuration without touching others."""
         if not serial:
             return
+        if config.get("enabled"):
+            self.stop_smoke(serial)
         with self._lock:
             controller = self._smart_walk_workers.get(serial)
             if controller is None:
@@ -124,6 +130,40 @@ class MumuMonitorWorker(QThread):
                 self._smart_walk_workers[serial] = controller
                 controller.start()
         controller.update_config(config or {})
+
+    def update_smoke_config(self, serial: str, config: dict):
+        if not serial:
+            return
+        if not config.get("enabled"):
+            self.stop_smoke(serial)
+            return
+        with self._lock:
+            existing = self._smoke_workers.get(serial)
+            if existing is not None and existing.running:
+                return
+            walker = self._smart_walk_workers.get(serial)
+            if walker is not None:
+                walker.update_config({"enabled": False})
+            controller = MumuSmokeWorker(
+                serial, self.adb_path,
+                lambda current=serial: self.get_latest_stream_snapshot(current),
+                lambda current=serial: self._window_handle(current),
+                status_callback=lambda message, current=serial: self.smoke_status.emit(current, message),
+                finished_callback=lambda success, current=serial: self.smoke_finished.emit(current, success),
+            )
+            self._smoke_workers[serial] = controller
+        self.request_minimap_redetection(serial)
+        controller.start(config)
+
+    def _window_handle(self, serial):
+        with self._lock:
+            return self._window_handles.get(serial)
+
+    def stop_smoke(self, serial):
+        with self._lock:
+            controller = self._smoke_workers.get(serial)
+        if controller is not None:
+            controller.stop()
 
     def request_launch(self, vm_index: str):
         """Queue one instance launch without blocking the Qt UI thread."""
@@ -192,6 +232,9 @@ class MumuMonitorWorker(QThread):
         with self._lock:
             streams = list(self._streams.values())
             smart_walkers = list(self._smart_walk_workers.values())
+            smoke_workers = list(self._smoke_workers.values())
+        for controller in smoke_workers:
+            controller.stop()
         for stream in streams:
             stream.stop()
         for controller in smart_walkers:
@@ -226,8 +269,12 @@ class MumuMonitorWorker(QThread):
             with self._lock:
                 streams = list(self._streams.values())
                 smart_walkers = list(self._smart_walk_workers.values())
+                smoke_workers = list(self._smoke_workers.values())
                 self._streams.clear()
                 self._smart_walk_workers.clear()
+                self._smoke_workers.clear()
+            for controller in smoke_workers:
+                controller.stop()
             for stream in streams:
                 stream.stop()
             for controller in smart_walkers:
@@ -313,6 +360,7 @@ class MumuMonitorWorker(QThread):
             removed = set(self._streams) - online_serials
             removed_streams = [self._streams.pop(serial) for serial in removed]
             removed_walkers = [self._smart_walk_workers.pop(serial, None) for serial in removed]
+            removed_smoke = [self._smoke_workers.pop(serial, None) for serial in removed]
             for serial in removed:
                 self._latest_frames.pop(serial, None)
                 self._latest_fps.pop(serial, None)
@@ -336,6 +384,9 @@ class MumuMonitorWorker(QThread):
         for stream in removed_streams:
             stream.stop()
         for controller in removed_walkers:
+            if controller is not None:
+                controller.stop()
+        for controller in removed_smoke:
             if controller is not None:
                 controller.stop()
 
@@ -592,7 +643,9 @@ class MumuMonitorWorker(QThread):
                 latest_frame_at = self._latest_frame_at.get(serial, captured_at)
                 if (
                     latest_frame_at > captured_at
-                    and completed_at - captured_at > self.MAX_ANALYSIS_AGE
+                    and completed_at - captured_at > (
+                        1.5 if run_full_analysis else self.MAX_ANALYSIS_AGE
+                    )
                 ):
                     self._dropped_analysis[serial] = (
                         self._dropped_analysis.get(serial, 0) + 1

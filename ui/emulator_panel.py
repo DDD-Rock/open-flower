@@ -198,7 +198,7 @@ class EmulatorRow(QFrame):
         layout.addWidget(self.start_button)
 
     def _emit_action_requested(self):
-        if self._state == "device" and self._analysis_state == "in_game":
+        if self._state == "device":
             self.settings_requested.emit(dict(self._device))
         elif self._vm_index:
             self.start_requested.emit(self._vm_index)
@@ -208,9 +208,10 @@ class EmulatorRow(QFrame):
         self._sync_action_button()
 
     def _sync_action_button(self):
-        show_settings = (
-            self._state == "device" and self._analysis_state == "in_game"
-        )
+        # Settings is available as soon as ADB is connected.  Game-state OCR
+        # can take a while (or be unavailable on login/character pages), but
+        # that must not make the only configuration entry disappear.
+        show_settings = self._state == "device"
         show_start = bool(self._vm_index) and self._state != "device"
         self.start_button.setVisible(show_settings or show_start)
         if show_settings:

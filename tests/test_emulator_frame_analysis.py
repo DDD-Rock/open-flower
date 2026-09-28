@@ -1,6 +1,7 @@
 import os
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -14,11 +15,65 @@ from detection.emulator_frame_analysis import (
     apply_game_state_grace,
     detect_emulator_map_title_region,
     detect_emulator_minimap_region,
+    ULU_MANOR_2_MINIMAP,
+    ULU_MANOR_2_STREAM_MINIMAP,
 )
 from ui.emulator_panel import EmulatorRow
 
 
 class EmulatorFrameAnalysisTests(unittest.TestCase):
+    def test_ulu_manor_2_title_uses_fixed_canvas(self):
+        image = np.full((1080, 1920, 3), 35, dtype=np.uint8)
+        cv2.line(image, (12, 200), (260, 200), (225, 225, 225), 3)
+        cv2.circle(image, (150, 180), 3, (0, 255, 255), -1)
+        response = {"code": 100, "data": [
+            {"text": "扁魯莊围 II", "score": 0.68},
+        ]}
+        with patch("detection.emulator_frame_analysis.EXPRapidOCRRecognizer") as ocr:
+            ocr.return_value._run_engine.return_value = response
+            with patch("detection.emulator_frame_analysis.detect_minimap_content_region",
+                       return_value=(6, 129, 271, 329)):
+                analysis = analyze_emulator_frame(image)
+        self.assertEqual(analysis.minimap_rect, ULU_MANOR_2_MINIMAP)
+        self.assertEqual(analysis.player_position, (144, 51))
+        self.assertEqual(ocr.return_value._run_engine.call_args.args[0].shape, (45, 194, 3))
+
+    def test_ulu_manor_2_stream_uses_half_resolution_canvas(self):
+        image = np.full((540, 960, 3), 35, dtype=np.uint8)
+        cv2.line(image, (8, 98), (130, 98), (225, 225, 225), 2)
+        cv2.circle(image, (76, 90), 3, (0, 255, 255), -1)
+        with patch("detection.emulator_frame_analysis.EXPRapidOCRRecognizer") as ocr:
+            ocr.return_value._run_engine.return_value = {
+                "code": 100, "data": [{"text": "扁魯莊圆 II", "score": 0.62}],
+            }
+            analysis = analyze_emulator_frame(image)
+        self.assertEqual(analysis.minimap_rect, ULU_MANOR_2_STREAM_MINIMAP)
+        self.assertEqual(analysis.player_position, (73, 25))
+        self.assertEqual(ocr.return_value._run_engine.call_args.args[0].shape, (26, 100, 3))
+
+    def test_other_title_falls_back_to_existing_detector(self):
+        image = np.full((1080, 1920, 3), 35, dtype=np.uint8)
+        generic = (6, 129, 271, 329)
+        with patch("detection.emulator_frame_analysis.EXPRapidOCRRecognizer") as ocr:
+            ocr.return_value._run_engine.return_value = {
+                "code": 100, "data": [{"text": "其他地图 II", "score": 0.95}],
+            }
+            with patch("detection.emulator_frame_analysis.detect_minimap_content_region",
+                       return_value=generic):
+                self.assertEqual(detect_emulator_minimap_region(image), generic)
+
+    def test_ulu_title_without_map_canvas_falls_back(self):
+        image = np.full((1080, 1920, 3), 255, dtype=np.uint8)
+        with patch("detection.emulator_frame_analysis.EXPRapidOCRRecognizer") as ocr:
+            ocr.return_value._run_engine.return_value = {
+                "code": 100, "data": [{"text": "魯莊 II", "score": 0.9}],
+            }
+            with patch("detection.emulator_frame_analysis.detect_minimap_content_region",
+                       return_value=None), patch(
+                           "detection.emulator_frame_analysis._detect_flexible_minimap_region",
+                           return_value=None):
+                self.assertIsNone(detect_emulator_minimap_region(image))
+
     @staticmethod
     def _framed_minimap(panel_width: int, panel_height: int):
         image = np.full((720, 1280, 3), 80, dtype=np.uint8)
@@ -134,7 +189,7 @@ class EmulatorRowActionTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
-    def test_online_game_row_replaces_start_with_settings(self):
+    def test_connected_row_always_exposes_settings(self):
         row = EmulatorRow()
         row.set_controls_enabled(True)
         row.update_metadata(
@@ -146,13 +201,11 @@ class EmulatorRowActionTests(unittest.TestCase):
                 "state": "device",
             },
         )
-        self.assertTrue(row.start_button.isHidden())
+        self.assertFalse(row.start_button.isHidden())
+        self.assertEqual(row.start_button.text(), "设置")
 
         emitted = []
         row.settings_requested.connect(emitted.append)
-        row.update_analysis(SimpleNamespace(game_state="in_game"))
-        self.assertFalse(row.start_button.isHidden())
-        self.assertEqual(row.start_button.text(), "设置")
         row.start_button.click()
         self.assertEqual(emitted[0]["serial"], "127.0.0.1:16384")
 

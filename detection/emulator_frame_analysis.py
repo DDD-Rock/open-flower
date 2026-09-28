@@ -10,9 +10,14 @@ import numpy as np
 
 from detection.minimap_monitor import MinimapMonitor
 from detection.minimap_region_detector import detect_minimap_content_region
+from detection.exp_recognizer import EXPRapidOCRRecognizer
 
 
 Rect = Tuple[int, int, int, int]
+ULU_MANOR_2_MINIMAP: Rect = (6, 129, 270, 160)
+ULU_MANOR_2_TITLE: Rect = (83, 67, 194, 45)
+ULU_MANOR_2_STREAM_MINIMAP: Rect = (3, 65, 135, 80)
+ULU_MANOR_2_STREAM_TITLE: Rect = (40, 34, 100, 26)
 
 
 @dataclass
@@ -164,6 +169,9 @@ def _is_plausible_minimap_canvas(image: np.ndarray, rect: Rect) -> bool:
 
 def detect_emulator_minimap_region(image: np.ndarray) -> Optional[Rect]:
     """Locate a minimap while preserving the proven PC detector as first choice."""
+    fixed = ulu_manor_2_minimap_rect(image)
+    if fixed and has_ulu_manor_2_title(image) and _is_plausible_minimap_canvas(image, fixed):
+        return fixed
     region = detect_minimap_content_region(image)
     if region is not None and _is_plausible_minimap_canvas(image, region):
         return region
@@ -171,6 +179,40 @@ def detect_emulator_minimap_region(image: np.ndarray) -> Optional[Rect]:
     if region is not None and _is_plausible_minimap_canvas(image, region):
         return region
     return None
+
+
+def ulu_manor_2_minimap_rect(image: np.ndarray) -> Optional[Rect]:
+    if image is None or image.ndim != 3:
+        return None
+    return {
+        (1080, 1920): ULU_MANOR_2_MINIMAP,
+        (540, 960): ULU_MANOR_2_STREAM_MINIMAP,
+    }.get(image.shape[:2])
+
+
+def has_ulu_manor_2_title(image: np.ndarray) -> bool:
+    """Read the fixed second title line at native or scrcpy-stream resolution."""
+    if image is None or image.ndim != 3:
+        return False
+    titles = {(1080, 1920): ULU_MANOR_2_TITLE,
+              (540, 960): ULU_MANOR_2_STREAM_TITLE}
+    rect = titles.get(image.shape[:2])
+    if rect is None:
+        return False
+    x, y, width, height = rect
+    payload = EXPRapidOCRRecognizer()._run_engine(image[y:y + height, x:x + width])
+    if not isinstance(payload, dict) or payload.get("code") != 100:
+        return False
+    for block in payload.get("data") or []:
+        if not isinstance(block, dict) or float(block.get("score") or 0) < 0.55:
+            continue
+        title = "".join(str(block.get("text") or "").split()).replace("Ⅱ", "II").upper()
+        # The current OCR reliably reads the central two glyphs and Roman II,
+        # but misreads the first and last glyphs of 烏魯莊園 in this small font.
+        if "魯莊" in title or "鲁庄" in title or "魯庄" in title or "鲁莊" in title:
+            if title.endswith("II"):
+                return True
+    return False
 
 
 def detect_emulator_map_title_region(image: np.ndarray) -> Optional[Rect]:

@@ -2027,6 +2027,8 @@ class MainWindow(LegacyMainWindow):
             self._on_emulator_smart_walk_countdown
         )
         worker.smart_walk_status.connect(self._on_emulator_smart_walk_status)
+        worker.smoke_status.connect(self._on_emulator_smoke_status)
+        worker.smoke_finished.connect(self._on_emulator_smoke_finished)
         worker.stopped.connect(lambda current=worker: self._on_emulator_stopped(current))
         self.emulator_panel.set_running(True)
         self.logger.log("模拟器模式已启动，正在读取 MuMu 实例和 ADB 设备")
@@ -2152,6 +2154,7 @@ class MainWindow(LegacyMainWindow):
             dialog.smart_walk_config_changed.connect(
                 self._update_emulator_smart_walk_config
             )
+            dialog.smoke_config_changed.connect(self._update_emulator_smoke_config)
             dialog.destroyed.connect(
                 lambda _=None, current=serial, owner=dialog: (
                     self._forget_emulator_settings_dialog(current, owner)
@@ -2164,6 +2167,7 @@ class MainWindow(LegacyMainWindow):
             saved_config = self._emulator_smart_walk_configs.get(serial)
             if saved_config:
                 dialog.set_smart_walk_config(saved_config)
+                dialog.set_smoke_config(saved_config.get("smoke"))
             if saved_config and saved_config.get("enabled"):
                 dialog.update_buff_countdown(
                     self._emulator_live_countdowns.get(serial) or {}
@@ -2192,12 +2196,45 @@ class MainWindow(LegacyMainWindow):
         """Pass one dialog's smart-walk settings to its matching ADB stream."""
         if not serial:
             return
-        self._emulator_smart_walk_configs[serial] = dict(config or {})
+        saved = dict(self._emulator_smart_walk_configs.get(serial) or {})
+        saved.update(config or {})
+        self._emulator_smart_walk_configs[serial] = saved
         self._mumu_settings_store.save(self._emulator_smart_walk_configs)
         worker = self.emulator_worker
         if worker is None:
             return
         worker.update_smart_walk_config(serial, config or {})
+
+    def _update_emulator_smoke_config(self, serial, config):
+        if not serial:
+            return
+        saved = dict(self._emulator_smart_walk_configs.get(serial) or {})
+        saved["smoke"] = dict(config or {})
+        if config.get("enabled"):
+            saved["enabled"] = False
+            dialog = self._emulator_settings_dialogs.get(serial)
+            if dialog is not None and dialog.smart_walk_enabled.isChecked():
+                dialog.smart_walk_enabled.setChecked(False)
+        self._emulator_smart_walk_configs[serial] = saved
+        self._mumu_settings_store.save(self._emulator_smart_walk_configs)
+        worker = self.emulator_worker
+        if worker is not None:
+            worker.update_smoke_config(serial, config or {})
+
+    def _on_emulator_smoke_status(self, serial, message):
+        dialog = self._emulator_settings_dialogs.get(serial)
+        if dialog is not None:
+            dialog.update_smoke_status(message)
+        self.logger.log(f"{serial}：{message}")
+        self.update_log_display()
+
+    def _on_emulator_smoke_finished(self, serial, success):
+        dialog = self._emulator_settings_dialogs.get(serial)
+        if dialog is not None:
+            dialog.finish_smoke()
+        saved = self._emulator_smart_walk_configs.get(serial)
+        if saved and "smoke" in saved:
+            saved["smoke"]["enabled"] = False
 
     def _on_emulator_smart_walk_countdown(self, serial, countdowns):
         normalized = {}

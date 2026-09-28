@@ -50,6 +50,7 @@ class EmulatorStreamDialog(QDialog):
     redetect_minimap_requested = pyqtSignal(str)
     smart_walk_anchor_selected = pyqtSignal(str, int, int)
     smart_walk_config_changed = pyqtSignal(str, object)
+    smoke_config_changed = pyqtSignal(str, object)
     active_mode_changed = pyqtSignal(str)
 
     def __init__(self, device: dict, parent=None):
@@ -63,6 +64,7 @@ class EmulatorStreamDialog(QDialog):
         self.smart_walk_min_minutes = 16
         self.smart_walk_max_minutes = 18
         self.smart_walk_jump_key = "Alt"
+        self.smoke_anchor = None
         self._active_mode = "live_flower"
         self._last_countdowns = {}
         name = device.get("name") or f"MuMu-{self.vm_index}"
@@ -168,6 +170,7 @@ class EmulatorStreamDialog(QDialog):
         self.mode_tabs = QTabWidget()
         self.mode_tabs.setDocumentMode(True)
         self.mode_tabs.addTab(self._create_live_flower_tab(), "活花模式")
+        self.mode_tabs.addTab(self._create_smoke_tab(), "烟雾模式")
         pending = QLabel("开发中")
         pending.setAlignment(Qt.AlignmentFlag.AlignCenter)
         pending.setStyleSheet("color:#8791A3;font-size:15px;")
@@ -175,6 +178,122 @@ class EmulatorStreamDialog(QDialog):
         self.mode_tabs.currentChanged.connect(self._on_mode_tab_changed)
         development_layout.addWidget(self.mode_tabs, 1)
         root.addWidget(development, 3)
+
+    def _create_smoke_tab(self):
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
+        self.smoke_anchor_label = QLabel("烟雾位置：未标记（点击左上小地图）")
+        layout.addWidget(self.smoke_anchor_label)
+        layout.addWidget(QLabel("目前仅支持乌鲁庄园2（标点按 960 × 540 视频流坐标）"))
+        ranges = QHBoxLayout()
+        for title, attr, value in (("左右容差", "smoke_width_input", 5),
+                                   ("同层容差", "smoke_height_input", 3)):
+            ranges.addWidget(QLabel(title))
+            control = QSpinBox()
+            control.setRange(1, 100)
+            control.setValue(value)
+            control.setSuffix(" px")
+            control.valueChanged.connect(self._on_smoke_size_changed)
+            setattr(self, attr, control)
+            ranges.addWidget(control)
+        ranges.addStretch(1)
+        layout.addLayout(ranges)
+        keys = QHBoxLayout()
+        self.smoke_jump_button = QPushButton("Alt")
+        self.smoke_skill_button = QPushButton("Shift")
+        for title, button in (("跳跃键", self.smoke_jump_button),
+                              ("烟雾技能键", self.smoke_skill_button)):
+            keys.addWidget(QLabel(title))
+            button.setFixedWidth(80)
+            button.clicked.connect(lambda _=False, target=button: self._select_smoke_key(target))
+            keys.addWidget(button)
+        keys.addStretch(1)
+        layout.addLayout(keys)
+        friend = QHBoxLayout()
+        friend.addWidget(QLabel("好友名称"))
+        self.smoke_friend_input = QLineEdit()
+        self.smoke_friend_input.setText("QQNeNe好喝到咩噗茶")
+        self.smoke_friend_input.textChanged.connect(self._emit_smoke_config)
+        friend.addWidget(self.smoke_friend_input, 1)
+        layout.addLayout(friend)
+        self.smoke_status_label = QLabel("烟雾状态：未启动")
+        self.smoke_status_label.setWordWrap(True)
+        layout.addWidget(self.smoke_status_label)
+        self.smoke_enabled = QPushButton("启动")
+        self.smoke_enabled.setCheckable(True)
+        self.smoke_enabled.toggled.connect(self._on_smoke_enabled_changed)
+        layout.addWidget(self.smoke_enabled, 0, Qt.AlignmentFlag.AlignLeft)
+        layout.addStretch(1)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(panel)
+        return scroll
+
+    def _select_smoke_key(self, button):
+        dialog = VirtualKeyboardDialog(self, button.text() or "Alt")
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            button.setText(dialog.get_selected_key())
+            self._emit_smoke_config()
+
+    def _on_smoke_enabled_changed(self, enabled):
+        self.smoke_enabled.setText("停止" if enabled else "启动")
+        self.update_smoke_status("正在定位玩家黄点" if enabled else "未启动")
+        if enabled and self.smart_walk_enabled.isChecked():
+            self.smart_walk_enabled.setChecked(False)
+        self._emit_smoke_config()
+
+    def update_smoke_status(self, message):
+        self.smoke_status_label.setText(f"烟雾状态：{message}")
+
+    def finish_smoke(self):
+        self.smoke_enabled.setChecked(False)
+
+    def smoke_config(self):
+        return {
+            "coordinate_space": "scrcpy_960x540",
+            "enabled": self.smoke_enabled.isChecked(),
+            "anchor": self.smoke_anchor,
+            "half_width": self.smoke_width_input.value(),
+            "half_height": self.smoke_height_input.value(),
+            "jump_key": self.smoke_jump_button.text(),
+            "smoke_key": self.smoke_skill_button.text(),
+            "friend_name": self.smoke_friend_input.text().strip(),
+        }
+
+    def _emit_smoke_config(self):
+        self.smoke_config_changed.emit(self.serial, self.smoke_config())
+
+    def _on_smoke_size_changed(self):
+        self._render_minimap()
+        self._emit_smoke_config()
+
+    def set_smoke_config(self, config):
+        config = config or {}
+        anchor = config.get("anchor")
+        if anchor and config.get("coordinate_space") != "scrcpy_960x540":
+            anchor = (round(anchor[0] / 2), round(anchor[1] / 2))
+        self.smoke_anchor = tuple(anchor) if anchor else None
+        legacy_scale = 2 if config.get("coordinate_space") != "scrcpy_960x540" else 1
+        controls = (
+            (self.smoke_width_input, max(1, round(config.get("half_width", 5) / legacy_scale))),
+            (self.smoke_height_input, max(1, round(config.get("half_height", 3) / legacy_scale))),
+            (self.smoke_jump_button, config.get("jump_key") or "Alt"),
+            (self.smoke_skill_button, config.get("smoke_key") or "Shift"),
+            (self.smoke_friend_input, config.get("friend_name", "QQNeNe好喝到咩噗茶")),
+        )
+        for control, value in controls:
+            control.blockSignals(True)
+            if isinstance(control, QSpinBox):
+                control.setValue(int(value))
+            else:
+                control.setText(str(value))
+            control.blockSignals(False)
+        self.smoke_anchor_label.setText(
+            f"烟雾位置：X={anchor[0]} Y={anchor[1]}" if anchor else "烟雾位置：未标记（点击左上小地图）"
+        )
+        self._render_minimap()
 
     def _create_live_flower_tab(self):
         panel = QWidget()
@@ -376,6 +495,12 @@ class EmulatorStreamDialog(QDialog):
             self._emit_smart_walk_config()
 
     def _on_minimap_clicked(self, x: int, y: int):
+        if self._active_mode == "smoke":
+            self.smoke_anchor = (int(x), int(y))
+            self.smoke_anchor_label.setText(f"烟雾位置：X={x} Y={y}")
+            self._render_minimap()
+            self._emit_smoke_config()
+            return
         if self._active_mode != "live_flower":
             return
         self.smart_walk_anchor = (int(x), int(y))
@@ -397,6 +522,8 @@ class EmulatorStreamDialog(QDialog):
     def _on_smart_walk_enabled_changed(self, enabled: bool):
         self.smart_walk_enabled.setText("停止" if enabled else "启动")
         if enabled:
+            if self.smoke_enabled.isChecked():
+                self.smoke_enabled.setChecked(False)
             self.update_buff_countdown(self._last_countdowns)
         else:
             self.update_buff_countdown({})
@@ -489,7 +616,7 @@ class EmulatorStreamDialog(QDialog):
             )
 
     def _on_mode_tab_changed(self, index: int):
-        self._active_mode = "live_flower" if index == 0 else "pending"
+        self._active_mode = ("live_flower", "smoke", "pending")[index]
         self.active_mode_changed.emit(self._active_mode)
         self._render_minimap()
 
@@ -696,6 +823,17 @@ class EmulatorStreamDialog(QDialog):
                 0,
                 right - left,
                 height - 1,
+            )
+            painter.end()
+        if self.smoke_anchor is not None and self._active_mode == "smoke":
+            painter = QPainter(image)
+            painter.setPen(QPen(Qt.GlobalColor.green, 2))
+            x, y = self.smoke_anchor
+            painter.drawRect(
+                max(0, x - self.smoke_width_input.value()),
+                max(0, y - self.smoke_height_input.value()),
+                min(width - 1, x + self.smoke_width_input.value()) - max(0, x - self.smoke_width_input.value()),
+                min(height - 1, y + self.smoke_height_input.value()) - max(0, y - self.smoke_height_input.value()),
             )
             painter.end()
         self.minimap_label.set_source_size(width, height)

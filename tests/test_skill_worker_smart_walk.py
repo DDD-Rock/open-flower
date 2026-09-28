@@ -1,7 +1,11 @@
 import unittest
 from unittest import mock
 
-from workers.skill_worker import SkillWorker
+from workers.skill_worker import (
+    SMART_WALK_JUMP_SETTLE_MAX_SECONDS,
+    SMART_WALK_JUMP_SETTLE_MIN_SECONDS,
+    SkillWorker,
+)
 
 
 class SkillWorkerSmartWalkTests(unittest.TestCase):
@@ -60,6 +64,53 @@ class SkillWorkerSmartWalkTests(unittest.TestCase):
         choose_duration.assert_called_once_with(300, 600)
         worker.human_input.move_right.assert_called_once_with()
         worker.human_input.stop_move.assert_called_once_with()
+
+    def test_jump_relocation_waits_for_landing_before_returning_position(self):
+        worker = self._worker()
+        worker.smart_walk_monitor.find_player_position_once.side_effect = [
+            (42, 10),
+            (43, 20),
+        ]
+        statuses = []
+        worker.status_update.connect(statuses.append)
+
+        with (
+            mock.patch(
+                "workers.skill_worker.random.uniform", return_value=1.0
+            ) as choose_delay,
+            mock.patch("workers.skill_worker.time.sleep") as sleep,
+        ):
+            position = worker._find_smart_walk_player_during_jump()
+
+        self.assertEqual(position, (43, 20))
+        choose_delay.assert_called_once_with(
+            SMART_WALK_JUMP_SETTLE_MIN_SECONDS,
+            SMART_WALK_JUMP_SETTLE_MAX_SECONDS,
+        )
+        self.assertEqual(
+            [call.args[0] for call in sleep.call_args_list],
+            [0.05, 1.0],
+        )
+        worker.human_input.stop_move.assert_called_once_with()
+        worker.human_input.keyboard.press.assert_called_once_with(worker.jump_key)
+        worker.human_input.keyboard.release.assert_called_once_with(worker.jump_key)
+        self.assertTrue(any("等待角色落地" in status for status in statuses))
+
+    def test_jump_relocation_uses_airborne_position_only_after_landing_wait(self):
+        worker = self._worker()
+        worker.smart_walk_monitor.find_player_position_once.side_effect = [
+            (42, 10),
+            None,
+        ]
+
+        with (
+            mock.patch("workers.skill_worker.random.uniform", return_value=1.0),
+            mock.patch("workers.skill_worker.time.sleep") as sleep,
+        ):
+            position = worker._find_smart_walk_player_during_jump()
+
+        self.assertEqual(position, (42, 10))
+        self.assertEqual(sleep.call_args_list[-1].args, (1.0,))
 
 
 if __name__ == "__main__":

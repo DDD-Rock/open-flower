@@ -65,7 +65,7 @@ def list_adb_devices(adb_path: Optional[str] = None) -> list[dict]:
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=5,
+            timeout=30,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -114,7 +114,7 @@ def connect_adb_device(serial: str, adb_path: Optional[str] = None) -> tuple[boo
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=5,
+            timeout=30,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     except (OSError, subprocess.TimeoutExpired) as exc:

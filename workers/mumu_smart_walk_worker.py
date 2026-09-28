@@ -251,30 +251,50 @@ class MumuSmartWalkWorker:
             self._settle_not_before = settle_at
         self._needs_settle = True
 
-    def _wait_until_settled(self) -> bool:
-        """Wait out the random post-move delay before pressing a BUFF."""
+    def _wait_until_settled(self, status_message=None) -> bool:
+        """Wait out the random post-move delay before the next action."""
         if not self._needs_settle:
             return True
         remaining = self._settle_not_before - time.monotonic()
         if remaining > 0:
-            self._emit_status("移动结束，稍等后再释放 BUFF")
+            self._emit_status(
+                status_message or "移动结束，稍等后再释放 BUFF"
+            )
             if self._stop.wait(remaining):
                 return False
         self._needs_settle = False
         return True
 
     def _find_position_with_jump(self):
-        """Recover the player marker after effects or animation hide it."""
+        """Reveal the marker by jumping, then wait for landing before moving."""
         if self._press_key(self._config.get("jump_key", "Alt")):
             self._note_motion("jump")
+        airborne_position = None
         for _ in range(6):
             if self._stop.wait(0.05):
                 return None
             analysis = self.analysis_provider()
             position = getattr(analysis, "player_position", None) if analysis is not None else None
             if position is not None:
-                return position
-        return None
+                airborne_position = position
+                break
+
+        # Seeing the marker during the jump is only evidence of X position. Do
+        # not press a direction key until the jump animation has had time to
+        # finish, otherwise horizontal input may carry the character over a
+        # platform boundary while still airborne.
+        if not self._wait_until_settled(
+            "跳跃定位：等待角色落地后再判断左右方向"
+        ):
+            return None
+
+        analysis = self.analysis_provider()
+        landed_position = (
+            getattr(analysis, "player_position", None)
+            if analysis is not None
+            else None
+        )
+        return landed_position if landed_position is not None else airborne_position
 
     def _release_due_buffs(self, config: dict, due: dict, now: float):
         due_buffs = [

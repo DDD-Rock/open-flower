@@ -361,6 +361,59 @@ class MumuSmartWalkWorkerTests(unittest.TestCase):
         self.assertEqual(worker._settle_not_before, 21.05)
         self.assertTrue(worker._needs_settle)
 
+    def test_jump_relocation_waits_for_landing_before_returning_position(self):
+        statuses = []
+        positions = iter([(20, 10), (21, 30)])
+        worker = MumuSmartWalkWorker(
+            "127.0.0.1:16384",
+            "adb.exe",
+            lambda: SimpleNamespace(player_position=next(positions)),
+            status_callback=statuses.append,
+        )
+        worker._press_key = Mock(return_value=True)
+        worker._stop.wait = Mock(return_value=False)
+
+        with patch(
+            "workers.mumu_smart_walk_worker.time.monotonic",
+            side_effect=[10.0, 10.2],
+        ), patch(
+            "workers.mumu_smart_walk_worker.random.uniform",
+            return_value=1.0,
+        ):
+            position = worker._find_position_with_jump()
+
+        self.assertEqual(position, (21, 30))
+        self.assertEqual(worker._stop.wait.call_args_list[0].args, (0.05,))
+        self.assertAlmostEqual(worker._stop.wait.call_args_list[1].args[0], 0.8)
+        self.assertTrue(any("等待角色落地" in status for status in statuses))
+        self.assertFalse(worker._needs_settle)
+
+    def test_jump_relocation_can_use_airborne_x_after_landing_wait(self):
+        positions = iter([(20, 10), None])
+        worker = MumuSmartWalkWorker(
+            "127.0.0.1:16384",
+            "adb.exe",
+            lambda: (
+                SimpleNamespace(player_position=position)
+                if (position := next(positions)) is not None
+                else None
+            ),
+        )
+        worker._press_key = Mock(return_value=True)
+        worker._stop.wait = Mock(return_value=False)
+
+        with patch(
+            "workers.mumu_smart_walk_worker.time.monotonic",
+            side_effect=[10.0, 10.2],
+        ), patch(
+            "workers.mumu_smart_walk_worker.random.uniform",
+            return_value=1.0,
+        ):
+            position = worker._find_position_with_jump()
+
+        self.assertEqual(position, (20, 10))
+        self.assertAlmostEqual(worker._stop.wait.call_args_list[1].args[0], 0.8)
+
 
 if __name__ == "__main__":
     unittest.main()

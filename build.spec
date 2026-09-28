@@ -100,6 +100,18 @@ a = Analysis(
     noarchive=False,
 )
 
+# Do not redistribute Windows system forwarders or unrelated ICU binaries that
+# may be present on the build machine's PATH.  Qt6Core on Windows uses the
+# operating system's unversioned ICU API; bundling a version-suffixed ICU DLL
+# (for example ICU 78) makes importing PyQt6.QtWidgets fail with WinError 127.
+excluded_runtime_dlls = {"icuuc.dll", "icudt78.dll", "ucrtbase.dll"}
+a.binaries = [
+    entry
+    for entry in a.binaries
+    if os.path.basename(entry[0]).lower() not in excluded_runtime_dlls
+    and not os.path.basename(entry[0]).lower().startswith("api-ms-win-")
+]
+
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
 exe = EXE(

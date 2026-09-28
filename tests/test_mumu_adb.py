@@ -53,6 +53,7 @@ class MumuAdbTests(unittest.TestCase):
         self.assertEqual([device["serial"] for device in devices], ["emulator-5554"])
         self.assertEqual(devices[0]["model"], "SM G9980")
         self.assertEqual(devices[0]["boot_id"], "boot-id-1")
+        self.assertEqual(run.call_args_list[0].kwargs["timeout"], 30)
 
     @patch("utils.mumu_adb.subprocess.run")
     def test_decodes_screenshot_without_mutating_png_bytes(self, run):
@@ -82,6 +83,7 @@ class MumuAdbTests(unittest.TestCase):
         self.assertTrue(success)
         self.assertIn("connected", message)
         run.assert_called_once()
+        self.assertEqual(run.call_args.kwargs["timeout"], 30)
 
     def test_refuses_non_local_adb_endpoint(self):
         success, message = connect_adb_device("192.168.1.5:5555", "adb.exe")

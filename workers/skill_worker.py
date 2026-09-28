@@ -43,6 +43,11 @@ POST_SKILL_MOVE_LEFT_MAX_MS = 3000  # 最大3秒
 # 智能走的单段短走时长。
 SMART_WALK_MIN_MS = 300
 SMART_WALK_MAX_MS = 600
+# Jump relocation may reveal the marker while the character is airborne. Wait
+# for landing before any horizontal input so the character cannot drift over a
+# platform boundary in mid-air.
+SMART_WALK_JUMP_SETTLE_MIN_SECONDS = 0.8
+SMART_WALK_JUMP_SETTLE_MAX_SECONDS = 1.2
 
 
 class SkillWorker(QObject):
@@ -518,10 +523,11 @@ class SkillWorker(QObject):
             self.human_input.stop_move()
 
     def _find_smart_walk_player_during_jump(self) -> Optional[Tuple[int, int]]:
-        """Jump once, sampling while airborne to reveal an obscured marker."""
+        """Jump to reveal the marker, then wait for landing before returning."""
         if not self.is_running or not self._ensure_game_window_focus("跳跃定位"):
             return None
         self.human_input.stop_move()
+        airborne_position = None
         self.human_input.keyboard.press(self.jump_key)
         try:
             for _ in range(3):
@@ -530,11 +536,28 @@ class SkillWorker(QObject):
                     return None
                 position = self.smart_walk_monitor.find_player_position_once()
                 if position is not None:
-                    return position
+                    airborne_position = position
+                    break
         finally:
             self.human_input.keyboard.release(self.jump_key)
-        time.sleep(0.05)
-        return self.smart_walk_monitor.find_player_position_once()
+
+        settle_delay = random.uniform(
+            SMART_WALK_JUMP_SETTLE_MIN_SECONDS,
+            SMART_WALK_JUMP_SETTLE_MAX_SECONDS,
+        )
+        self.status_update.emit(
+            f"跳跃定位：等待角色落地 {settle_delay:.1f} 秒后再判断左右方向"
+        )
+        time.sleep(settle_delay)
+        if not self.is_running:
+            return None
+
+        landed_position = self.smart_walk_monitor.find_player_position_once()
+        return (
+            landed_position
+            if landed_position is not None
+            else airborne_position
+        )
     
     def _move_direction(self, direction: str, min_ms: int, max_ms: int):
         """

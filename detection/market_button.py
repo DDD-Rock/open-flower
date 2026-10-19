@@ -11,11 +11,21 @@ import numpy as np
 import time
 import win32gui
 import mss
+from dataclasses import dataclass
 from typing import Optional, Tuple
 
 import sys
 
 from detection.minimap_region_detector import detect_minimap_content_region
+
+
+@dataclass(frozen=True)
+class MarketLocationDetection:
+    state: str
+    market_button_position: Optional[Tuple[int, int]]
+    market_button_confidence: float
+    market_logo_confidence: float
+    market_logo_partial_confidence: float
 
 
 def _get_base_dir():
@@ -150,6 +160,133 @@ class MarketButtonDetector:
             return (center_x, center_y)
         
         return None
+
+    def detect_location(self) -> MarketLocationDetection:
+        """Classify one fresh frame as market, monster map, or unknown."""
+        screen = self.capture_game_screen()
+        if screen is None:
+            return MarketLocationDetection("unknown", None, 0.0, 0.0, 0.0)
+
+        button_position, button_confidence = self._match_market_button_in_frame(screen)
+        if button_position is None:
+            return MarketLocationDetection(
+                "unknown",
+                None,
+                button_confidence,
+                0.0,
+                0.0,
+            )
+        full_confidence, partial_confidence = self._match_market_logo_in_frame(screen)
+        has_logo = (
+            full_confidence >= 0.5
+            or partial_confidence >= 0.68
+        )
+        state = self.classify_location(
+            has_market_button=True,
+            has_market_logo=has_logo,
+        )
+        return MarketLocationDetection(
+            state,
+            button_position,
+            button_confidence,
+            full_confidence,
+            partial_confidence,
+        )
+
+    @staticmethod
+    def classify_location(has_market_button: bool, has_market_logo: bool) -> str:
+        if not has_market_button:
+            return "unknown"
+        return "market" if has_market_logo else "monster_map"
+
+    def _match_market_button_in_frame(
+        self,
+        screen: np.ndarray,
+    ) -> Tuple[Optional[Tuple[int, int]], float]:
+        template = cv2.imread(self.MARKET_BTN_TEMPLATE)
+        if template is None:
+            return None, 0.0
+
+        screen_height = screen.shape[0]
+        bottom_region_start = int(screen_height * 0.85)
+        bottom_region = screen[bottom_region_start:, :]
+        best_val = 0.0
+        best_loc = None
+        best_size = None
+        best_scale_index = None
+        h_orig, w_orig = template.shape[:2]
+
+        coarse_indexes = list(range(0, len(self.TEMPLATE_SCALES), 3))
+        if coarse_indexes[-1] != len(self.TEMPLATE_SCALES) - 1:
+            coarse_indexes.append(len(self.TEMPLATE_SCALES) - 1)
+
+        def evaluate(scale_index):
+            nonlocal best_val, best_loc, best_size, best_scale_index
+            scale = self.TEMPLATE_SCALES[scale_index]
+            new_w = int(w_orig * scale)
+            new_h = int(h_orig * scale)
+            if (
+                new_w < 10
+                or new_h < 10
+                or new_w > bottom_region.shape[1]
+                or new_h > bottom_region.shape[0]
+            ):
+                return
+            interpolation = cv2.INTER_AREA if scale < 1 else cv2.INTER_CUBIC
+            scaled_template = cv2.resize(
+                template,
+                (new_w, new_h),
+                interpolation=interpolation,
+            )
+            result = cv2.matchTemplate(
+                bottom_region,
+                scaled_template,
+                cv2.TM_CCOEFF_NORMED,
+            )
+            _, max_val, _, max_loc = cv2.minMaxLoc(result)
+            if max_val > best_val:
+                best_val = max_val
+                best_loc = max_loc
+                best_size = (new_w, new_h)
+                best_scale_index = scale_index
+
+        for scale_index in coarse_indexes:
+            evaluate(scale_index)
+        if best_scale_index is not None:
+            for scale_index in range(
+                max(0, best_scale_index - 2),
+                min(len(self.TEMPLATE_SCALES), best_scale_index + 3),
+            ):
+                if scale_index not in coarse_indexes:
+                    evaluate(scale_index)
+
+        if best_val < self.confidence or best_loc is None or best_size is None:
+            return None, best_val
+        width, height = best_size
+        return (
+            (
+                best_loc[0] + width // 2,
+                bottom_region_start + best_loc[1] + height // 2,
+            ),
+            best_val,
+        )
+
+    def _match_market_logo_in_frame(
+        self,
+        screen: np.ndarray,
+    ) -> Tuple[float, float]:
+        template = cv2.imread(self.MARKET_LOGO_TEMPLATE)
+        if template is None:
+            return 0.0, 0.0
+        header = screen[: min(screen.shape[0], 240), : min(screen.shape[1], 480)]
+        crop_top = int(template.shape[0] * 0.4)
+        full_confidence = self._match_logo_multiscale(header, template)
+        if full_confidence >= 0.5:
+            return full_confidence, 0.0
+        return full_confidence, self._match_logo_multiscale(
+            header,
+            template[crop_top:, :],
+        )
     
     def find_market_button(self) -> Optional[Tuple[int, int]]:
         """
@@ -225,7 +362,11 @@ class MarketButtonDetector:
             print(f"❌ 截取小地图标题区失败: {e}")
             return None
     
-    def is_market_logo_visible(self, confidence: float = 0.5) -> bool:
+    def is_market_logo_visible(
+        self,
+        confidence: float = 0.5,
+        retry: bool = True,
+    ) -> bool:
         """
         检测小地图左上角是否有市场Logo
         
@@ -261,23 +402,16 @@ class MarketButtonDetector:
         # 局部模板信息量更少，必须使用更高门槛。否则怪物地图顶部的技能
         # 图标可能在灰度、低缩放下偶然超过完整 Logo 的普通阈值。
         partial_confidence = max(0.68, confidence + 0.12)
-        for attempt in range(2):
+        attempt_count = 2 if retry else 1
+        for attempt in range(attempt_count):
             minimap_header = self.capture_minimap_header_region()
             if minimap_header is not None:
                 full_val = self._match_logo_multiscale(
                     minimap_header,
                     template,
                 )
-                bottom_val = self._match_logo_multiscale(
-                    minimap_header,
-                    template_bottom,
-                )
                 best_full_val = max(best_full_val, full_val)
-                best_bottom_val = max(best_bottom_val, bottom_val)
-                if (
-                    best_full_val >= confidence
-                    or best_bottom_val >= partial_confidence
-                ):
+                if best_full_val >= confidence:
                     print(
                         "市场Logo匹配: "
                         f"完整={best_full_val:.3f}/{confidence}, "
@@ -285,7 +419,20 @@ class MarketButtonDetector:
                         f"第{attempt + 1}帧"
                     )
                     return True
-            if attempt == 0:
+                bottom_val = self._match_logo_multiscale(
+                    minimap_header,
+                    template_bottom,
+                )
+                best_bottom_val = max(best_bottom_val, bottom_val)
+                if best_bottom_val >= partial_confidence:
+                    print(
+                        "市场Logo匹配: "
+                        f"完整={best_full_val:.3f}/{confidence}, "
+                        f"局部={best_bottom_val:.3f}/{partial_confidence}, "
+                        f"第{attempt + 1}帧"
+                    )
+                    return True
+            if retry and attempt == 0:
                 time.sleep(0.08)
 
         print(
@@ -306,20 +453,26 @@ class MarketButtonDetector:
         Returns:
             最佳匹配置信度
         """
-        scales = self.TEMPLATE_SCALES
         best_val = 0.0
+        best_scale_index = None
         gray_region = cv2.cvtColor(region, cv2.COLOR_BGR2GRAY)
         
         h_orig, w_orig = template.shape[:2]
-        
-        for scale in scales:
+
+        coarse_indexes = list(range(0, len(self.TEMPLATE_SCALES), 3))
+        if coarse_indexes[-1] != len(self.TEMPLATE_SCALES) - 1:
+            coarse_indexes.append(len(self.TEMPLATE_SCALES) - 1)
+
+        def evaluate(scale_index):
+            nonlocal best_val, best_scale_index
+            scale = self.TEMPLATE_SCALES[scale_index]
             new_w = int(w_orig * scale)
             new_h = int(h_orig * scale)
             
             if new_w < 10 or new_h < 10:
-                continue
+                return
             if new_w > region.shape[1] or new_h > region.shape[0]:
-                continue
+                return
             
             interpolation = cv2.INTER_AREA if scale < 1 else cv2.INTER_CUBIC
             scaled_template = cv2.resize(
@@ -347,7 +500,18 @@ class MarketButtonDetector:
             
             if max_val > best_val:
                 best_val = max_val
-        
+                best_scale_index = scale_index
+
+        for scale_index in coarse_indexes:
+            evaluate(scale_index)
+        if best_scale_index is not None:
+            for scale_index in range(
+                max(0, best_scale_index - 2),
+                min(len(self.TEMPLATE_SCALES), best_scale_index + 3),
+            ):
+                if scale_index not in coarse_indexes:
+                    evaluate(scale_index)
+
         return best_val
     
     def is_in_market_by_minimap(self, confidence: float = 0.5) -> bool:

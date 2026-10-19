@@ -143,7 +143,7 @@ class MumuMonitorWorkerTests(unittest.TestCase):
         self.assertEqual(dialog.buff_countdown_labels[1].text(), "40s")
         dialog.close()
 
-    def test_default_window_shows_the_full_live_flower_page(self):
+    def test_default_window_uses_compact_layout_without_hiding_default_buffs(self):
         dialog = EmulatorStreamDialog(
             {"serial": "127.0.0.1:16384", "vm_index": "0"}
         )
@@ -151,12 +151,13 @@ class MumuMonitorWorkerTests(unittest.TestCase):
         self.app.processEvents()
 
         scroll = dialog.live_flower_scroll
-        self.assertGreaterEqual(dialog.height(), 780)
+        self.assertEqual((dialog.width(), dialog.height()), (720, 580))
+        self.assertLessEqual(dialog.preview_surface.height(), 180)
         self.assertEqual(
             scroll.horizontalScrollBarPolicy(),
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff,
         )
-        self.assertTrue(all(row.height() >= 34 for row in dialog.buff_row_widgets))
+        self.assertTrue(all(row.height() >= 30 for row in dialog.buff_row_widgets))
         self.assertEqual(scroll.verticalScrollBar().maximum(), 0)
 
         for _ in range(5):

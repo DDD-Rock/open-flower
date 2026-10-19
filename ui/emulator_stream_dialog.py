@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
 
 from config import DEFAULT_BUFF_SLOT_COUNT, MAX_BUFF_SLOT_COUNT
 from ui.virtual_keyboard import VirtualKeyboardDialog
+from ui.mumu_dead_flower_panel import MumuDeadFlowerPanel
 
 
 class _ClickableMinimapLabel(QLabel):
@@ -47,10 +48,13 @@ class _ClickableMinimapLabel(QLabel):
 
 
 class EmulatorStreamDialog(QDialog):
+    MODES = ("live_flower", "smoke", "dead_flower", "pending")
+
     redetect_minimap_requested = pyqtSignal(str)
     smart_walk_anchor_selected = pyqtSignal(str, int, int)
     smart_walk_config_changed = pyqtSignal(str, object)
     smoke_config_changed = pyqtSignal(str, object)
+    dead_flower_config_changed = pyqtSignal(str, object)
     active_mode_changed = pyqtSignal(str)
 
     def __init__(self, device: dict, parent=None):
@@ -70,12 +74,15 @@ class EmulatorStreamDialog(QDialog):
         name = device.get("name") or f"MuMu-{self.vm_index}"
         self.setWindowTitle(f"{name} · 视频流设置")
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
-        self.resize(820, 780)
-        self.setMinimumSize(680, 460)
+        self.resize(720, 580)
+        self.setMinimumSize(620, 520)
         self.setStyleSheet(
             "QDialog{background:#F4F7FB;color:#172033;}"
             "QLabel#sectionTitle{font-size:13px;font-weight:700;color:#172033;}"
             "QLabel#muted{color:#747D8D;}"
+            "QPushButton{min-height:24px;padding:2px 8px;}"
+            "QSpinBox,QLineEdit{min-height:24px;}"
+            "QTabBar::tab{padding:6px 14px;}"
             "QFrame#previewSurface{background:#111722;border:1px solid #D8E0EC;border-radius:6px;}"
             "QFrame#statusPane{background:#FFFFFF;border-left:1px solid #DFE6F0;}"
             "QFrame#developmentPane{background:#FFFFFF;border-top:1px solid #DFE6F0;}"
@@ -91,25 +98,27 @@ class EmulatorStreamDialog(QDialog):
         root.setSpacing(0)
 
         upper = QWidget()
+        upper.setMinimumHeight(205)
+        upper.setMaximumHeight(225)
         upper_layout = QHBoxLayout(upper)
-        upper_layout.setContentsMargins(18, 18, 18, 16)
-        upper_layout.setSpacing(0)
+        upper_layout.setContentsMargins(14, 12, 14, 10)
+        upper_layout.setSpacing(14)
 
         preview_column = QWidget()
         preview_layout = QVBoxLayout(preview_column)
-        preview_layout.setContentsMargins(0, 0, 18, 0)
-        preview_layout.setSpacing(8)
+        preview_layout.setContentsMargins(0, 0, 0, 0)
+        preview_layout.setSpacing(6)
         preview_title = QLabel("实时小地图")
         preview_title.setObjectName("sectionTitle")
         preview_layout.addWidget(preview_title)
         self.preview_surface = QFrame()
         self.preview_surface.setObjectName("previewSurface")
-        self.preview_surface.setMinimumSize(360, 170)
+        self.preview_surface.setMinimumSize(310, 135)
         self.preview_surface.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
         )
         surface_layout = QVBoxLayout(self.preview_surface)
-        surface_layout.setContentsMargins(10, 10, 10, 10)
+        surface_layout.setContentsMargins(8, 8, 8, 8)
         self.minimap_label = _ClickableMinimapLabel("等待小地图画面")
         self.minimap_label._source_width = 1
         self.minimap_label._source_height = 1
@@ -122,23 +131,27 @@ class EmulatorStreamDialog(QDialog):
 
         status_pane = QFrame()
         status_pane.setObjectName("statusPane")
-        status_pane.setMinimumWidth(230)
+        status_pane.setMinimumWidth(205)
         status_layout = QVBoxLayout(status_pane)
-        status_layout.setContentsMargins(22, 0, 4, 0)
-        status_layout.setSpacing(8)
+        status_layout.setContentsMargins(14, 0, 0, 0)
+        status_layout.setSpacing(5)
+        status_header = QHBoxLayout()
+        status_header.setSpacing(6)
         status_title = QLabel("玩家位置")
         status_title.setObjectName("sectionTitle")
-        status_layout.addWidget(status_title)
-        self.redetect_button = QPushButton("再次识别小地图")
+        status_header.addWidget(status_title)
+        status_header.addStretch(1)
+        self.redetect_button = QPushButton("再次识别")
         self.redetect_button.setToolTip("重新查找当前视频流中的小地图范围")
         self.redetect_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.redetect_button.clicked.connect(
             lambda: self.redetect_minimap_requested.emit(self.serial)
         )
-        status_layout.addWidget(self.redetect_button)
-        self.coordinate_label = QLabel("X: --\nY: --")
+        status_header.addWidget(self.redetect_button)
+        status_layout.addLayout(status_header)
+        self.coordinate_label = QLabel("X: --    Y: --")
         self.coordinate_label.setStyleSheet(
-            "font-family:Consolas;font-size:24px;font-weight:700;color:#172033;"
+            "font-family:Consolas;font-size:20px;font-weight:700;color:#172033;"
         )
         status_layout.addWidget(self.coordinate_label)
         self.map_size_label = QLabel("小地图尺寸：--")
@@ -158,32 +171,33 @@ class EmulatorStreamDialog(QDialog):
         stream_label.setWordWrap(True)
         status_layout.addWidget(stream_label)
         upper_layout.addWidget(status_pane, 1)
-        root.addWidget(upper, 2)
+        root.addWidget(upper)
 
         development = QFrame()
         development.setObjectName("developmentPane")
         development_layout = QVBoxLayout(development)
-        development_layout.setContentsMargins(18, 12, 18, 14)
-        development_title = QLabel("控制配置")
-        development_title.setObjectName("sectionTitle")
-        development_layout.addWidget(development_title)
+        development_layout.setContentsMargins(14, 8, 14, 10)
+        development_layout.setSpacing(5)
         self.mode_tabs = QTabWidget()
         self.mode_tabs.setDocumentMode(True)
         self.mode_tabs.addTab(self._create_live_flower_tab(), "活花模式")
         self.mode_tabs.addTab(self._create_smoke_tab(), "烟雾模式")
+        self.dead_flower_panel = MumuDeadFlowerPanel(self)
+        self.dead_flower_panel.config_changed.connect(self._on_dead_flower_config)
+        self.mode_tabs.addTab(self.dead_flower_panel, "死花模式")
         pending = QLabel("开发中")
         pending.setAlignment(Qt.AlignmentFlag.AlignCenter)
         pending.setStyleSheet("color:#8791A3;font-size:15px;")
         self.mode_tabs.addTab(pending, "待定")
         self.mode_tabs.currentChanged.connect(self._on_mode_tab_changed)
         development_layout.addWidget(self.mode_tabs, 1)
-        root.addWidget(development, 3)
+        root.addWidget(development, 1)
 
     def _create_smoke_tab(self):
         panel = QWidget()
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(8)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(6)
         self.smoke_anchor_label = QLabel("烟雾位置：未标记（点击左上小地图）")
         layout.addWidget(self.smoke_anchor_label)
         layout.addWidget(QLabel("目前仅支持乌鲁庄园2（标点按 960 × 540 视频流坐标）"))
@@ -242,7 +256,16 @@ class EmulatorStreamDialog(QDialog):
         self.update_smoke_status("正在定位玩家黄点" if enabled else "未启动")
         if enabled and self.smart_walk_enabled.isChecked():
             self.smart_walk_enabled.setChecked(False)
+        if enabled:
+            self.dead_flower_panel.enabled.setChecked(False)
         self._emit_smoke_config()
+
+    def _on_dead_flower_config(self, config):
+        if config.get("enabled"):
+            self.smart_walk_enabled.setChecked(False)
+            self.smoke_enabled.setChecked(False)
+        self._render_minimap()
+        self.dead_flower_config_changed.emit(self.serial, config)
 
     def update_smoke_status(self, message):
         self.smoke_status_label.setText(f"烟雾状态：{message}")
@@ -293,14 +316,18 @@ class EmulatorStreamDialog(QDialog):
         self.smoke_anchor_label.setText(
             f"烟雾位置：X={anchor[0]} Y={anchor[1]}" if anchor else "烟雾位置：未标记（点击左上小地图）"
         )
+        self.smoke_enabled.blockSignals(True)
+        self.smoke_enabled.setChecked(bool(config.get("enabled")))
+        self.smoke_enabled.setText("停止" if config.get("enabled") else "启动")
+        self.smoke_enabled.blockSignals(False)
         self._render_minimap()
 
     def _create_live_flower_tab(self):
         panel = QWidget()
         panel.setObjectName("liveFlowerPage")
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(8, 8, 8, 4)
-        layout.setSpacing(7)
+        layout.setContentsMargins(6, 6, 6, 3)
+        layout.setSpacing(5)
         # Keep every row at its natural height. The default window is tall
         # enough to show this page; extra BUFF rows can still scroll.
         layout.setSizeConstraint(QVBoxLayout.SizeConstraint.SetMinimumSize)
@@ -318,12 +345,12 @@ class EmulatorStreamDialog(QDialog):
         self.smart_walk_width_input.setSuffix(" px")
         self.smart_walk_width_input.valueChanged.connect(self._on_smart_walk_size_changed)
         row.addWidget(self.smart_walk_width_input)
-        layout.addLayout(row)
         self.smart_walk_enabled = QPushButton("启动")
         self.smart_walk_enabled.setCheckable(True)
         self.smart_walk_enabled.setToolTip("启动或停止当前模拟器的活花模式")
         self.smart_walk_enabled.toggled.connect(self._on_smart_walk_enabled_changed)
-        layout.addWidget(self.smart_walk_enabled, 0, Qt.AlignmentFlag.AlignLeft)
+        row.addWidget(self.smart_walk_enabled)
+        layout.addLayout(row)
         interval_row = QHBoxLayout()
         interval_row.addWidget(QLabel("触发间隔"))
         self.smart_walk_min_input = QSpinBox()
@@ -347,9 +374,7 @@ class EmulatorStreamDialog(QDialog):
         self.smart_walk_jump_button.setFixedWidth(80)
         self.smart_walk_jump_button.clicked.connect(self._select_jump_key)
         jump_row.addWidget(self.smart_walk_jump_button)
-        jump_row.addStretch(1)
-        layout.addLayout(jump_row)
-        random_row = QHBoxLayout()
+        jump_row.addSpacing(10)
         self.buff_random_checkbox = QCheckBox("提前释放")
         self.buff_random_checkbox.setChecked(True)
         self.buff_random_input = QSpinBox()
@@ -358,10 +383,10 @@ class EmulatorStreamDialog(QDialog):
         self.buff_random_input.setSuffix(" 秒")
         self.buff_random_checkbox.toggled.connect(self._emit_smart_walk_config)
         self.buff_random_input.valueChanged.connect(self._emit_smart_walk_config)
-        random_row.addWidget(self.buff_random_checkbox)
-        random_row.addWidget(self.buff_random_input)
-        random_row.addStretch(1)
-        layout.addLayout(random_row)
+        jump_row.addWidget(self.buff_random_checkbox)
+        jump_row.addWidget(self.buff_random_input)
+        jump_row.addStretch(1)
+        layout.addLayout(jump_row)
         buff_title = QLabel("BUFF 配置（启用、按键、持续时间）")
         buff_title.setObjectName("muted")
         layout.addWidget(buff_title)
@@ -382,10 +407,6 @@ class EmulatorStreamDialog(QDialog):
         self.add_buff_button = QPushButton("＋ 添加 BUFF")
         self.add_buff_button.clicked.connect(self._add_buff_row)
         layout.addWidget(self.add_buff_button, 0, Qt.AlignmentFlag.AlignLeft)
-        note = QLabel("区域和中心点均使用当前小地图像素坐标；切换到其他选项卡时标记会隐藏。")
-        note.setObjectName("muted")
-        note.setWordWrap(True)
-        layout.addWidget(note)
         layout.addStretch(1)
         scroll = QScrollArea()
         scroll.setObjectName("liveFlowerScroll")
@@ -402,27 +423,28 @@ class EmulatorStreamDialog(QDialog):
         if len(self.buff_inputs) >= MAX_BUFF_SLOT_COUNT:
             return
         row_widget = QWidget()
-        row_widget.setMinimumHeight(34)
+        row_widget.setMinimumHeight(30)
         buff_row = QHBoxLayout(row_widget)
-        buff_row.setContentsMargins(0, 2, 0, 2)
+        buff_row.setContentsMargins(0, 1, 0, 1)
+        buff_row.setSpacing(5)
         index = len(self.buff_inputs)
         enabled = QCheckBox(f"BUFF {index + 1}")
         key_input = QPushButton("选键")
-        key_input.setFixedWidth(80)
+        key_input.setFixedWidth(68)
         duration_input = QSpinBox()
         duration_input.setRange(1, 86400)
         duration_input.setValue(270)
         duration_input.setSuffix(" 秒")
-        duration_input.setFixedWidth(100)
+        duration_input.setFixedWidth(88)
         countdown = QLabel("--")
         countdown.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        countdown.setFixedWidth(64)
+        countdown.setFixedWidth(56)
         countdown.setStyleSheet(
             "color:#747D8D;background:#EEF2F7;border-radius:9px;"
             "padding:3px;font-family:Consolas;font-weight:600;"
         )
         remove = QPushButton("删除")
-        remove.setFixedWidth(54)
+        remove.setFixedWidth(46)
         enabled.toggled.connect(self._on_buff_enabled_changed)
         key_input.clicked.connect(
             lambda _=False, row=row_widget: self._select_buff_key(
@@ -495,6 +517,9 @@ class EmulatorStreamDialog(QDialog):
             self._emit_smart_walk_config()
 
     def _on_minimap_clicked(self, x: int, y: int):
+        if self._active_mode == "dead_flower":
+            self.dead_flower_panel.set_anchor((int(x), int(y)))
+            return
         if self._active_mode == "smoke":
             self.smoke_anchor = (int(x), int(y))
             self.smoke_anchor_label.setText(f"烟雾位置：X={x} Y={y}")
@@ -524,6 +549,7 @@ class EmulatorStreamDialog(QDialog):
         if enabled:
             if self.smoke_enabled.isChecked():
                 self.smoke_enabled.setChecked(False)
+            self.dead_flower_panel.enabled.setChecked(False)
             self.update_buff_countdown(self._last_countdowns)
         else:
             self.update_buff_countdown({})
@@ -616,9 +642,18 @@ class EmulatorStreamDialog(QDialog):
             )
 
     def _on_mode_tab_changed(self, index: int):
-        self._active_mode = ("live_flower", "smoke", "pending")[index]
+        self._active_mode = self.MODES[index]
         self.active_mode_changed.emit(self._active_mode)
         self._render_minimap()
+
+    def restore_active_mode(self, config):
+        mode = config.get("active_mode")
+        if mode not in self.MODES:
+            # Older configurations have no tab preference. Reopen the running
+            # controller's tab so an existing dead-flower session stays visible.
+            mode = ("dead_flower" if (config.get("dead_flower") or {}).get("enabled") else
+                    "smoke" if (config.get("smoke") or {}).get("enabled") else "live_flower")
+        self.mode_tabs.setCurrentIndex(self.MODES.index(mode))
 
     def smart_walk_config(self):
         return {
@@ -712,7 +747,7 @@ class EmulatorStreamDialog(QDialog):
         self._minimap_image = None
         self.minimap_label.clear()
         self.minimap_label.setText("正在重新识别小地图")
-        self.coordinate_label.setText("X: --\nY: --")
+        self.coordinate_label.setText("X: --    Y: --")
         self.map_size_label.setText("小地图尺寸：--")
         self.detection_label.setText("正在分析最新画面")
 
@@ -751,10 +786,10 @@ class EmulatorStreamDialog(QDialog):
             self.update_minimap_frame(None)
         if analysis.player_position is not None:
             x, y = analysis.player_position
-            self.coordinate_label.setText(f"X: {x}\nY: {y}")
+            self.coordinate_label.setText(f"X: {x}    Y: {y}")
             self.detection_label.setText("已识别玩家黄点（相对小地图坐标）")
         else:
-            self.coordinate_label.setText("X: --\nY: --")
+            self.coordinate_label.setText("X: --    Y: --")
             if analysis.game_state == "loading":
                 self.detection_label.setText("过图中 / 状态未知")
             elif analysis.title_rect is not None:
@@ -835,6 +870,13 @@ class EmulatorStreamDialog(QDialog):
                 min(width - 1, x + self.smoke_width_input.value()) - max(0, x - self.smoke_width_input.value()),
                 min(height - 1, y + self.smoke_height_input.value()) - max(0, y - self.smoke_height_input.value()),
             )
+            painter.end()
+        if self._active_mode == "dead_flower" and self.dead_flower_panel.anchor:
+            painter = QPainter(image)
+            painter.setPen(QPen(Qt.GlobalColor.cyan, 1))
+            x, y = self.dead_flower_panel.anchor
+            painter.drawLine(x - 3, y, x + 3, y)
+            painter.drawLine(x, y - 3, x, y + 3)
             painter.end()
         self.minimap_label.set_source_size(width, height)
         target = self.minimap_label.size()

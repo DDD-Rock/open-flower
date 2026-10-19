@@ -94,6 +94,7 @@ class MainWindow(LegacyMainWindow):
         self._emulator_row_frame_sequences = {}
         self._emulator_row_updated_at = {}
         self._emulator_smart_walk_configs = {}
+        self._emulator_dead_countdowns = {}
         self._emulator_live_countdowns = {}
         self._mumu_settings_store = MumuSettingsStore()
         self._emulator_smart_walk_configs.update(self._mumu_settings_store.load())
@@ -229,6 +230,7 @@ class MainWindow(LegacyMainWindow):
         self.emulator_panel = EmulatorPanel()
         self.emulator_panel.refresh_requested.connect(self._refresh_emulator_devices)
         self.emulator_panel.start_requested.connect(self._start_mumu_instance)
+        self.emulator_panel.script_requested.connect(self._toggle_emulator_script)
         self.emulator_panel.settings_requested.connect(
             self._open_emulator_stream_settings
         )
@@ -2027,6 +2029,8 @@ class MainWindow(LegacyMainWindow):
             self._on_emulator_smart_walk_countdown
         )
         worker.smart_walk_status.connect(self._on_emulator_smart_walk_status)
+        worker.dead_flower_countdown.connect(self._on_emulator_dead_countdown)
+        worker.dead_flower_status.connect(self._on_emulator_dead_status)
         worker.smoke_status.connect(self._on_emulator_smoke_status)
         worker.smoke_finished.connect(self._on_emulator_smoke_finished)
         worker.stopped.connect(lambda current=worker: self._on_emulator_stopped(current))
@@ -2062,6 +2066,82 @@ class MainWindow(LegacyMainWindow):
             saved = self._emulator_smart_walk_configs.get(serial)
             if serial and saved:
                 self.emulator_worker.update_smart_walk_config(serial, saved)
+                self.emulator_worker.update_dead_flower_config(serial, saved.get("dead_flower") or {})
+            if serial:
+                self._refresh_emulator_script_button(serial)
+
+    @staticmethod
+    def _emulator_script_mode(config):
+        def configured(mode):
+            if mode == "live_flower":
+                return "buffs" in config or config.get("anchor") is not None
+            return isinstance(config.get(mode), dict) and bool(config[mode])
+
+        if (config.get("dead_flower") or {}).get("enabled"):
+            return "dead_flower"
+        if (config.get("smoke") or {}).get("enabled"):
+            return "smoke"
+        if config.get("enabled"):
+            return "live_flower"
+        for mode in (config.get("active_mode"), config.get("script_mode"), "dead_flower", "live_flower", "smoke"):
+            if mode in ("dead_flower", "live_flower", "smoke") and configured(mode):
+                return mode
+        return None
+
+    def _refresh_emulator_script_button(self, serial):
+        config = self._emulator_smart_walk_configs.get(serial) or {}
+        running = bool(config.get("enabled") or (config.get("dead_flower") or {}).get("enabled")
+                       or (config.get("smoke") or {}).get("enabled"))
+        self.emulator_panel.update_script_state(serial, self._emulator_script_mode(config) is not None, running)
+
+    def _toggle_emulator_script(self, serial):
+        if self.emulator_worker is None:
+            return
+        if not any(d.get("serial") == serial and d.get("state") == "device"
+                   for d in self._emulator_devices_snapshot):
+            return
+        saved = dict(self._emulator_smart_walk_configs.get(serial) or {})
+        mode = self._emulator_script_mode(saved)
+        if mode is None:
+            return
+        running = bool(saved.get("enabled") or (saved.get("dead_flower") or {}).get("enabled")
+                       or (saved.get("smoke") or {}).get("enabled"))
+        saved["enabled"] = False
+        for key in ("dead_flower", "smoke"):
+            if isinstance(saved.get(key), dict):
+                saved[key] = {**saved[key], "enabled": False}
+        if not running:
+            if mode == "live_flower":
+                saved["enabled"] = True
+            else:
+                saved[mode] = {**saved[mode], "enabled": True}
+            saved["script_mode"] = mode
+        self._emulator_smart_walk_configs[serial] = saved
+        self._mumu_settings_store.save(self._emulator_smart_walk_configs)
+        # Stop the old controller before starting any other mode.
+        self.emulator_worker.update_smoke_config(serial, {"enabled": False})
+        self.emulator_worker.update_dead_flower_config(serial, {"enabled": False})
+        self.emulator_worker.update_smart_walk_config(serial, saved)
+        if (saved.get("dead_flower") or {}).get("enabled"):
+            self.emulator_worker.update_dead_flower_config(serial, saved["dead_flower"])
+        elif (saved.get("smoke") or {}).get("enabled"):
+            self.emulator_worker.update_smoke_config(serial, saved["smoke"])
+        dialog = self._emulator_settings_dialogs.get(serial)
+        if dialog is not None:
+            self._restore_emulator_dialog_config(dialog, saved)
+        self._refresh_emulator_script_button(serial)
+
+    def _restore_emulator_dialog_config(self, dialog, config):
+        previous = dialog.blockSignals(True)
+        try:
+            dialog.set_smart_walk_config(config)
+            dialog.set_smoke_config(config.get("smoke"))
+            dialog.dead_flower_panel.set_config(config.get("dead_flower") or {})
+            dialog.dead_flower_panel.update_countdown(self._emulator_dead_countdowns.get(dialog.serial) or {})
+            if config.get("enabled"):
+                dialog.update_buff_countdown(self._emulator_live_countdowns.get(dialog.serial) or {})
+        finally:
+            dialog.blockSignals(previous)
 
     def _poll_emulator_latest(self):
         """Render only the newest frame/result, dropping queued stale updates."""
@@ -2155,6 +2235,7 @@ class MainWindow(LegacyMainWindow):
                 self._update_emulator_smart_walk_config
             )
             dialog.smoke_config_changed.connect(self._update_emulator_smoke_config)
+            dialog.dead_flower_config_changed.connect(self._update_emulator_dead_config)
             dialog.destroyed.connect(
                 lambda _=None, current=serial, owner=dialog: (
                     self._forget_emulator_settings_dialog(current, owner)
@@ -2166,15 +2247,28 @@ class MainWindow(LegacyMainWindow):
                     dialog.update_analysis(analysis)
             saved_config = self._emulator_smart_walk_configs.get(serial)
             if saved_config:
-                dialog.set_smart_walk_config(saved_config)
-                dialog.set_smoke_config(saved_config.get("smoke"))
+                self._restore_emulator_dialog_config(dialog, saved_config)
             if saved_config and saved_config.get("enabled"):
                 dialog.update_buff_countdown(
                     self._emulator_live_countdowns.get(serial) or {}
                 )
+            dialog.restore_active_mode(saved_config or {})
+            dialog.active_mode_changed.connect(
+                lambda mode, current=serial: self._remember_emulator_active_mode(current, mode)
+            )
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()
+
+    def _remember_emulator_active_mode(self, serial, mode):
+        if not serial or mode not in EmulatorStreamDialog.MODES:
+            return
+        saved = dict(self._emulator_smart_walk_configs.get(serial) or {})
+        saved["active_mode"] = mode
+        self._emulator_smart_walk_configs[serial] = saved
+        self._mumu_settings_store.save(self._emulator_smart_walk_configs)
+
+        self._refresh_emulator_script_button(serial)
 
     def _forget_emulator_settings_dialog(self, serial, dialog):
         """Drop a closed settings window without forgetting the one just reopened."""
@@ -2198,8 +2292,12 @@ class MainWindow(LegacyMainWindow):
             return
         saved = dict(self._emulator_smart_walk_configs.get(serial) or {})
         saved.update(config or {})
+        saved["script_mode"] = "live_flower"
+        if config.get("enabled") and isinstance(saved.get("dead_flower"), dict):
+            saved["dead_flower"] = {**saved["dead_flower"], "enabled": False}
         self._emulator_smart_walk_configs[serial] = saved
         self._mumu_settings_store.save(self._emulator_smart_walk_configs)
+        self._refresh_emulator_script_button(serial)
         worker = self.emulator_worker
         if worker is None:
             return
@@ -2210,16 +2308,50 @@ class MainWindow(LegacyMainWindow):
             return
         saved = dict(self._emulator_smart_walk_configs.get(serial) or {})
         saved["smoke"] = dict(config or {})
+        saved["script_mode"] = "smoke"
         if config.get("enabled"):
             saved["enabled"] = False
+            if isinstance(saved.get("dead_flower"), dict):
+                saved["dead_flower"] = {**saved["dead_flower"], "enabled": False}
             dialog = self._emulator_settings_dialogs.get(serial)
             if dialog is not None and dialog.smart_walk_enabled.isChecked():
                 dialog.smart_walk_enabled.setChecked(False)
         self._emulator_smart_walk_configs[serial] = saved
         self._mumu_settings_store.save(self._emulator_smart_walk_configs)
+        self._refresh_emulator_script_button(serial)
         worker = self.emulator_worker
         if worker is not None:
             worker.update_smoke_config(serial, config or {})
+
+    def _update_emulator_dead_config(self, serial, config):
+        if not serial:
+            return
+        saved = dict(self._emulator_smart_walk_configs.get(serial) or {})
+        saved["dead_flower"] = dict(config)
+        saved["script_mode"] = "dead_flower"
+        if config.get("enabled"):
+            saved["enabled"] = False
+            if isinstance(saved.get("smoke"), dict):
+                saved["smoke"] = {**saved["smoke"], "enabled": False}
+        self._emulator_smart_walk_configs[serial] = saved
+        self._mumu_settings_store.save(self._emulator_smart_walk_configs)
+        self._refresh_emulator_script_button(serial)
+        if self.emulator_worker is not None:
+            self.emulator_worker.update_dead_flower_config(serial, config)
+
+    def _on_emulator_dead_countdown(self, serial, countdowns):
+        normalized = {int(key): int(value) for key, value in dict(countdowns or {}).items()}
+        self._emulator_dead_countdowns[serial] = normalized
+        dialog = self._emulator_settings_dialogs.get(serial)
+        if dialog is not None:
+            dialog.dead_flower_panel.update_countdown(normalized)
+
+    def _on_emulator_dead_status(self, serial, message):
+        dialog = self._emulator_settings_dialogs.get(serial)
+        if dialog is not None:
+            dialog.dead_flower_panel.status.setText(f"死花状态：{message}")
+        self.logger.log(f"{serial}：{message}")
+        self.update_log_display()
 
     def _on_emulator_smoke_status(self, serial, message):
         dialog = self._emulator_settings_dialogs.get(serial)
@@ -2235,6 +2367,7 @@ class MainWindow(LegacyMainWindow):
         saved = self._emulator_smart_walk_configs.get(serial)
         if saved and "smoke" in saved:
             saved["smoke"]["enabled"] = False
+        self._refresh_emulator_script_button(serial)
 
     def _on_emulator_smart_walk_countdown(self, serial, countdowns):
         normalized = {}

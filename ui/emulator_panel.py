@@ -22,6 +22,7 @@ class EmulatorPanel(QFrame):
     refresh_requested = pyqtSignal()
     start_requested = pyqtSignal(str)
     settings_requested = pyqtSignal(object)
+    script_requested = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -109,6 +110,7 @@ class EmulatorPanel(QFrame):
                 row = EmulatorRow()
                 row.start_requested.connect(self.start_requested.emit)
                 row.settings_requested.connect(self.settings_requested.emit)
+                row.script_requested.connect(self.script_requested.emit)
                 item.setSizeHint(QSize(0, 94))
                 self.device_list.addItem(item)
                 self.device_list.setItemWidget(item, row)
@@ -125,6 +127,11 @@ class EmulatorPanel(QFrame):
                 row.update_frame(frame, fps)
                 break
 
+    def update_script_state(self, serial, configured, running):
+        for _, row in self._rows.values():
+            if row.serial == serial:
+                row.set_script_state(configured, running)
+
     def update_analysis(self, serial: str, analysis):
         for _, row in self._rows.values():
             if row.serial == serial:
@@ -135,6 +142,7 @@ class EmulatorPanel(QFrame):
 class EmulatorRow(QFrame):
     start_requested = pyqtSignal(str)
     settings_requested = pyqtSignal(object)
+    script_requested = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -145,6 +153,8 @@ class EmulatorRow(QFrame):
         self._controls_enabled = False
         self._device = {}
         self.serial = ""
+        self._script_configured = False
+        self._script_running = False
         self.setObjectName("emulatorRow")
         self.setFixedHeight(94)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -191,11 +201,24 @@ class EmulatorRow(QFrame):
         info.addStretch(1)
         layout.addLayout(info, 1)
 
-        self.start_button = QPushButton("启动")
-        self.start_button.setFixedSize(56, 30)
+        actions = QVBoxLayout()
+        actions.setSpacing(4)
+        self.start_button = QPushButton("开启模拟器")
+        self.start_button.setFixedSize(86, 30)
         self.start_button.setToolTip("启动这个 MuMu 实例")
         self.start_button.clicked.connect(self._emit_action_requested)
-        layout.addWidget(self.start_button)
+        actions.addWidget(self.start_button)
+        self.script_button = QPushButton("启动脚本")
+        self.script_button.setFixedSize(86, 30)
+        self.script_button.clicked.connect(lambda: self.script_requested.emit(self.serial))
+        self.script_button.hide()
+        actions.addWidget(self.script_button)
+        layout.addLayout(actions)
+
+    def set_script_state(self, configured, running):
+        self._script_configured = bool(configured)
+        self._script_running = bool(running)
+        self._sync_action_button()
 
     def _emit_action_requested(self):
         if self._state == "device":
@@ -208,6 +231,9 @@ class EmulatorRow(QFrame):
         self._sync_action_button()
 
     def _sync_action_button(self):
+        self.script_button.setVisible(self._script_configured or self._script_running)
+        self.script_button.setText("停止脚本" if self._script_running else "启动脚本")
+        self.script_button.setEnabled(self._controls_enabled and self._state == "device")
         # Settings is available as soon as ADB is connected.  Game-state OCR
         # can take a while (or be unavailable on login/character pages), but
         # that must not make the only configuration entry disappear.
@@ -224,7 +250,7 @@ class EmulatorRow(QFrame):
         elif self._state == "connecting":
             text = "连接中"
         else:
-            text = "重试" if self._device.get("launch_error") else "启动"
+            text = "开启模拟器"
         self.start_button.setText(text)
         self.start_button.setToolTip("启动这个 MuMu 实例")
         self.start_button.setEnabled(
@@ -241,6 +267,8 @@ class EmulatorRow(QFrame):
         self.serial = device.get("serial") or ""
         if self.serial != previous_serial or self._state != "device":
             self._analysis_state = "unknown"
+        if self.serial != previous_serial:
+            self._script_configured = self._script_running = False
         name = device.get("name") or f"MuMu-{index}"
         if self._vm_index:
             display_name = f"{self._vm_index} · {name}"

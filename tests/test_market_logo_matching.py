@@ -114,6 +114,32 @@ class MarketLogoMatchingTests(unittest.TestCase):
 
         self.assertTrue(detector.is_market_logo_visible(confidence=0.50))
 
+    def test_location_detection_uses_one_fresh_frame(self):
+        detector = MarketButtonDetector(hwnd=1)
+        frame = np.zeros((540, 960, 3), dtype=np.uint8)
+        captures = []
+        detector.capture_game_screen = lambda: captures.append(frame) or frame
+        detector._match_market_button_in_frame = lambda _frame: ((864, 500), 0.91)
+        detector._match_market_logo_in_frame = lambda _frame: (0.20, 0.30)
+
+        result = detector.detect_location()
+
+        self.assertEqual(result.state, "monster_map")
+        self.assertEqual(len(captures), 1)
+
+    def test_loading_frame_is_not_mistaken_for_monster_map(self):
+        detector = MarketButtonDetector(hwnd=1)
+        frame = np.zeros((540, 960, 3), dtype=np.uint8)
+        detector.capture_game_screen = lambda: frame
+        detector._match_market_button_in_frame = lambda _frame: (None, 0.12)
+        detector._match_market_logo_in_frame = lambda _frame: self.fail(
+            "loading frames should skip logo matching"
+        )
+
+        result = detector.detect_location()
+
+        self.assertEqual(result.state, "unknown")
+
 
 if __name__ == "__main__":
     unittest.main()

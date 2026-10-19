@@ -24,6 +24,7 @@ from utils.mumu_manager import (
 from utils.mumu_scrcpy_stream import ScrcpyVideoStream
 from workers.mumu_smart_walk_worker import MumuSmartWalkWorker
 from workers.mumu_smoke_worker import MumuSmokeWorker
+from workers.mumu_dead_flower_worker import MumuDeadFlowerWorker
 
 
 class MumuMonitorWorker(QThread):
@@ -35,6 +36,8 @@ class MumuMonitorWorker(QThread):
     smart_walk_status = pyqtSignal(str, str)
     smoke_status = pyqtSignal(str, str)
     smoke_finished = pyqtSignal(str, bool)
+    dead_flower_countdown = pyqtSignal(str, object)
+    dead_flower_status = pyqtSignal(str, str)
     status_update = pyqtSignal(str)
     error_signal = pyqtSignal(str)
     stopped = pyqtSignal()
@@ -79,6 +82,7 @@ class MumuMonitorWorker(QThread):
         self._stream_errors = {}
         self._smart_walk_workers = {}
         self._smoke_workers = {}
+        self._dead_flower_workers = {}
         self._window_handles = {}
         self._pending_launches = set()
         self._launching = set()
@@ -112,6 +116,7 @@ class MumuMonitorWorker(QThread):
             return
         if config.get("enabled"):
             self.stop_smoke(serial)
+            self.stop_dead_flower(serial)
         with self._lock:
             controller = self._smart_walk_workers.get(serial)
             if controller is None:
@@ -130,6 +135,8 @@ class MumuMonitorWorker(QThread):
                 self._smart_walk_workers[serial] = controller
                 controller.start()
         controller.update_config(config or {})
+        if config.get("enabled"):
+            controller.start()
 
     def update_smoke_config(self, serial: str, config: dict):
         if not serial:
@@ -137,6 +144,7 @@ class MumuMonitorWorker(QThread):
         if not config.get("enabled"):
             self.stop_smoke(serial)
             return
+        self.stop_dead_flower(serial)
         with self._lock:
             existing = self._smoke_workers.get(serial)
             if existing is not None and existing.running:
@@ -164,6 +172,40 @@ class MumuMonitorWorker(QThread):
             controller = self._smoke_workers.get(serial)
         if controller is not None:
             controller.stop()
+
+    def stop_dead_flower(self, serial):
+        with self._lock:
+            controller = self._dead_flower_workers.get(serial)
+        if controller is not None:
+            controller.stop()
+
+    def update_dead_flower_config(self, serial, config):
+        if not serial:
+            return
+        if not config.get("enabled"):
+            self.stop_dead_flower(serial)
+            return
+        self.stop_smoke(serial)
+        with self._lock:
+            walker = self._smart_walk_workers.get(serial)
+            controller = self._dead_flower_workers.get(serial)
+        if walker is not None:
+            walker.update_config({"enabled": False})
+            walker.stop()
+        if controller is None:
+            controller = MumuDeadFlowerWorker(
+                serial, self.adb_path,
+                lambda current=serial: self.get_latest_analysis(current),
+                window_handle=self._window_handle(serial),
+                snapshot_provider=lambda current=serial: self.get_latest_stream_snapshot(current),
+                redetect_callback=lambda current=serial: self.request_minimap_redetection(current),
+                countdown_callback=lambda value, current=serial: self.dead_flower_countdown.emit(current, value),
+                status_callback=lambda value, current=serial: self.dead_flower_status.emit(current, value),
+            )
+            with self._lock:
+                self._dead_flower_workers[serial] = controller
+        controller.update_config(config)
+        controller.start()
 
     def request_launch(self, vm_index: str):
         """Queue one instance launch without blocking the Qt UI thread."""
@@ -231,7 +273,7 @@ class MumuMonitorWorker(QThread):
         self.requestInterruption()
         with self._lock:
             streams = list(self._streams.values())
-            smart_walkers = list(self._smart_walk_workers.values())
+            smart_walkers = list(self._smart_walk_workers.values()) + list(self._dead_flower_workers.values())
             smoke_workers = list(self._smoke_workers.values())
         for controller in smoke_workers:
             controller.stop()
@@ -268,10 +310,11 @@ class MumuMonitorWorker(QThread):
             self._running = False
             with self._lock:
                 streams = list(self._streams.values())
-                smart_walkers = list(self._smart_walk_workers.values())
+                smart_walkers = list(self._smart_walk_workers.values()) + list(self._dead_flower_workers.values())
                 smoke_workers = list(self._smoke_workers.values())
                 self._streams.clear()
                 self._smart_walk_workers.clear()
+                self._dead_flower_workers.clear()
                 self._smoke_workers.clear()
             for controller in smoke_workers:
                 controller.stop()
@@ -360,6 +403,7 @@ class MumuMonitorWorker(QThread):
             removed = set(self._streams) - online_serials
             removed_streams = [self._streams.pop(serial) for serial in removed]
             removed_walkers = [self._smart_walk_workers.pop(serial, None) for serial in removed]
+            removed_walkers += [self._dead_flower_workers.pop(serial, None) for serial in removed]
             removed_smoke = [self._smoke_workers.pop(serial, None) for serial in removed]
             for serial in removed:
                 self._latest_frames.pop(serial, None)
@@ -425,6 +469,8 @@ class MumuMonitorWorker(QThread):
                 and (item.get("render_wnd") or item.get("main_wnd"))
             }
             for serial, controller in self._smart_walk_workers.items():
+                controller.update_window_handle(self._window_handles.get(serial))
+            for serial, controller in self._dead_flower_workers.items():
                 controller.update_window_handle(self._window_handles.get(serial))
             for instance in instances or []:
                 item = dict(instance)

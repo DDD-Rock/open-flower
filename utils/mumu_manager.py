@@ -16,11 +16,13 @@ class MumuManagerError(RuntimeError):
 
 
 def resolve_mumu_cli_path() -> Optional[str]:
-    """Locate the official mumu-cli shipped with MuMu Player 6."""
+    """Locate the CLI for the installed MuMu edition that is currently active."""
     candidates: list[Path] = []
     configured = os.environ.get("MUMU_CLI")
     if configured:
-        candidates.append(Path(configured))
+        configured_path = Path(configured)
+        if configured_path.is_file():
+            return str(configured_path)
 
     executable_dir = Path(sys.executable).resolve().parent
     candidates.extend(
@@ -32,19 +34,26 @@ def resolve_mumu_cli_path() -> Optional[str]:
 
     appdata = os.environ.get("APPDATA")
     if appdata:
-        install_config = (
-            Path(appdata)
-            / "Netease"
-            / "MuMuPlayerGlobal"
-            / "install_config.json"
-        )
-        try:
-            config = json.loads(install_config.read_text(encoding="utf-8"))
-            install_dir = config.get("product", {}).get("install_dir")
-            if install_dir:
-                candidates.append(Path(install_dir) / "nx_main" / "mumu-cli.exe")
-        except (OSError, ValueError, TypeError):
-            pass
+        # Domestic and global editions may be installed side by side. Their
+        # CLI executables expose different instance catalogs and window
+        # handles, so both locations must participate in active-edition
+        # selection.
+        for product_dir in ("MuMuPlayer", "MuMuPlayerGlobal"):
+            install_config = (
+                Path(appdata)
+                / "Netease"
+                / product_dir
+                / "install_config.json"
+            )
+            try:
+                config = json.loads(install_config.read_text(encoding="utf-8"))
+                install_dir = config.get("product", {}).get("install_dir")
+                if install_dir:
+                    candidates.append(
+                        Path(install_dir) / "nx_main" / "mumu-cli.exe"
+                    )
+            except (OSError, ValueError, TypeError):
+                pass
 
     for env_name in ("ProgramFiles", "ProgramFiles(x86)"):
         program_files = os.environ.get(env_name)
@@ -61,14 +70,37 @@ def resolve_mumu_cli_path() -> Optional[str]:
     )
 
     seen = set()
+    available = []
     for candidate in candidates:
         normalized = str(candidate).lower()
         if normalized in seen:
             continue
         seen.add(normalized)
         if candidate.is_file():
-            return str(candidate)
-    return None
+            available.append(str(candidate))
+
+    # A valid but inactive global installation used to win merely because it
+    # occupied the default path. Probe all installed editions so the manager
+    # catalog, ADB serial and render window always come from the same product.
+    for candidate in available:
+        if _cli_has_running_instance(candidate):
+            return candidate
+    return available[0] if available else None
+
+
+def _cli_has_running_instance(cli_path: str) -> bool:
+    try:
+        output = _run_cli(cli_path, "info", "--vmindex", "all", timeout=2)
+        data = json.loads(output)
+    except (MumuManagerError, ValueError, TypeError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    return any(
+        isinstance(item, dict)
+        and bool(item.get("is_process_started") or item.get("is_android_started"))
+        for item in data.values()
+    )
 
 
 def _run_cli(cli_path: str, *args: str, timeout: float = 10) -> str:

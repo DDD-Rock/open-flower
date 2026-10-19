@@ -96,8 +96,7 @@ class DeadFlowerWorker(QThread):
         self.TOLERANCE = self.portal_width_threshold  # 到达传送门的容差(小地图像素)
         # 时间参数
         self.BATCH_CAST_WINDOW = 10.0  # 10秒内的buff一起放
-        self.BLACK_SCREEN_WAIT = 2.5   # 传送黑屏等待时间
-        self.SCENE_CHECK_INTERVAL = 3.0  # 场景检测间隔
+        self.SCENE_CHECK_INTERVAL = 0.2  # 过图完成后尽快继续，减少怪图停留时间
         
         # 弹窗检测
         self.dialog_detector = DialogDetector(hwnd=hwnd, confidence=0.5)
@@ -160,10 +159,10 @@ class DeadFlowerWorker(QThread):
         delay = random.uniform(min_sec, max_sec)
         self._interruptible_sleep(delay)
 
-    def _is_market_logo_visible(self) -> bool:
+    def _is_market_logo_visible(self, retry: bool = True) -> bool:
         """检测小地图左上角是否有市场Logo"""
         try:
-            result = self.market_detector.is_market_logo_visible()
+            result = self.market_detector.is_market_logo_visible(retry=retry)
             return result
         except Exception as e:
             self.log_update.emit(f"市场Logo检测异常: {e}")
@@ -174,12 +173,7 @@ class DeadFlowerWorker(QThread):
         判断是否在市场中
         规则：小地图有市场Logo + 能看到自由市场按钮
         """
-        has_logo = self._is_market_logo_visible()
-        has_btn = self._is_market_btn_visible()
-        is_in = has_logo and has_btn
-        if log_result:
-            self.log_update.emit(f"市场检测: Logo={has_logo}, 按钮={has_btn}, 在市场={is_in}")
-        return is_in
+        return self._detect_location(log_result=log_result) == "market"
 
     def _is_market_btn_visible(self) -> bool:
         """判断自由市场按钮是否可见（使用缓存或模板匹配）"""
@@ -195,12 +189,41 @@ class DeadFlowerWorker(QThread):
         判断是否在怪物地图
         规则：没有市场Logo + 能看到自由市场按钮
         """
-        has_logo = self._is_market_logo_visible()
-        has_btn = self._is_market_btn_visible()
-        is_monster = (not has_logo) and has_btn
-        if log_result:
-            self.log_update.emit(f"怪物地图检测: Logo={has_logo}, 按钮={has_btn}, 怪物地图={is_monster}")
-        return is_monster
+        return self._detect_location(log_result=log_result) == "monster_map"
+
+    def _detect_location(self, log_result: bool = True) -> str:
+        """Use one fresh frame so a cached button cannot turn loading into a map."""
+        try:
+            detection = self.market_detector.detect_location()
+            if detection.market_button_position is not None:
+                game_pos = detection.market_button_position
+                self._cached_market_btn_game_pos = game_pos
+                client_pos = win32gui.ClientToScreen(self.hwnd, (0, 0))
+                self._cached_market_btn_pos = (
+                    client_pos[0] + game_pos[0],
+                    client_pos[1] + game_pos[1],
+                )
+            if log_result:
+                self.log_update.emit(
+                    "位置检测: "
+                    f"状态={detection.state}, "
+                    f"市场Logo={detection.market_logo_confidence:.3f}/"
+                    f"{detection.market_logo_partial_confidence:.3f}, "
+                    f"市场按钮={detection.market_button_confidence:.3f}"
+                )
+            return detection.state
+        except Exception as e:
+            self.log_update.emit(f"位置检测异常: {e}")
+            return "unknown"
+
+    def _wait_for_location(self, target: str, timeout: float = 15.0) -> bool:
+        """Poll fresh frames until the destination scene is fully rendered."""
+        deadline = time.monotonic() + timeout
+        while self.is_running and time.monotonic() < deadline:
+            if self._detect_location(log_result=False) == target:
+                return True
+            self._interruptible_sleep(self.SCENE_CHECK_INTERVAL)
+        return False
 
     def _get_window_size(self) -> Optional[tuple]:
         """获取当前游戏窗口客户区大小"""
@@ -520,20 +543,11 @@ class DeadFlowerWorker(QThread):
             if i < click_count - 1:
                 self._random_sleep(0.15, 0.40)
         
-        # 3. 等待黑屏（按钮会消失）
+        # 3. 等待目标场景。使用新截图确认按钮重新出现，不把黑屏当作过图完成。
         self.log_update.emit("等待传送...")
-        self._interruptible_sleep(self.BLACK_SCREEN_WAIT)
-        
-        # 4. 循环检测：市场Logo + 按钮可见 = 回到市场
-        max_wait = 15  # 最多等待15秒
-        start_time = time.time()
-        
-        while self.is_running and (time.time() - start_time) < max_wait:
-            if self._is_in_market():
-                self.log_update.emit("✅ 已回到市场")
-                return True
-            
-            self._interruptible_sleep(self.SCENE_CHECK_INTERVAL)
+        if self._wait_for_location("market"):
+            self.log_update.emit("✅ 已回到市场")
+            return True
         
         self.log_update.emit("⚠️ 回到市场超时")
         return False
@@ -763,20 +777,11 @@ class DeadFlowerWorker(QThread):
             self.log_update.emit("⚠️ 未能到达传送门")
             return False
         
-        # 3. 等待黑屏
+        # 3. 等待目标场景。怪图按钮一出现就继续，不再固定等待 2.5 秒。
         self.log_update.emit("等待传送...")
-        self._interruptible_sleep(self.BLACK_SCREEN_WAIT)
-        
-        # 4. 循环检测：无市场Logo + 按钮可见 = 离开市场
-        max_wait = 15
-        start_time = time.time()
-        
-        while self.is_running and (time.time() - start_time) < max_wait:
-            if self._is_in_monster_map():
-                self.log_update.emit("✅ 已离开市场")
-                return True
-            
-            self._interruptible_sleep(self.SCENE_CHECK_INTERVAL)
+        if self._wait_for_location("monster_map"):
+            self.log_update.emit("✅ 已离开市场")
+            return True
         
         self.log_update.emit("⚠️ 离开市场超时")
         return False
@@ -791,7 +796,7 @@ class DeadFlowerWorker(QThread):
         for _ in range(self.PORTAL_TRANSITION_CHECK_ATTEMPTS):
             if not self.is_running:
                 return False
-            if self._is_market_logo_visible():
+            if self._is_market_logo_visible(retry=False):
                 consecutive_logo_misses = 0
             else:
                 consecutive_logo_misses += 1
@@ -879,8 +884,9 @@ class DeadFlowerWorker(QThread):
                     self._interruptible_sleep(0.3)
                     
                     # 判断当前位置
-                    in_market = self._is_in_market()
-                    in_monster_map = self._is_in_monster_map()
+                    location = self._detect_location()
+                    in_market = location == "market"
+                    in_monster_map = location == "monster_map"
                     
                     self.log_update.emit(f"状态检测: 市场={in_market}, 怪物地图={in_monster_map}")
                     

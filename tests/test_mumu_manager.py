@@ -10,6 +10,7 @@ from utils.mumu_manager import (
     _run_cli,
     launch_mumu_instance,
     list_mumu_instances,
+    resolve_mumu_cli_path,
 )
 
 
@@ -138,6 +139,50 @@ class MumuManagerTests(unittest.TestCase):
             [], 0, stdout="急速鸡".encode("gb18030"), stderr=b""
         )
         self.assertEqual(_run_cli("mumu-cli.exe", "version"), "急速鸡")
+
+    @patch("utils.mumu_manager._cli_has_running_instance")
+    def test_prefers_running_domestic_install_when_global_is_also_installed(
+        self, has_running_instance
+    ):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            domestic_root = root / "domestic"
+            global_root = root / "global"
+            domestic_cli = domestic_root / "nx_main" / "mumu-cli.exe"
+            global_cli = global_root / "nx_main" / "mumu-cli.exe"
+            domestic_cli.parent.mkdir(parents=True)
+            global_cli.parent.mkdir(parents=True)
+            domestic_cli.touch()
+            global_cli.touch()
+
+            appdata = root / "appdata"
+            for product, install_root in (
+                ("MuMuPlayer", domestic_root),
+                ("MuMuPlayerGlobal", global_root),
+            ):
+                config_dir = appdata / "Netease" / product
+                config_dir.mkdir(parents=True)
+                (config_dir / "install_config.json").write_text(
+                    json.dumps({"product": {"install_dir": str(install_root)}}),
+                    encoding="utf-8",
+                )
+
+            has_running_instance.side_effect = (
+                lambda path: Path(path) == domestic_cli
+            )
+            with patch.dict(
+                "os.environ",
+                {
+                    "APPDATA": str(appdata),
+                    "ProgramFiles": str(root / "missing-program-files"),
+                    "ProgramFiles(x86)": str(root / "missing-program-files-x86"),
+                },
+                clear=False,
+            ), patch("utils.mumu_manager.sys.executable", str(root / "python.exe")):
+                selected = resolve_mumu_cli_path()
+
+        self.assertEqual(Path(selected), domestic_cli)
+        has_running_instance.assert_called_once_with(str(domestic_cli))
 
 
 if __name__ == "__main__":

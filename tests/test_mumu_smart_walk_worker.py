@@ -90,7 +90,7 @@ class MumuSmartWalkWorkerTests(unittest.TestCase):
 
         uniform.assert_called_once_with(SHORT_WALK_MIN_SECONDS, SHORT_WALK_MAX_SECONDS)
         self.assertEqual(duration, 1.0)
-        self.assertEqual((SHORT_WALK_MIN_SECONDS, SHORT_WALK_MAX_SECONDS), (0.8, 1.2))
+        self.assertEqual((SHORT_WALK_MIN_SECONDS, SHORT_WALK_MAX_SECONDS), (0.8, 1.1))
 
     def test_failed_double_press_is_not_given_a_false_countdown(self):
         countdowns = []
@@ -375,7 +375,7 @@ class MumuSmartWalkWorkerTests(unittest.TestCase):
 
         with patch(
             "workers.mumu_smart_walk_worker.time.monotonic",
-            side_effect=[10.0, 10.2],
+            side_effect=[10.0, 10.0, 10.2],
         ), patch(
             "workers.mumu_smart_walk_worker.random.uniform",
             return_value=1.0,
@@ -384,7 +384,7 @@ class MumuSmartWalkWorkerTests(unittest.TestCase):
 
         self.assertEqual(position, (21, 30))
         self.assertEqual(worker._stop.wait.call_args_list[0].args, (0.05,))
-        self.assertAlmostEqual(worker._stop.wait.call_args_list[1].args[0], 0.8)
+        self.assertAlmostEqual(worker._stop.wait.call_args_list[1].args[0], 1.0)
         self.assertTrue(any("等待角色落地" in status for status in statuses))
         self.assertFalse(worker._needs_settle)
 
@@ -404,7 +404,7 @@ class MumuSmartWalkWorkerTests(unittest.TestCase):
 
         with patch(
             "workers.mumu_smart_walk_worker.time.monotonic",
-            side_effect=[10.0, 10.2],
+            side_effect=[10.0, 10.0, 10.2],
         ), patch(
             "workers.mumu_smart_walk_worker.random.uniform",
             return_value=1.0,
@@ -412,7 +412,79 @@ class MumuSmartWalkWorkerTests(unittest.TestCase):
             position = worker._find_position_with_jump()
 
         self.assertEqual(position, (20, 10))
-        self.assertAlmostEqual(worker._stop.wait.call_args_list[1].args[0], 0.8)
+        self.assertAlmostEqual(worker._stop.wait.call_args_list[1].args[0], 1.0)
+
+    def test_periodic_walk_uses_starting_side_and_does_not_poll_delayed_displacement(self):
+        for start_x, expected in ((40, "right"), (60, "left")):
+            with self.subTest(start_x=start_x):
+                worker = self._worker()
+                worker.update_config({"enabled": True, "anchor": (50, 30), "buffs": []})
+                worker._deadline = 0
+                worker.analysis_provider = Mock(return_value=SimpleNamespace(player_position=(start_x, 30)))
+                worker._walk_once = Mock(return_value=True)
+                worker._find_position_with_jump = Mock()
+                with patch("workers.mumu_smart_walk_worker.random.uniform", return_value=0.95):
+                    worker._service_once({}, True, False)
+                worker._walk_once.assert_called_once_with(expected, 0.95)
+                worker.analysis_provider.assert_called_once()
+                worker._find_position_with_jump.assert_not_called()
+
+    def test_periodic_walk_at_center_moves_in_either_random_direction(self):
+        for direction in ("left", "right"):
+            with self.subTest(direction=direction):
+                worker = self._worker()
+                worker.update_config({"enabled": True, "anchor": (50, 30), "buffs": []})
+                worker._deadline = 0
+                worker.analysis_provider = Mock(return_value=SimpleNamespace(player_position=(50, 30)))
+                worker._walk_once = Mock(return_value=True)
+                with patch("workers.mumu_smart_walk_worker.random.choice", return_value=direction) as choice, patch(
+                    "workers.mumu_smart_walk_worker.random.uniform", return_value=0.95
+                ):
+                    worker._service_once({}, True, False)
+                choice.assert_called_once_with(("left", "right"))
+                worker._walk_once.assert_called_once_with(direction, 0.95)
+                worker.analysis_provider.assert_called_once()
+
+    def test_periodic_walk_skips_missing_position(self):
+        worker = self._worker()
+        worker.update_config({"enabled": True, "anchor": (50, 30)})
+        worker._deadline = 0
+        worker.analysis_provider = Mock(return_value=SimpleNamespace(player_position=None))
+        worker._find_position_with_jump = Mock(return_value=None)
+        worker._walk_once = Mock()
+        worker._service_once({}, True, False)
+        worker._walk_once.assert_not_called()
+
+    def test_direction_key_waits_for_landing_then_releases_after_fixed_hold(self):
+        worker = self._worker()
+        worker._get_window_handle = Mock(return_value=1)
+        events = []
+        worker._post_key = lambda hwnd, key, pressed: events.append("down" if pressed else "up")
+        worker._stop.wait = Mock(side_effect=lambda seconds: events.append(("wait", seconds)) or False)
+        worker._needs_settle = True
+        worker._settle_not_before = 101.2
+        with patch("workers.mumu_smart_walk_worker.time.monotonic", return_value=100):
+            self.assertTrue(worker._walk_once("right", 0.95))
+        self.assertAlmostEqual(events[0][1], 1.2)
+        self.assertEqual(events[1:], ["down", ("wait", 0.95), "up"])
+
+    def test_stop_during_landing_does_not_press_direction(self):
+        worker = self._worker()
+        worker._needs_settle = True
+        worker._settle_not_before = 101.2
+        worker._stop.wait = Mock(return_value=True)
+        worker._post_key = Mock()
+        with patch("workers.mumu_smart_walk_worker.time.monotonic", return_value=100):
+            self.assertFalse(worker._walk_once("left", 0.95))
+        worker._post_key.assert_not_called()
+
+    def test_stop_during_timed_walk_still_releases_direction(self):
+        worker = self._worker()
+        worker._get_window_handle = Mock(return_value=1)
+        worker._post_key = Mock()
+        worker._stop.wait = Mock(side_effect=lambda seconds: worker._stop.set() or True)
+        self.assertFalse(worker._walk_once("left", 0.95))
+        self.assertEqual([call.args[2] for call in worker._post_key.call_args_list], [True, False])
 
 
 if __name__ == "__main__":

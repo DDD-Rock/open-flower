@@ -13,14 +13,15 @@ import win32gui
 
 from utils.countdown import next_release_time, remaining_seconds
 from utils.keyboard_utils import KEY_HOLD_MAX_MS, KEY_HOLD_MIN_MS
-from utils.smart_walk import next_smart_walk_deadline, smart_walk_can_continue, smart_walk_direction
+from utils.smart_walk import next_smart_walk_deadline, smart_walk_direction
 
 # Emulator buffs need a longer hold than the Windows live-flower tap.
 BUFF_HOLD_MIN_MS = 300
 BUFF_HOLD_MAX_MS = 500
 # One short left/right step is about one second, not a fixed value.
 SHORT_WALK_MIN_SECONDS = 0.8
-SHORT_WALK_MAX_SECONDS = 1.2
+SHORT_WALK_MAX_SECONDS = 1.1
+LIVE_JUMP_LANDING_SECONDS = 1.2
 
 
 _KEYCODES = {
@@ -191,8 +192,10 @@ class MumuSmartWalkWorker:
         try:
             with _MUMU_INPUT_LOCK:
                 self._post_key(hwnd, virtual_key, True)
-                time.sleep(random.randint(minimum, maximum) / 1000.0)
-                self._post_key(hwnd, virtual_key, False)
+                try:
+                    time.sleep(random.randint(minimum, maximum) / 1000.0)
+                finally:
+                    self._post_key(hwnd, virtual_key, False)
             return True
         except Exception:
             return False
@@ -269,6 +272,12 @@ class MumuSmartWalkWorker:
         """Reveal the marker by jumping, then wait for landing before moving."""
         if self._press_key(self._config.get("jump_key", "Alt")):
             self._note_motion("jump")
+            # A briefly visible airborne marker is not proof of landing.
+            # Always allow a full landing interval after releasing jump,
+            # independent of delayed minimap updates.
+            self._settle_not_before = max(
+                self._settle_not_before, time.monotonic() + LIVE_JUMP_LANDING_SECONDS
+            )
         airborne_position = None
         for _ in range(6):
             if self._stop.wait(0.05):
@@ -354,6 +363,10 @@ class MumuSmartWalkWorker:
         return random.uniform(SHORT_WALK_MIN_SECONDS, SHORT_WALK_MAX_SECONDS)
 
     def _walk_once(self, direction: str, duration: float):
+        if self._stop.is_set() or not self._wait_until_settled(
+            "移动前等待角色落地 / 站稳"
+        ):
+            return False
         virtual_key = win32con.VK_LEFT if direction == "left" else win32con.VK_RIGHT
         hwnd = self._get_window_handle()
         if hwnd is None:
@@ -476,19 +489,14 @@ class MumuSmartWalkWorker:
         if position is None:
             position = self._find_position_with_jump()
         if position is not None:
-            direction = smart_walk_direction(position[0], anchor[0])
-            started = time.monotonic()
+            if abs(float(position[0]) - float(anchor[0])) <= 0.5:
+                # Still move at the center to prevent subsequent skills sticking.
+                direction = random.choice(("left", "right"))
+            else:
+                direction = smart_walk_direction(position[0], anchor[0])
+            # Position chooses only the direction. Completion is determined
+            # by key-hold time, even when the minimap freezes or loses the dot.
             self._walk_once(direction, self._short_walk_duration())
-            while not self._stop.is_set() and time.monotonic() - started < 1.2:
-                current = self.analysis_provider()
-                current_position = getattr(current, "player_position", None) if current is not None else None
-                if current_position is None:
-                    current_position = self._find_position_with_jump()
-                    if current_position is None:
-                        break
-                if not smart_walk_can_continue(direction, current_position[0], anchor[0], config["half_width"]):
-                    break
-                time.sleep(0.08)
         self._deadline = next_smart_walk_deadline(
             time.monotonic(), config["min_minutes"], config["max_minutes"]
         )

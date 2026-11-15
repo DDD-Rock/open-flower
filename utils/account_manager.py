@@ -359,23 +359,24 @@ class AccountManager:
             nickname = str(existing.get("nickname") or "")
         if role_name is None:
             role_name = str(existing.get("roleName") or "")
-        if authorized_modes is None:
+        if authorized_modes is None and "authorizedModes" in existing:
             authorized_modes = list(existing.get("authorizedModes") or [])
+        payload = {
+            "accessToken": token,
+            "username": username,
+            "nickname": nickname,
+            "clientId": client_id,
+            "clientName": client_name,
+            "roleName": role_name,
+            "isSuperAdmin": is_super_admin,
+        }
+        # Keep the key absent for legacy sessions so reads can apply the
+        # standard three-mode fallback. An explicit empty list means no access.
+        if authorized_modes is not None:
+            payload["authorizedModes"] = authorized_modes
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         self.storage_path.write_text(
-            json.dumps(
-                {
-                    "accessToken": token,
-                    "username": username,
-                    "nickname": nickname,
-                    "clientId": client_id,
-                    "clientName": client_name,
-                    "roleName": role_name,
-                    "isSuperAdmin": is_super_admin,
-                    "authorizedModes": authorized_modes,
-                },
-                ensure_ascii=False,
-            ),
+            json.dumps(payload, ensure_ascii=False),
             encoding="utf-8",
         )
 

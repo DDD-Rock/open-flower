@@ -10,6 +10,10 @@ import sys
 from typing import Optional, Tuple
 
 from config import DEFAULT_BUFF_SLOT_COUNT, MAX_BUFF_SLOT_COUNT
+from utils.taunt_settings import (
+    DEFAULT_TAUNT_HOLD_MS, DEFAULT_TAUNT_INTERVAL_MS, TAUNT_TIMING_VERSION,
+    load_taunt_timing_ranges, normalize_taunt_range,
+)
 
 DEFAULT_PORTAL_WIDTH_THRESHOLD = 2.5
 
@@ -70,7 +74,15 @@ class SettingsManager:
                       manual_portal_pos: Optional[Tuple[int, int]] = None,
                       portal_width_threshold: float = DEFAULT_PORTAL_WIDTH_THRESHOLD,
                       monitor_display_mode: str = "minimap_with_annotations",
-                      monitor_safe_zone: Optional[dict] = None):
+                      monitor_safe_zone: Optional[dict] = None,
+                      taunt_map_name: str = "",
+                      taunt_platform_id: str = "",
+                      taunt_jump_key: str = "Alt",
+                      taunt_skill_key: str = "",
+                      taunt_interval_min_ms: int = DEFAULT_TAUNT_INTERVAL_MS[0],
+                      taunt_interval_max_ms: int = DEFAULT_TAUNT_INTERVAL_MS[1],
+                      taunt_hold_min_ms: int = DEFAULT_TAUNT_HOLD_MS[0],
+                      taunt_hold_max_ms: int = DEFAULT_TAUNT_HOLD_MS[1]):
         """
         保存设置到 INI 文件
         
@@ -95,6 +107,10 @@ class SettingsManager:
         """
         # 清空旧配置
         self.config.clear()
+        taunt_interval_min_ms, taunt_interval_max_ms = normalize_taunt_range(
+            taunt_interval_min_ms, taunt_interval_max_ms, DEFAULT_TAUNT_INTERVAL_MS)
+        taunt_hold_min_ms, taunt_hold_max_ms = normalize_taunt_range(
+            taunt_hold_min_ms, taunt_hold_max_ms, DEFAULT_TAUNT_HOLD_MS)
         
         # 保存通用设置
         if mode is None:
@@ -121,6 +137,15 @@ class SettingsManager:
             "mode": mode,
             "return_to_market": str(return_to_market),
             "jump_key": jump_key,
+            "taunt_map_name": taunt_map_name,
+            "taunt_platform_id": taunt_platform_id,
+            "taunt_jump_key": taunt_jump_key,
+            "taunt_skill_key": taunt_skill_key,
+            "taunt_timing_version": str(TAUNT_TIMING_VERSION),
+            "taunt_interval_min_ms": str(taunt_interval_min_ms),
+            "taunt_interval_max_ms": str(taunt_interval_max_ms),
+            "taunt_hold_min_ms": str(taunt_hold_min_ms),
+            "taunt_hold_max_ms": str(taunt_hold_max_ms),
             "heal_skill_key": heal_skill_key,
             "teleport_skill_key": teleport_skill_key,
             "follow_heal_anchor_x": anchor_x,
@@ -219,12 +244,16 @@ class SettingsManager:
                 "mode",
                 fallback=("dead" if return_to_market else "live"),
             )
-            if mode not in {"dead", "live", "follow_heal", "monitor", "temple"}:
+            if mode not in {"dead", "live", "follow_heal", "monitor", "temple", "taunt"}:
                 mode = "dead" if return_to_market else "live"
             settings = {
                 "mode": mode,
                 "return_to_market": mode == "dead",
                 "jump_key": self.config.get("General", "jump_key", fallback="Alt"),
+                "taunt_map_name": self.config.get("General", "taunt_map_name", fallback=""),
+                "taunt_platform_id": self.config.get("General", "taunt_platform_id", fallback=""),
+                "taunt_jump_key": self.config.get("General", "taunt_jump_key", fallback="Alt"),
+                "taunt_skill_key": self.config.get("General", "taunt_skill_key", fallback=""),
                 "heal_skill_key": self.config.get("General", "heal_skill_key", fallback=""),
                 "teleport_skill_key": self.config.get("General", "teleport_skill_key", fallback=""),
                 "follow_heal_anchor_pos": self._load_optional_pair(
@@ -287,6 +316,12 @@ class SettingsManager:
                 "buffs": []
             }
             
+            timing_settings = self.config["General"] if self.config.has_section("General") else {}
+            for prefix, (minimum, maximum) in load_taunt_timing_ranges(timing_settings).items():
+                low_key, high_key = f"taunt_{prefix}_min_ms", f"taunt_{prefix}_max_ms"
+                settings[low_key], settings[high_key] = minimum, maximum
+            settings["taunt_timing_version"] = TAUNT_TIMING_VERSION
+
             sections = []
             for section in self.config.sections():
                 match = re.fullmatch(r"Buff(\d+)", section, re.IGNORECASE)

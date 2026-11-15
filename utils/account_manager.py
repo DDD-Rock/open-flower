@@ -26,7 +26,7 @@ class AccountError(Exception):
 
 class AccountManager:
     DEFAULT_SERVER_BASE_URL = "https://buff.juanwang.cc"
-    ALL_CLIENT_MODES = ("dead", "live", "temple", "follow_heal", "monitor", "emulator")
+    ALL_CLIENT_MODES = ("dead", "live", "temple", "follow_heal", "monitor", "emulator", "taunt")
     DEFAULT_AUTHORIZED_MODES = ("dead", "live", "temple")
     # These accounts always see every mode. Menu authorization does not apply.
     UNRESTRICTED_MODE_USERNAMES = frozenset({"wxw752"})

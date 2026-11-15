@@ -6,7 +6,7 @@ import copy
 
 import cv2
 import numpy as np
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSlot
 from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (
     QComboBox,
@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
 )
 
+from detection.minimap_monitor import MinimapMonitor
 from models.map_topology import (
     MapPlatform,
     MapPortal,
@@ -113,6 +114,9 @@ class MapEditorCanvas(QLabel):
         self.tool = "platform"
         self.pending = []
         self.show_navigation = False
+        self.live_image = None
+        self.trace_points = []
+        self.player_position = None
         self.setCursor(Qt.CursorShape.CrossCursor)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.redraw()
@@ -151,14 +155,12 @@ class MapEditorCanvas(QLabel):
             self.on_changed()
 
     def redraw(self):
+        width, height = self.image.shape[1], self.image.shape[0]
         display = cv2.resize(
-            self.image,
-            None,
-            fx=self.SCALE,
-            fy=self.SCALE,
+            self.live_image if self.live_image is not None else self.image,
+            (width * self.SCALE, height * self.SCALE),
             interpolation=cv2.INTER_NEAREST,
         )
-        width, height = self.image.shape[1], self.image.shape[0]
 
         def pixel(point):
             return (
@@ -232,6 +234,13 @@ class MapEditorCanvas(QLabel):
                     1,
                     tipLength=0.14,
                 )
+        if len(self.trace_points) >= 2:
+            points = np.rint(np.asarray(self.trace_points) * self.SCALE).astype(np.int32)
+            cv2.polylines(display, [points], False, (255, 220, 60), 1)
+        if self.player_position is not None:
+            point = tuple(round(value * self.SCALE) for value in self.player_position)
+            cv2.circle(display, point, 8, (0, 255, 255), 2)
+            cv2.circle(display, point, 3, (0, 255, 255), -1)
         qimage = QImage(
             display.data,
             display.shape[1],
@@ -375,13 +384,18 @@ class MapEditorDialog(QDialog):
             return
         self.trace_samples = []
         worker = MapTraceWorker(self.hwnd, self.window_selector, self)
-        worker.sample_ready.connect(self.trace_samples.append)
+        worker.frame_ready.connect(self._on_trace_frame)
         worker.status_update.connect(self.summary.setText)
         worker.error_signal.connect(
             lambda message: QMessageBox.warning(self, "采集失败", message)
         )
         worker.finished.connect(lambda current=worker: self._trace_finished(current))
         self.trace_worker = worker
+        self.canvas.trace_points = self.trace_samples
+        self.canvas.player_position = None
+        self.canvas.pending.clear()
+        self.canvas.redraw()
+        self.tool.setEnabled(False)
         self.trace_button.setText("完成自动采集")
         self.summary.setText(
             "请在游戏中手动"
@@ -389,12 +403,48 @@ class MapEditorDialog(QDialog):
         )
         worker.start()
 
-    def _finish_trace(self):
+    @pyqtSlot(object)
+    def _on_trace_frame(self, frame):
+        if self.trace_worker is None or self.sender() is not self.trace_worker:
+            return
+        image = frame.get("image")
+        player = frame.get("player")
+        point = None
+        if image is not None:
+            self.canvas.live_image = image
+            if player is not None:
+                point = (
+                    float(player[0]) * self.image.shape[1] / image.shape[1],
+                    float(player[1]) * self.image.shape[0] / image.shape[0],
+                )
+                self.trace_samples.append(point)
+        self.canvas.player_position = point
+        self.canvas.redraw()
+        samples = f"有效样本 {len(self.trace_samples)}"
+        if image is None:
+            self.summary.setText(f"小地图截图失败，请保持游戏小地图可见 · {samples}")
+        elif point is None:
+            self.summary.setText(f"暂未识别到玩家黄点 · {samples}")
+        else:
+            action = "上下攀爬绳索" if self.tool.currentData() == "rope" else "左右走过平台"
+            self.summary.setText(
+                f"请在游戏中手动{action} · 黄点 ({point[0]:.1f}, {point[1]:.1f}) · {samples}"
+            )
+
+    def _stop_trace(self):
         worker = self.trace_worker
         self.trace_worker = None
         if worker is not None:
             worker.stop()
             worker.wait(1500)
+        self.trace_button.setText("开始自动采集")
+        self.tool.setEnabled(True)
+        self.canvas.trace_points = []
+        self.canvas.player_position = None
+        self.canvas.redraw()
+
+    def _finish_trace(self):
+        self._stop_trace()
         size = (self.image.shape[1], self.image.shape[0])
         if self.tool.currentData() == "rope":
             result = RopeTraceBuilder.build_rope(self.trace_samples, size)
@@ -404,7 +454,6 @@ class MapEditorDialog(QDialog):
             points = PlatformTraceBuilder.build_polyline(self.trace_samples, size)
             if points:
                 self.topology.platforms.append(MapPlatform(points))
-        self.trace_button.setText("开始自动采集")
         self.canvas.redraw()
         self._refresh_summary()
         if len(self.trace_samples) < 5:
@@ -412,8 +461,7 @@ class MapEditorDialog(QDialog):
 
     def _trace_finished(self, worker):
         if self.trace_worker is worker:
-            self.trace_worker = None
-            self.trace_button.setText("开始自动采集")
+            self._stop_trace()
 
     def _edit_portal(self):
         if not self.topology.portals:
@@ -455,9 +503,12 @@ class MapEditorDialog(QDialog):
         self.canvas.redraw()
 
     def closeEvent(self, event):
-        if self.trace_worker is not None:
-            self._finish_trace()
+        self._stop_trace()
         super().closeEvent(event)
+
+    def reject(self):
+        self._stop_trace()
+        super().reject()
 
     def accept(self):
         if self.trace_worker is not None:
@@ -478,7 +529,6 @@ class MapLibraryDialog(QDialog):
     def __init__(
         self,
         store,
-        current_image=None,
         hwnd=None,
         window_selector=None,
         account_manager=None,
@@ -490,7 +540,6 @@ class MapLibraryDialog(QDialog):
         self.resize(520, 430)
         self.store = store
         self.maps = store.load()
-        self.current_image = current_image.copy() if current_image is not None else None
         self.hwnd = hwnd
         self.window_selector = window_selector
         self.game_window_resolver = game_window_resolver
@@ -574,11 +623,36 @@ class MapLibraryDialog(QDialog):
         index = self.list_widget.currentRow()
         return index if 0 <= index < len(self.maps) else None
 
+    def _capture_current_image(self):
+        """独立获取当前小地图，不依赖监控模式或监控画面缓存。"""
+        try:
+            if self.game_window_resolver is not None:
+                self.hwnd = self.game_window_resolver()
+            if not self.hwnd or (
+                self.window_selector is not None
+                and not self.window_selector.is_window_valid(self.hwnd)
+            ):
+                raise RuntimeError("未找到游戏窗口，请确保游戏已启动")
+            if self.window_selector is not None:
+                if not self.window_selector.ensure_window_focus(self.hwnd):
+                    raise RuntimeError("无法显示游戏窗口，请确保游戏窗口可见后重试")
+            monitor = MinimapMonitor()
+            monitor.set_window_handle(self.hwnd)
+            if monitor.auto_detect_dark_region() is None:
+                raise RuntimeError("无法识别小地图，请确保游戏窗口中的小地图已展开且可见")
+            image = monitor.capture_minimap()
+            if image is None or image.size == 0:
+                raise RuntimeError("截取小地图失败，请确保游戏窗口可见后重试")
+            return image
+        except Exception as error:
+            QMessageBox.warning(self, "获取小地图失败", str(error))
+            return None
+        finally:
+            self.activateWindow()
+            self.raise_()
+
     def _create(self):
         if not self.is_super_admin:
-            return
-        if self.current_image is None:
-            QMessageBox.information(self, "提示", "请先启动监控并取得当前小地图画面")
             return
         name, ok = QInputDialog.getText(self, "创建地图", "地图名称")
         name = name.strip()
@@ -587,13 +661,16 @@ class MapLibraryDialog(QDialog):
         if any(item.map_name.casefold() == name.casefold() for item in self.maps):
             QMessageBox.warning(self, "名称重复", "已经存在同名地图")
             return
-        height, width = self.current_image.shape[:2]
+        image = self._capture_current_image()
+        if image is None:
+            return
+        height, width = image.shape[:2]
         topology = MapTopology(
             name,
             width,
             height,
-            visual_signature=MinimapVisualMatcher.signature(self.current_image),
-            reference_bgr=self.current_image.tobytes(),
+            visual_signature=MinimapVisualMatcher.signature(image),
+            reference_bgr=image.tobytes(),
         )
         editor = MapEditorDialog(
             topology,

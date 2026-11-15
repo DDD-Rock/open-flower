@@ -49,6 +49,7 @@ from models.monitor_state import MonitorSafeZone, SafeZoneStabilizer
 from ui.monitor_panel import MonitorPanel
 from ui.emulator_panel import EmulatorPanel
 from ui.emulator_stream_dialog import EmulatorStreamDialog
+from ui.taunt_panel import TauntPanel
 from ui.main_window import MainWindow as LegacyMainWindow
 from ui.virtual_keyboard import VirtualKeyboardDialog
 from utils.screen_utils import get_screen_resolution
@@ -56,6 +57,7 @@ from workers.monitor_worker import MonitorWorker
 from workers.mumu_monitor_worker import MumuMonitorWorker
 from workers.rope_party_worker import RopePartyWorker
 from workers.lounge_worker import LoungeWorker
+from workers.taunt_worker import TauntWorker
 from utils.account_manager import AccountError
 from utils.rope_party import rebuild_phase
 from utils.mumu_settings import MumuSettingsStore
@@ -555,6 +557,7 @@ class MainWindow(LegacyMainWindow):
     def _create_mode_tabs(self, parent_layout):
         self.dead_flower_tab = QPushButton("死花模式")
         self.live_flower_tab = QPushButton("活花模式")
+        self.taunt_tab = QPushButton("挑衅模式")
         self.temple_tab = QPushButton("神殿模式")
         self.follow_heal_tab = QPushButton("跟补模式")
         self.monitor_tab = QPushButton("监控模式")
@@ -562,6 +565,7 @@ class MainWindow(LegacyMainWindow):
         self.mode_icon_specs = (
             (self.dead_flower_tab, QStyle.StandardPixmap.SP_ArrowBack),
             (self.live_flower_tab, QStyle.StandardPixmap.SP_BrowserReload),
+            (self.taunt_tab, QStyle.StandardPixmap.SP_ArrowForward),
             (self.temple_tab, QStyle.StandardPixmap.SP_DirHomeIcon),
             (self.follow_heal_tab, QStyle.StandardPixmap.SP_DialogYesButton),
             (self.monitor_tab, QStyle.StandardPixmap.SP_ComputerIcon),
@@ -573,6 +577,7 @@ class MainWindow(LegacyMainWindow):
         for button in (
             self.dead_flower_tab,
             self.live_flower_tab,
+            self.taunt_tab,
             self.temple_tab,
             self.follow_heal_tab,
             self.monitor_tab,
@@ -587,6 +592,7 @@ class MainWindow(LegacyMainWindow):
         self.live_flower_tab.clicked.connect(
             lambda: self._switch_mode_tab("live")
         )
+        self.taunt_tab.clicked.connect(lambda: self._switch_mode_tab("taunt"))
         self.follow_heal_tab.clicked.connect(
             lambda: self._switch_mode_tab("follow_heal")
         )
@@ -635,6 +641,7 @@ class MainWindow(LegacyMainWindow):
         buttons = {
             "dead": self.dead_flower_tab,
             "live": self.live_flower_tab,
+            "taunt": self.taunt_tab,
             "temple": self.temple_tab,
             "follow_heal": self.follow_heal_tab,
             "monitor": self.monitor_tab,
@@ -667,6 +674,7 @@ class MainWindow(LegacyMainWindow):
         return {
             "dead": "死花模式",
             "live": "活花模式",
+            "taunt": "挑衅模式",
             "follow_heal": "跟补模式",
             "monitor": "监控模式",
             "temple": "神殿模式",
@@ -677,6 +685,7 @@ class MainWindow(LegacyMainWindow):
         return {
             "dead": "释放 BUFF 后自动进入自由市场",
             "live": "在当前地图循环释放 BUFF",
+            "taunt": "刀飞专用 · 按平台左右边界持续跳走",
             "follow_heal": "自动补血、位置修正并回到基准点",
             "monitor": "只读取游戏画面并显示实时地图",
             "temple": "为时间神殿地图配置专用 BUFF 行为",
@@ -699,6 +708,7 @@ class MainWindow(LegacyMainWindow):
         )
         self.dead_flower_tab.setStyleSheet(selected if self.mode == "dead" else normal)
         self.live_flower_tab.setStyleSheet(selected if self.mode == "live" else normal)
+        self.taunt_tab.setStyleSheet(selected if self.mode == "taunt" else normal)
         self.follow_heal_tab.setStyleSheet(
             selected if self.mode == "follow_heal" else normal
         )
@@ -709,6 +719,7 @@ class MainWindow(LegacyMainWindow):
             selected_button = {
                 "dead": self.dead_flower_tab,
                 "live": self.live_flower_tab,
+                "taunt": self.taunt_tab,
                 "temple": self.temple_tab,
                 "follow_heal": self.follow_heal_tab,
                 "monitor": self.monitor_tab,
@@ -860,6 +871,11 @@ class MainWindow(LegacyMainWindow):
         self.monitor_panel.zone_height.valueChanged.connect(self._update_monitor_zone_size)
         self.monitor_panel.setVisible(False)
         parent_layout.addWidget(self.monitor_panel)
+        self.taunt_panel = TauntPanel(self.map_topologies)
+        self.taunt_panel.changed.connect(self._schedule_save)
+        self.taunt_panel.manage_maps_requested.connect(self.on_manage_maps)
+        self.taunt_panel.setVisible(False)
+        parent_layout.addWidget(self.taunt_panel)
 
     def _create_temple_function_selector(self):
         panel = QWidget()
@@ -1419,6 +1435,7 @@ class MainWindow(LegacyMainWindow):
         QTimer.singleShot(0, self._dismiss_input_focus)
 
     def _apply_saved_settings(self, settings: dict):
+        self.taunt_panel.restore_settings(settings)
         self.mode = settings.get(
             "mode",
             "dead" if settings.get("return_to_market", True) else "live",
@@ -1666,6 +1683,7 @@ class MainWindow(LegacyMainWindow):
                 if self.monitor_safe_zone is not None
                 else None
             ),
+            **self.taunt_panel.settings(),
         )
 
     def save_settings(self):
@@ -1902,8 +1920,10 @@ class MainWindow(LegacyMainWindow):
             self.movement_stack.setCurrentIndex(0)
         is_monitor = self.mode == "monitor"
         is_emulator = self.mode == "emulator"
-        self.settings_card.setVisible(not is_monitor and not is_emulator)
+        is_taunt = self.mode == "taunt"
+        self.settings_card.setVisible(not is_monitor and not is_emulator and not is_taunt)
         self.monitor_panel.setVisible(is_monitor)
+        self.taunt_panel.setVisible(is_taunt)
         self.smart_walk_options_widget.setVisible(
             self.mode == "live" and self.movement_mode == "smart"
         )
@@ -1961,6 +1981,9 @@ class MainWindow(LegacyMainWindow):
         if self.mode == "temple":
             self._start_temple_worker()
             return
+        if self.mode == "taunt":
+            self._start_taunt_worker()
+            return
         self._sync_buff_values_from_inputs()
         errors = []
         enabled = [buff for buff in self.buffs if buff.enabled]
@@ -2010,6 +2033,46 @@ class MainWindow(LegacyMainWindow):
         super().start_worker()
         self.temple_tab.setEnabled(False)
         if self.is_worker_running and self.remote_monitor_client:
+            self.remote_monitor_client.publish_client_state(self.mode, True)
+        self._refresh_primary_action()
+
+    def _start_taunt_worker(self):
+        if self.is_worker_running or self.worker is not None:
+            return
+        topology = self.taunt_panel.selected_map()
+        platform_id = self.taunt_panel.selected_platform_id()
+        if topology is None or not platform_id:
+            QMessageBox.warning(self, "配置有误", "请选择地图及该地图上已标注的平台")
+            return
+        if not self._ensure_game_window_available("启动挑衅模式"):
+            QMessageBox.warning(self, "提示", "未找到游戏窗口，请确保游戏已启动")
+            return
+        try:
+            worker = TauntWorker(
+                self.game_window_hwnd, topology, platform_id,
+                jump_key=self.taunt_panel.jump_key,
+                window_selector=self.window_selector, parent=self,
+                **self.taunt_panel.worker_options(),
+            )
+        except ValueError as error:
+            QMessageBox.warning(self, "配置有误", str(error))
+            return
+        self._persist_settings()
+        self._stop_party_invite_worker()
+        worker.log_update.connect(self.on_status_update)
+        worker.log_update.connect(self.taunt_panel.status.setText)
+        worker.error_signal.connect(self.on_error)
+        worker.position_update.connect(self.taunt_panel.update_position)
+        worker.finished.connect(lambda current=worker: self.on_worker_finished(current))
+        self.worker = worker
+        self.is_worker_running = True
+        self.taunt_panel.set_running(True)
+        self._set_buff_settings_enabled(False)
+        for tab in (self.dead_flower_tab, self.live_flower_tab, self.temple_tab,
+                    self.follow_heal_tab, self.monitor_tab, self.emulator_tab):
+            tab.setEnabled(False)
+        worker.start()
+        if self.remote_monitor_client:
             self.remote_monitor_client.publish_client_state(self.mode, True)
         self._refresh_primary_action()
 
@@ -2607,6 +2670,10 @@ class MainWindow(LegacyMainWindow):
             self.monitor_tab.setEnabled(True)
         if hasattr(self, "temple_tab"):
             self.temple_tab.setEnabled(True)
+        if hasattr(self, "taunt_panel"):
+            self.taunt_panel.set_running(False)
+            self.taunt_tab.setEnabled(True)
+            self.emulator_tab.setEnabled(True)
         if hasattr(self, "temple_function_combo"):
             self.temple_function_combo.setEnabled(True)
             for button in self.temple_function_buttons:
@@ -2621,6 +2688,7 @@ class MainWindow(LegacyMainWindow):
         self._refresh_primary_action()
 
     def _refresh_primary_action(self):
+        self.taunt_tab.setEnabled(not self.is_worker_running)
         self.toggle_btn.setStyleSheet("")
         self.toggle_btn.setProperty("running", self.is_worker_running)
         if self.mode == "monitor":
@@ -2722,7 +2790,6 @@ class MainWindow(LegacyMainWindow):
         self.live_flower_tab.setEnabled(False)
         self.follow_heal_tab.setEnabled(False)
         self.monitor_tab.setEnabled(False)
-        self.monitor_panel.manage_maps_button.setEnabled(False)
         self.monitor_panel.action_test_button.setEnabled(False)
         self.monitor_panel.route_test_button.setEnabled(False)
         self.logger.log("只读监控已启动")
@@ -3032,16 +3099,13 @@ class MainWindow(LegacyMainWindow):
     def on_manage_maps(self):
         from ui.map_library_dialog import MapLibraryDialog
 
-        frame = getattr(self.monitor_panel.canvas, "_frame", None)
-        current_image = frame.get("image") if frame else None
         dialog = MapLibraryDialog(
             self.map_library_store,
-            current_image=current_image,
             hwnd=self.game_window_hwnd,
             window_selector=self.window_selector,
             game_window_resolver=lambda: (
                 self.game_window_hwnd
-                if self._ensure_game_window_available("自动采集地图")
+                if self._ensure_game_window_available("地图标注")
                 else None
             ),
             account_manager=self.account_manager,
@@ -3049,6 +3113,8 @@ class MainWindow(LegacyMainWindow):
         )
         dialog.exec()
         self.map_topologies = self.map_library_store.load()
+        if hasattr(self, "taunt_panel"):
+            self.taunt_panel.set_maps(self.map_topologies)
         if hasattr(self, "map_count_label"):
             self.map_count_label.setText(f"已创建 {len(self.map_topologies)} 张地图")
         if (

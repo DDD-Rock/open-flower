@@ -63,7 +63,7 @@ class TauntPanel(QWidget):
             layout, "动作组间隔", DEFAULT_TAUNT_INTERVAL_MS)
         self.hold_min, self.hold_max = self._add_timing_range(
             layout, "挑衅按住时长", DEFAULT_TAUNT_HOLD_MS)
-        timing_hint = QLabel("每组跳后随机 70–150 毫秒按挑衅，再过 70–90 毫秒松跳；间隔从松开挑衅到下一次起跳计算。未设挑衅键时仅短跳。可在上方选配 BUFF，到期时松键释放，完成后继续挑衅。静止 2 秒松键重试，失焦暂停，回到游戏后重新起跳。")
+        timing_hint = QLabel("每组跳后随机 70–150 毫秒按挑衅，再过 70–90 毫秒松跳；间隔从松开挑衅到下一次起跳计算。未设挑衅键时仅短跳。可在上方选配 BUFF，到期时松开方向、跳跃和挑衅键，原地放完 BUFF 后继续跳走和挑衅。静止 2 秒松键重试，失焦暂停，回到游戏后重新起跳。")
         timing_hint.setWordWrap(True)
         layout.addWidget(timing_hint)
         self.status = QLabel("待机")

@@ -274,7 +274,7 @@ class TauntWorker(QThread):
                 return True
             for index, buff in enumerate(ready):
                 self.log_update.emit(f"释放 BUFF: {buff.key}")
-                # 与死花模式一致，随机短按两次，降低吞键概率。
+                # 与活花模式一致，随机短按两次，降低吞键概率。
                 for press_index in range(2):
                     with self._input_lock:
                         if not self._input_allowed() or self._focus_paused:

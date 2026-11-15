@@ -1932,7 +1932,7 @@ class MainWindow(LegacyMainWindow):
         self.settings_card.setVisible(not is_monitor and not is_emulator)
         self.flower_options_widget.setVisible(not is_taunt)
         self.buff_settings_subtitle.setText(
-            "可选，与死花模式共用；到期时松键放 BUFF，完成后继续挑衅。全部取消勾选则不放 BUFF。"
+            "可选，与活花模式一样原地释放 BUFF；到期时暂停跳走和挑衅，放完后继续。全部取消勾选则不放 BUFF。"
             if is_taunt else "按键完成后立即开始独立倒计时"
         )
         self.buff_settings_subtitle.setWordWrap(is_taunt)

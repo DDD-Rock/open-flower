@@ -9,7 +9,9 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from pynput.keyboard import Controller, Key
 
 from detection.minimap_monitor import MinimapMonitor
+from models.buff_config import BuffConfig
 from models.map_topology import MinimapVisualMatcher
+from utils.countdown import next_release_time, remaining_seconds
 from utils.taunt_settings import (
     DEFAULT_TAUNT_HOLD_MS, DEFAULT_TAUNT_INTERVAL_MS, normalize_taunt_range,
 )
@@ -19,9 +21,12 @@ class TauntWorker(QThread):
     log_update = pyqtSignal(str)
     error_signal = pyqtSignal(str)
     position_update = pyqtSignal(float, str)
+    countdown_update = pyqtSignal(dict)
     FRAME_INTERVAL = 1 / 30
     MISSING_PLAYER_GRACE = 0.15
     MISSING_PLAYER_TIMEOUT = 5.0
+    MAP_VALIDATION_ATTEMPTS = 5
+    MAP_VALIDATION_RETRY_DELAY = 0.12
     EDGE_MARGIN_PIXELS = 3.0
     TURN_INSET_RATIO = 0.08
     STUCK_TIMEOUT = 2.0
@@ -35,7 +40,7 @@ class TauntWorker(QThread):
                  interval_min_ms=DEFAULT_TAUNT_INTERVAL_MS[0],
                  interval_max_ms=DEFAULT_TAUNT_INTERVAL_MS[1],
                  hold_min_ms=DEFAULT_TAUNT_HOLD_MS[0],
-                 hold_max_ms=DEFAULT_TAUNT_HOLD_MS[1]):
+                 hold_max_ms=DEFAULT_TAUNT_HOLD_MS[1], buffs=None):
         super().__init__(parent)
         self.hwnd = hwnd
         self.topology = topology
@@ -48,6 +53,27 @@ class TauntWorker(QThread):
         self.left, self.right = min(xs), max(xs)
         self.jump_key = self.resolve_jump_key(jump_key)
         self.skill_key = self.resolve_skill_key(skill_key, jump_key)
+        self.buffs = []
+        self._buff_keys = {}
+        used_keys = {self.jump_key, self.skill_key}
+        for index, buff in enumerate(buffs or []):
+            if not buff.enabled:
+                continue
+            key = self._resolve_key(buff.key, f"BUFF {index + 1}")
+            try:
+                duration = float(buff.duration)
+            except (TypeError, ValueError):
+                raise ValueError(f"BUFF {index + 1} 的持续时间必须大于 0") from None
+            if not math.isfinite(duration) or duration <= 0:
+                raise ValueError(f"BUFF {index + 1} 的持续时间必须大于 0")
+            if key in used_keys:
+                raise ValueError("BUFF 按键不能重复，也不能与跳跃键或挑衅键相同")
+            used_keys.add(key)
+            self.buffs.append(BuffConfig(True, buff.key, duration))
+            self._buff_keys[buff.key] = key
+        self.buff_next_cast = {}
+        self._last_buff_countdown = None
+        self._held_buff_key = None
         self.skill_interval = tuple(value / 1000 for value in normalize_taunt_range(
             interval_min_ms, interval_max_ms, DEFAULT_TAUNT_INTERVAL_MS))
         self.skill_hold = tuple(value / 1000 for value in normalize_taunt_range(
@@ -114,9 +140,11 @@ class TauntWorker(QThread):
             last_x = None
             map_checked = False
             minimap_ready = False
+            map_validation_failures = 0
             while not self._stop_event.is_set():
                 if self.window_selector and not self.window_selector.is_window_valid(self.hwnd):
                     raise RuntimeError("游戏窗口已关闭或不可用，挑衅模式已停止")
+                self._update_buff_countdown()
                 if not self._input_allowed():
                     self._wait(self.FRAME_INTERVAL)
                     continue
@@ -124,13 +152,19 @@ class TauntWorker(QThread):
                     self._focus_paused = False
                     missing_since, missing_paused, last_x = None, False, None
                     map_checked = minimap_ready = False
+                    map_validation_failures = 0
                     self.log_update.emit("游戏窗口已恢复焦点，正在重新定位并启动跳走")
                 if not minimap_ready:
                     region = self.monitor.auto_detect_dark_region()
                     if not self._input_allowed():
                         continue
                     if region is None:
-                        raise RuntimeError("无法识别小地图，请确保游戏小地图已展开且可见")
+                        map_validation_failures += 1
+                        if map_validation_failures >= self.MAP_VALIDATION_ATTEMPTS:
+                            raise RuntimeError("无法识别小地图，请确保游戏小地图已展开且可见")
+                        self.log_update.emit("小地图暂未定位，正在重新截取并识别")
+                        self._wait(self.MAP_VALIDATION_RETRY_DELAY)
+                        continue
                     minimap_ready = True
                 image = self.monitor.capture_minimap()
                 if not self._input_allowed():
@@ -144,8 +178,18 @@ class TauntWorker(QThread):
                             self.topology.visual_signature, MinimapVisualMatcher.signature(image)
                         )
                         if not comparison["isMatch"]:
-                            raise RuntimeError("当前小地图与所选地图不匹配，请确认地图后重新启动")
+                            map_validation_failures += 1
+                            if map_validation_failures >= self.MAP_VALIDATION_ATTEMPTS:
+                                raise RuntimeError("当前小地图与所选地图不匹配，请确认地图后重新启动")
+                            minimap_ready = False
+                            similarity = comparison.get("similarityPercentage", 0)
+                            self.log_update.emit(
+                                f"地图校验暂未通过（相似度 {similarity:.1f}%），正在重新定位小地图"
+                            )
+                            self._wait(self.MAP_VALIDATION_RETRY_DELAY)
+                            continue
                         map_checked = True
+                        map_validation_failures = 0
                     point, _ = MinimapMonitor.find_player_position_in_image(image)
                 if not self._input_allowed():
                     continue
@@ -181,6 +225,10 @@ class TauntWorker(QThread):
                     missing_paused = False
                     width = image.shape[1]
                     last_x = float(point[0]) / width
+                    if self._cast_due_buffs():
+                        # BUFF 动画期间可能落地或被击退；重新采集黄点后再决定方向。
+                        missing_since, missing_paused, last_x = None, False, None
+                        continue
                     self.direction = self._next_direction(last_x, width)
                     if self._movement_stalled(last_x, width, now):
                         self._restart_movement(self.direction)
@@ -199,7 +247,63 @@ class TauntWorker(QThread):
         finally:
             self._release_keys()
             self.monitor.close_capture()
-            self.log_update.emit("挑衅模式已停止，方向键、跳跃键和挑衅键已释放")
+            self.log_update.emit("挑衅模式已停止，方向键、跳跃键、挑衅键和 BUFF 键已释放")
+
+    def _update_buff_countdown(self, now=None):
+        if now is None:
+            now = time.monotonic()
+        countdown = {
+            buff.key: remaining_seconds(self.buff_next_cast.get(buff.key, now), now)
+            for buff in self.buffs
+        }
+        if countdown != self._last_buff_countdown:
+            self._last_buff_countdown = countdown
+            self.countdown_update.emit(countdown)
+
+    def _cast_due_buffs(self):
+        now = time.monotonic()
+        ready = [buff for buff in self.buffs
+                 if self.buff_next_cast.get(buff.key, 0) <= now]
+        if not ready:
+            return False
+        self._release_keys()
+        self.log_update.emit(f"准备释放 {len(ready)} 个 BUFF，已松开方向、跳跃和挑衅键")
+        try:
+            # 等待当前跳跃落地，再原地释放 BUFF。
+            if not self._wait_for_input(random.uniform(0.8, 1.2)):
+                return True
+            for index, buff in enumerate(ready):
+                self.log_update.emit(f"释放 BUFF: {buff.key}")
+                # 与死花模式一致，随机短按两次，降低吞键概率。
+                for press_index in range(2):
+                    with self._input_lock:
+                        if not self._input_allowed() or self._focus_paused:
+                            return True
+                        key = self._buff_keys[buff.key]
+                        self.keyboard.press(key)
+                        self._held_buff_key = key
+                        if press_index == 1:
+                            pressed_at = time.monotonic()
+                            self.buff_next_cast[buff.key] = next_release_time(
+                                pressed_at, buff.duration)
+                            self._update_buff_countdown(pressed_at)
+                    if not self._wait_for_input(random.uniform(0.05, 0.15)):
+                        return True
+                    with self._input_lock:
+                        if self._held_buff_key is not None:
+                            self.keyboard.release(self._held_buff_key)
+                            self._held_buff_key = None
+                    if press_index == 0:
+                        if not self._wait_for_input(random.uniform(0.1, 0.3)):
+                            return True
+                if index < len(ready) - 1:
+                    if not self._wait_for_input(random.uniform(1.0, 2.0)):
+                        return True
+            if self._wait_for_input(random.uniform(0.8, 1.2)):
+                self.log_update.emit("BUFF 释放完成，正在重新定位黄点并恢复跳走和挑衅")
+        finally:
+            self._release_keys()
+        return True
 
     def _input_allowed(self):
         if self._stop_event.is_set():
@@ -241,6 +345,7 @@ class TauntWorker(QThread):
         while seconds > 0:
             if not self._input_allowed() or self._focus_paused:
                 return False
+            self._update_buff_countdown()
             self._tick_actions()
             step = min(seconds, self.FRAME_INTERVAL)
             if self._action_deadline is not None:
@@ -353,7 +458,7 @@ class TauntWorker(QThread):
     def _release_keys(self):
         with self._input_lock:
             for key in (self._held_direction, self.jump_key if self._jump_held else None,
-                        self.skill_key if self._skill_held else None):
+                        self.skill_key if self._skill_held else None, self._held_buff_key):
                 if key is not None:
                     try:
                         self.keyboard.release(key)
@@ -362,6 +467,7 @@ class TauntWorker(QThread):
             self._held_direction = None
             self._jump_held = False
             self._skill_held = False
+            self._held_buff_key = None
             self._action_stage = None
             self._action_deadline = None
             self._jump_started_at = None

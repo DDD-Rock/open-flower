@@ -274,7 +274,37 @@ def detect_minimap_content_region(
             if score > best_score:
                 best_score = score
                 best_rect = content
-    return best_rect
+    if best_rect is not None:
+        return best_rect
+
+    # 白云等浅色背景可能与下边框连成一整行，导致横向亮线一直延伸到
+    # 搜索区右边缘。此时沿已经找到的上边框宽度检查底部分界，而不是
+    # 退回按地图内容的深浅裁剪，避免把标题栏或部分地形当成整个画布。
+    for top_run in runs:
+        if top_run.y > maximum_frame_top:
+            break
+        for band_top, band_bottom in _bright_bands(
+            bright_mask, top_run.start_x, top_run.end_x, top_run.y, height - 1
+        ):
+            if band_top - top_run.y < 110 or band_bottom - band_top + 1 < 4:
+                continue
+            bottom = min(band_bottom, band_top + 6)
+            frame_height = bottom - top_run.y + 1
+            sides = _refined_sides(
+                bright_mask, top_run.y, bottom, top_run.start_x, top_run.end_x
+            )
+            if sides is None:
+                continue
+            left, right, left_support, right_support = sides
+            frame_width = right - left + 1
+            if not 0.62 <= frame_height / frame_width <= 2.40:
+                continue
+            if min(left_support, right_support) < round(frame_height * 0.78):
+                continue
+            content = _content_rect(bright_mask, left, top_run.y, right, bottom)
+            if content is not None:
+                return content
+    return None
 
 
 def crop_minimap_content(image: np.ndarray) -> Optional[np.ndarray]:

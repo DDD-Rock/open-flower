@@ -763,6 +763,7 @@ class MainWindow(LegacyMainWindow):
         title = QLabel("BUFF 配置")
         title.setStyleSheet("font-size:14px;font-weight:700;")
         subtitle = QLabel("按键完成后立即开始独立倒计时")
+        self.buff_settings_subtitle = subtitle
         subtitle.setStyleSheet("color:#747D8D;font-size:9px;")
         titles.addWidget(title)
         titles.addWidget(subtitle)
@@ -782,10 +783,16 @@ class MainWindow(LegacyMainWindow):
         layout.addWidget(self.buff_rows_container)
         self._rebuild_buff_rows()
 
+        self.flower_options_widget = QWidget()
+        options_layout = QVBoxLayout(self.flower_options_widget)
+        options_layout.setContentsMargins(0, 0, 0, 0)
+        options_layout.setSpacing(layout.spacing())
+        layout.addWidget(self.flower_options_widget)
+
         divider = QFrame()
         divider.setFrameShape(QFrame.Shape.HLine)
         divider.setStyleSheet("color:#E7EBF2;")
-        layout.addWidget(divider)
+        options_layout.addWidget(divider)
 
         self.temple_function_widget = self._create_temple_function_selector()
         self.movement_stack = QStackedWidget()
@@ -810,7 +817,7 @@ class MainWindow(LegacyMainWindow):
             self.on_auto_accept_party_invite_toggled
         )
         party_row.addWidget(self.party_invite_checkbox)
-        layout.addLayout(party_row)
+        options_layout.addLayout(party_row)
 
         map_row = QHBoxLayout()
         map_title = QLabel("地图标注")
@@ -823,14 +830,14 @@ class MainWindow(LegacyMainWindow):
         manage_maps_inline = QPushButton("管理地图")
         manage_maps_inline.clicked.connect(self.on_manage_maps)
         map_row.addWidget(manage_maps_inline)
-        layout.addLayout(map_row)
+        options_layout.addLayout(map_row)
 
         divider = QFrame()
         divider.setFrameShape(QFrame.Shape.HLine)
         divider.setStyleSheet("color:#E7EBF2;")
-        layout.addWidget(divider)
-        layout.addWidget(self.temple_function_widget)
-        layout.addWidget(self.movement_stack)
+        options_layout.addWidget(divider)
+        options_layout.addWidget(self.temple_function_widget)
+        options_layout.addWidget(self.movement_stack)
 
         self.role_widget = QWidget()
         role_row = QHBoxLayout(self.role_widget)
@@ -846,7 +853,7 @@ class MainWindow(LegacyMainWindow):
         save_role_btn = QPushButton("保存")
         save_role_btn.clicked.connect(self._save_character_name)
         role_row.addWidget(save_role_btn)
-        layout.addWidget(self.role_widget)
+        options_layout.addWidget(self.role_widget)
 
         self.role_actions_widget = QWidget()
         role_actions_row = QHBoxLayout(self.role_actions_widget)
@@ -858,7 +865,7 @@ class MainWindow(LegacyMainWindow):
         copy_btn = QPushButton("复制链接")
         copy_btn.clicked.connect(self._copy_clients_page)
         role_actions_row.addWidget(copy_btn)
-        layout.addWidget(self.role_actions_widget)
+        options_layout.addWidget(self.role_actions_widget)
         self.settings_card = card
         parent_layout.addWidget(card)
         self.monitor_panel = MonitorPanel()
@@ -1922,7 +1929,13 @@ class MainWindow(LegacyMainWindow):
         is_monitor = self.mode == "monitor"
         is_emulator = self.mode == "emulator"
         is_taunt = self.mode == "taunt" and "taunt" in getattr(self, "authorized_modes", ())
-        self.settings_card.setVisible(not is_monitor and not is_emulator and not is_taunt)
+        self.settings_card.setVisible(not is_monitor and not is_emulator)
+        self.flower_options_widget.setVisible(not is_taunt)
+        self.buff_settings_subtitle.setText(
+            "可选，与死花模式共用；到期时松键放 BUFF，完成后继续挑衅。全部取消勾选则不放 BUFF。"
+            if is_taunt else "按键完成后立即开始独立倒计时"
+        )
+        self.buff_settings_subtitle.setWordWrap(is_taunt)
         self.monitor_panel.setVisible(is_monitor)
         self.taunt_panel.setVisible(is_taunt)
         self.smart_walk_options_widget.setVisible(
@@ -2040,6 +2053,7 @@ class MainWindow(LegacyMainWindow):
     def _start_taunt_worker(self):
         if self.is_worker_running or self.worker is not None:
             return
+        self._sync_buff_values_from_inputs()
         topology = self.taunt_panel.selected_map()
         platform_id = self.taunt_panel.selected_platform_id()
         if topology is None or not platform_id:
@@ -2053,6 +2067,7 @@ class MainWindow(LegacyMainWindow):
                 self.game_window_hwnd, topology, platform_id,
                 jump_key=self.taunt_panel.jump_key,
                 window_selector=self.window_selector, parent=self,
+                buffs=self.buffs,
                 **self.taunt_panel.worker_options(),
             )
         except ValueError as error:
@@ -2063,11 +2078,13 @@ class MainWindow(LegacyMainWindow):
         worker.log_update.connect(self.on_status_update)
         worker.log_update.connect(self.taunt_panel.status.setText)
         worker.error_signal.connect(self.on_error)
+        worker.countdown_update.connect(self.on_countdown_update)
         worker.position_update.connect(self.taunt_panel.update_position)
         worker.finished.connect(lambda current=worker: self.on_worker_finished(current))
         self.worker = worker
         self.is_worker_running = True
         self.taunt_panel.set_running(True)
+        self._show_buff_countdown(True)
         self._set_buff_settings_enabled(False)
         for tab in (self.dead_flower_tab, self.live_flower_tab, self.temple_tab,
                     self.follow_heal_tab, self.monitor_tab, self.emulator_tab):

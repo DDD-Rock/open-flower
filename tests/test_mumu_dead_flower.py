@@ -1,4 +1,6 @@
 import os
+import shutil
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -29,6 +31,75 @@ class DeadFlowerTests(unittest.TestCase):
         worker.update_config({"enabled": True, "random_behavior_enabled": False,
                               "buffs": [{"enabled": True, "key": "1", "duration": 270}]})
         return worker, snap
+
+    def test_market_templates_load_from_unicode_bundle_path(self):
+        expected = EmulatorMarketRecognizer().templates
+        with tempfile.TemporaryDirectory(prefix="死花路径-") as directory:
+            base = Path(directory) / "中文 解压目录"
+            shutil.copytree(Path(__file__).resolve().parents[1] / "templates" / "emulator",
+                            base / "templates" / "emulator")
+            with patch.object(sys, "_MEIPASS", str(base), create=True):
+                actual = EmulatorMarketRecognizer().templates
+            for name, template in expected.items():
+                np.testing.assert_array_equal(actual[name], template)
+
+    def test_dead_start_button_survives_missing_empty_and_corrupt_templates(self):
+        with tempfile.TemporaryDirectory(prefix="死花路径-") as directory:
+            base = Path(directory)
+            template = base / "templates" / "emulator" / "market_icon.png"
+            template.parent.mkdir(parents=True)
+            with patch("workers.mumu_monitor_worker.resolve_mumu_cli_path", return_value=None), patch.object(
+                sys, "_MEIPASS", str(base), create=True
+            ):
+                monitor = MumuMonitorWorker()
+                dialog = EmulatorStreamDialog({"serial": "test"})
+                failures = []
+                monitor.dead_flower_start_failed.connect(lambda *args: failures.append(args))
+                dialog.dead_flower_config_changed.connect(monitor.update_dead_flower_config)
+                try:
+                    for data in (None, b"", b"not an image"):
+                        with self.subTest(data=data):
+                            if data is not None:
+                                template.write_bytes(data)
+                            dialog.dead_flower_panel.enabled.click()
+                            self.assertEqual(failures[-1][0], "test")
+                            self.assertIn("market_icon.png", failures[-1][1])
+                            self.assertNotIn("test", monitor._dead_flower_workers)
+                            dialog.dead_flower_panel.enabled.setChecked(False)
+                    self.assertEqual(len(failures), 3)
+                    shutil.copytree(Path(__file__).resolve().parents[1] / "templates" / "emulator",
+                                    template.parent, dirs_exist_ok=True)
+                    with patch.object(MumuDeadFlowerWorker, "start") as start:
+                        dialog.dead_flower_panel.enabled.click()
+                    start.assert_called_once()
+                    self.assertIn("test", monitor._dead_flower_workers)
+                    self.assertEqual(len(failures), 3)
+                finally:
+                    monitor.stop()
+                    monitor._analysis_executor.shutdown(wait=True, cancel_futures=True)
+                    dialog.close()
+
+    def test_dead_start_failure_cleans_up_controller_and_preserves_other_instances(self):
+        with patch("workers.mumu_monitor_worker.resolve_mumu_cli_path", return_value=None):
+            monitor = MumuMonitorWorker()
+        try:
+            other = Mock()
+            monitor._dead_flower_workers["other"] = other
+            failures = []
+            monitor.dead_flower_start_failed.connect(lambda *args: failures.append(args))
+            for operation in ("update_config", "start"):
+                with self.subTest(operation=operation):
+                    controller = Mock()
+                    getattr(controller, operation).side_effect = RuntimeError("startup error")
+                    with patch("workers.mumu_monitor_worker.MumuDeadFlowerWorker", return_value=controller):
+                        self.assertFalse(monitor.update_dead_flower_config("test", {"enabled": True}))
+                    controller.stop.assert_called_once()
+                    self.assertNotIn("test", monitor._dead_flower_workers)
+                    self.assertEqual(failures[-1], ("test", "启动失败：startup error"))
+                    other.stop.assert_not_called()
+        finally:
+            monitor.stop()
+            monitor._analysis_executor.shutdown(wait=True, cancel_futures=True)
 
     def test_menu_then_market_fixed_coordinates_and_no_buff_in_menu(self):
         worker, snap = self.worker()

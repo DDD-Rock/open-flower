@@ -38,6 +38,7 @@ class MumuMonitorWorker(QThread):
     smoke_finished = pyqtSignal(str, bool)
     dead_flower_countdown = pyqtSignal(str, object)
     dead_flower_status = pyqtSignal(str, str)
+    dead_flower_start_failed = pyqtSignal(str, str)
     status_update = pyqtSignal(str)
     error_signal = pyqtSignal(str)
     stopped = pyqtSignal()
@@ -185,27 +186,41 @@ class MumuMonitorWorker(QThread):
         if not config.get("enabled"):
             self.stop_dead_flower(serial)
             return
-        self.stop_smoke(serial)
-        with self._lock:
-            walker = self._smart_walk_workers.get(serial)
-            controller = self._dead_flower_workers.get(serial)
-        if walker is not None:
-            walker.update_config({"enabled": False})
-            walker.stop()
-        if controller is None:
-            controller = MumuDeadFlowerWorker(
-                serial, self.adb_path,
-                lambda current=serial: self.get_latest_analysis(current),
-                window_handle=self._window_handle(serial),
-                snapshot_provider=lambda current=serial: self.get_latest_stream_snapshot(current),
-                redetect_callback=lambda current=serial: self.request_minimap_redetection(current),
-                countdown_callback=lambda value, current=serial: self.dead_flower_countdown.emit(current, value),
-                status_callback=lambda value, current=serial: self.dead_flower_status.emit(current, value),
-            )
+        controller = None
+        try:
+            self.stop_smoke(serial)
             with self._lock:
-                self._dead_flower_workers[serial] = controller
-        controller.update_config(config)
-        controller.start()
+                walker = self._smart_walk_workers.get(serial)
+                controller = self._dead_flower_workers.get(serial)
+            if walker is not None:
+                walker.update_config({"enabled": False})
+                walker.stop()
+            if controller is None:
+                controller = MumuDeadFlowerWorker(
+                    serial, self.adb_path,
+                    lambda current=serial: self.get_latest_analysis(current),
+                    window_handle=self._window_handle(serial),
+                    snapshot_provider=lambda current=serial: self.get_latest_stream_snapshot(current),
+                    redetect_callback=lambda current=serial: self.request_minimap_redetection(current),
+                    countdown_callback=lambda value, current=serial: self.dead_flower_countdown.emit(current, value),
+                    status_callback=lambda value, current=serial: self.dead_flower_status.emit(current, value),
+                )
+                with self._lock:
+                    self._dead_flower_workers[serial] = controller
+            controller.update_config(config)
+            controller.start()
+            return True
+        except Exception as exc:
+            message = f"启动失败：{exc}"
+            if controller is not None:
+                try:
+                    controller.stop()
+                except Exception as stop_exc:
+                    message += f"；停止失败：{stop_exc}"
+                with self._lock:
+                    self._dead_flower_workers.pop(serial, None)
+            self.dead_flower_start_failed.emit(serial, message)
+            return False
 
     def request_launch(self, vm_index: str):
         """Queue one instance launch without blocking the Qt UI thread."""

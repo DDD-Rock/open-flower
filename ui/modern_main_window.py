@@ -665,6 +665,7 @@ class MainWindow(LegacyMainWindow):
                 self._update_mode_tab_style()
                 self._update_movement_mode_visibility()
                 self._schedule_save()
+        self.taunt_panel.setVisible(self.mode == "taunt" and "taunt" in self.authorized_modes)
         self._refresh_primary_action()
 
         if self.mode == "emulator":
@@ -1920,7 +1921,7 @@ class MainWindow(LegacyMainWindow):
             self.movement_stack.setCurrentIndex(0)
         is_monitor = self.mode == "monitor"
         is_emulator = self.mode == "emulator"
-        is_taunt = self.mode == "taunt"
+        is_taunt = self.mode == "taunt" and "taunt" in getattr(self, "authorized_modes", ())
         self.settings_card.setVisible(not is_monitor and not is_emulator and not is_taunt)
         self.monitor_panel.setVisible(is_monitor)
         self.taunt_panel.setVisible(is_taunt)
@@ -2094,6 +2095,7 @@ class MainWindow(LegacyMainWindow):
         worker.smart_walk_status.connect(self._on_emulator_smart_walk_status)
         worker.dead_flower_countdown.connect(self._on_emulator_dead_countdown)
         worker.dead_flower_status.connect(self._on_emulator_dead_status)
+        worker.dead_flower_start_failed.connect(self._on_emulator_dead_start_failed)
         worker.smoke_status.connect(self._on_emulator_smoke_status)
         worker.smoke_finished.connect(self._on_emulator_smoke_finished)
         worker.stopped.connect(lambda current=worker: self._on_emulator_stopped(current))
@@ -2186,7 +2188,8 @@ class MainWindow(LegacyMainWindow):
         self.emulator_worker.update_dead_flower_config(serial, {"enabled": False})
         self.emulator_worker.update_smart_walk_config(serial, saved)
         if (saved.get("dead_flower") or {}).get("enabled"):
-            self.emulator_worker.update_dead_flower_config(serial, saved["dead_flower"])
+            if self.emulator_worker.update_dead_flower_config(serial, saved["dead_flower"]) is False:
+                return
         elif (saved.get("smoke") or {}).get("enabled"):
             self.emulator_worker.update_smoke_config(serial, saved["smoke"])
         dialog = self._emulator_settings_dialogs.get(serial)
@@ -2401,6 +2404,18 @@ class MainWindow(LegacyMainWindow):
         self._refresh_emulator_script_button(serial)
         if self.emulator_worker is not None:
             self.emulator_worker.update_dead_flower_config(serial, config)
+
+    def _on_emulator_dead_start_failed(self, serial, message):
+        saved = dict(self._emulator_smart_walk_configs.get(serial) or {})
+        saved["dead_flower"] = {**(saved.get("dead_flower") or {}), "enabled": False}
+        self._emulator_smart_walk_configs[serial] = saved
+        self._emulator_dead_countdowns[serial] = {}
+        self._mumu_settings_store.save(self._emulator_smart_walk_configs)
+        dialog = self._emulator_settings_dialogs.get(serial)
+        if dialog is not None:
+            self._restore_emulator_dialog_config(dialog, saved)
+        self._refresh_emulator_script_button(serial)
+        self._on_emulator_dead_status(serial, message)
 
     def _on_emulator_dead_countdown(self, serial, countdowns):
         normalized = {int(key): int(value) for key, value in dict(countdowns or {}).items()}

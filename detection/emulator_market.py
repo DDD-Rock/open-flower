@@ -23,9 +23,16 @@ class EmulatorMarketRecognizer:
         base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
         self.templates = {}
         for name in self.REGIONS:
-            template = cv2.imread(str(base / "templates" / "emulator" / f"{name}.png"))
+            path = base / "templates" / "emulator" / f"{name}.png"
+            # OpenCV's Windows filename handling does not support all Unicode
+            # paths. Read with Python, then decode the image from memory.
+            try:
+                data = path.read_bytes()
+            except OSError as exc:
+                raise RuntimeError(f"无法读取模拟器市场识别模板：{path}") from exc
+            template = cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_COLOR) if data else None
             if template is None:
-                raise RuntimeError(f"缺少模拟器市场识别模板：{name}")
+                raise RuntimeError(f"模拟器市场识别模板损坏：{path}")
             self.templates[name] = template
 
     def matches(self, frame, name, threshold=0.82):

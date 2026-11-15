@@ -2,7 +2,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -12,6 +12,7 @@ from ui.emulator_panel import EmulatorPanel, EmulatorRow
 from ui.emulator_stream_dialog import EmulatorStreamDialog
 from ui.modern_main_window import MainWindow
 from utils.mumu_settings import MumuSettingsStore
+from workers.mumu_monitor_worker import MumuMonitorWorker
 
 
 class ScriptActionsHarness(QWidget):
@@ -23,6 +24,8 @@ class ScriptActionsHarness(QWidget):
     _update_emulator_smart_walk_config = MainWindow._update_emulator_smart_walk_config
     _update_emulator_smoke_config = MainWindow._update_emulator_smoke_config
     _on_emulator_smoke_finished = MainWindow._on_emulator_smoke_finished
+    _on_emulator_dead_start_failed = MainWindow._on_emulator_dead_start_failed
+    _on_emulator_dead_status = MainWindow._on_emulator_dead_status
     _on_emulator_devices = MainWindow._on_emulator_devices
 
 
@@ -35,6 +38,8 @@ class EmulatorScriptActionTests(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.owner = ScriptActionsHarness()
         self.owner.emulator_worker = Mock()
+        self.owner.logger = Mock()
+        self.owner.update_log_display = Mock()
         self.owner.emulator_panel = EmulatorPanel()
         self.owner.emulator_panel.set_running(True)
         self.owner._emulator_smart_walk_configs = {
@@ -134,6 +139,34 @@ class EmulatorScriptActionTests(unittest.TestCase):
             {"enabled": True, "key": "3", "duration": 270}]})
         self.assertFalse(self.row("c").script_button.isHidden())
         self.assertEqual(self.row("c").script_button.text(), "启动脚本")
+
+    def test_start_failure_resets_settings_and_list_without_losing_configuration(self):
+        with patch("workers.mumu_monitor_worker.resolve_mumu_cli_path", return_value=None):
+            monitor = MumuMonitorWorker()
+        self.owner.emulator_worker = monitor
+        monitor.dead_flower_start_failed.connect(self.owner._on_emulator_dead_start_failed)
+        dialog = EmulatorStreamDialog({"serial": "a"})
+        self.owner._emulator_settings_dialogs["a"] = dialog
+        dialog.dead_flower_config_changed.connect(self.owner._update_emulator_dead_config)
+        self.owner._restore_emulator_dialog_config(dialog, self.owner._emulator_smart_walk_configs["a"])
+        before = dialog.dead_flower_panel.config()
+        self.owner._update_emulator_dead_config("a", before)
+        try:
+            with patch("workers.mumu_monitor_worker.MumuDeadFlowerWorker", side_effect=RuntimeError("模板损坏")):
+                for source in (dialog.dead_flower_panel.enabled, self.row("a").script_button):
+                    with self.subTest(source=source):
+                        source.click()
+                        self.assertFalse(dialog.dead_flower_panel.enabled.isChecked())
+                        self.assertEqual(dialog.dead_flower_panel.enabled.text(), "启动")
+                        self.assertEqual(self.row("a").script_button.text(), "启动脚本")
+                        self.assertIn("模板损坏", dialog.dead_flower_panel.status.text())
+                        self.assertEqual(self.owner._emulator_smart_walk_configs["a"]["dead_flower"], before)
+                        self.assertEqual(self.owner._mumu_settings_store.load()["a"]["dead_flower"], before)
+                        self.assertFalse(self.owner._emulator_smart_walk_configs["b"]["enabled"])
+                        self.assertNotIn("a", monitor._dead_flower_workers)
+        finally:
+            monitor.stop()
+            monitor._analysis_executor.shutdown(wait=True, cancel_futures=True)
 
 
 if __name__ == "__main__":

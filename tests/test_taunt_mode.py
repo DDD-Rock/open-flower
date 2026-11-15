@@ -953,6 +953,11 @@ class TauntConfigurationTests(unittest.TestCase):
         self.assertEqual(self.panel.settings()["taunt_skill_key"], "")
 
     def test_taunt_follows_the_existing_account_authorization_policy(self):
+        for source in ({}, {"username": "ordinary_user"}, {"authorizedModes": []}):
+            with self.subTest(source=source):
+                self.assertNotIn("taunt", AccountManager._authorized_modes_from(source))
+        self.assertNotIn("taunt", AccountManager.DEFAULT_AUTHORIZED_MODES)
+        self.assertNotIn("taunt", MainWindow.DEFAULT_AUTHORIZED_MODES)
         self.assertIn("taunt", AccountManager._authorized_modes_from({}, is_super_admin=True))
         self.assertIn("taunt", AccountManager._authorized_modes_from({"authorizedModes": ["taunt"]}))
         self.assertNotIn("taunt", AccountManager._authorized_modes_from({"authorizedModes": ["live"]}))
@@ -1043,6 +1048,54 @@ class TauntWindowTests(unittest.TestCase):
         self.assertFalse(self.window.is_worker_running)
         self.assertEqual(self.window.mode, "dead")
         self.assertTrue(self.window.taunt_tab.isHidden())
+        self.assertTrue(self.window.taunt_panel.isHidden())
+
+    def test_default_account_does_not_expose_saved_taunt_mode(self):
+        self.settings.save_settings([], mode="taunt")
+        window = MainWindow()
+        self.addCleanup(window.close)
+
+        self.assertNotIn("taunt", window.authorized_modes)
+        self.assertTrue(window.taunt_tab.isHidden())
+        self.assertTrue(window.taunt_panel.isHidden())
+        self.assertEqual(window.mode, "dead")
+        window._switch_mode_tab("taunt")
+        self.assertEqual(window.mode, "dead")
+
+    def test_explicit_grant_reveals_taunt_mode(self):
+        self.window.apply_authorized_modes(["dead"])
+        self.assertTrue(self.window.taunt_tab.isHidden())
+        self.window._switch_mode_tab("taunt")
+        self.assertEqual(self.window.mode, "dead")
+
+        self.window.apply_authorized_modes(["dead", "taunt"])
+        self.assertFalse(self.window.taunt_tab.isHidden())
+        self.window._switch_mode_tab("taunt")
+        self.assertEqual(self.window.mode, "taunt")
+        self.assertFalse(self.window.taunt_panel.isHidden())
+
+    def test_unauthorized_taunt_cannot_start_even_with_stale_mode(self):
+        self.window.apply_authorized_modes(["dead"])
+        self.window.mode = "taunt"
+
+        with patch("ui.modern_main_window.QMessageBox.warning") as warning:
+            self.window.start_worker()
+
+        self.worker_type.assert_not_called()
+        warning.assert_called_once()
+        self.assertFalse(self.window.is_worker_running)
+
+    def test_revoking_all_modes_stops_and_hides_taunt(self):
+        self.window.start_worker()
+
+        self.window.apply_authorized_modes([])
+        self.window._update_movement_mode_visibility()
+
+        self.worker_type.return_value.stop.assert_called_once_with()
+        self.assertFalse(self.window.is_worker_running)
+        self.assertTrue(self.window.taunt_tab.isHidden())
+        self.assertTrue(self.window.taunt_panel.isHidden())
+        self.assertFalse(self.window.toggle_btn.isEnabled())
 
 
 if __name__ == "__main__":

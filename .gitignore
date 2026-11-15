@@ -61,3 +61,6 @@ Desktop.ini
 .DS_Store
 .AppleDouble
 .LSOverride
+
+# Monitor services are maintained in their own Git repositories.
+/monitor/

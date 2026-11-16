@@ -121,8 +121,9 @@ class MainWindow(LegacyMainWindow):
     def init_ui(self):
         self._loading_settings = True
         self.buffs = [BuffConfig() for _ in range(DEFAULT_BUFF_SLOT_COUNT)]
+        # Ordinary task state stays independent from the emulator page/session.
         self.mode = "dead"
-        self._last_non_emulator_mode = "dead"
+        self._emulator_page_selected = False
         self.pre_skill_move_mode = "right_only"
         self.smart_walk_anchor_pos = None
         self.smart_walk_minimap_region = None
@@ -460,7 +461,7 @@ class MainWindow(LegacyMainWindow):
         QTimer.singleShot(0, lambda: self._show_content_page(0))
 
     def _show_content_page(self, index: int):
-        if self.mode == "emulator" and index == 0:
+        if self._emulator_page_selected and index == 0:
             index = 3
         if hasattr(self, "content_stack"):
             self.content_stack.setCurrentIndex(index)
@@ -616,28 +617,30 @@ class MainWindow(LegacyMainWindow):
         return QIcon(pixmap)
 
     def _switch_mode_tab(self, mode):
-        if self.is_worker_running:
-            return
         if isinstance(mode, bool):
             mode = "dead" if mode else "live"
         if mode not in self.authorized_modes:
             return
-        self.mode = mode
-        if mode != "emulator":
-            self._last_non_emulator_mode = mode
-        self.return_to_market = self.mode == "dead"
+        if mode != "emulator" and self.is_worker_running and mode != self.mode:
+            return
+        self._emulator_page_selected = mode == "emulator"
+        if not self._emulator_page_selected:
+            self.mode = mode
+            self.return_to_market = self.mode == "dead"
         self._update_mode_tab_style()
         self._update_movement_mode_visibility()
-        if mode == "emulator":
+        self._refresh_primary_action()
+        if self._emulator_page_selected:
             self._show_content_page(3)
             self._start_emulator_worker()
-        if self.remote_monitor_client and self.mode != "emulator":
-            self.remote_monitor_client.publish_client_state(self.mode, False)
-        self.logger.log(f"切换到: {self._mode_title(self.mode)}")
+        elif self.remote_monitor_client:
+            self.remote_monitor_client.publish_client_state(self.mode, self.is_worker_running)
+        self.logger.log(f"切换到: {self._mode_title(mode)}")
         self.update_log_display()
         self._schedule_save()
 
     def apply_authorized_modes(self, modes):
+        previous_view = (self.mode, self._emulator_page_selected)
         buttons = {
             "dead": self.dead_flower_tab,
             "live": self.live_flower_tab,
@@ -651,6 +654,7 @@ class MainWindow(LegacyMainWindow):
             str(mode) for mode in (modes or []) if str(mode) in buttons
         }
         if "emulator" not in self.authorized_modes:
+            self._emulator_page_selected = False
             self._close_emulator_session()
         for mode, button in buttons.items():
             button.setVisible(mode in self.authorized_modes)
@@ -658,17 +662,23 @@ class MainWindow(LegacyMainWindow):
             if self.is_worker_running:
                 self.logger.log("当前模式授权已被收回，本机已自动停止")
                 self.stop_worker()
-            next_mode = next((mode for mode in buttons if mode in self.authorized_modes), None)
+            next_mode = next(
+                (mode for mode in buttons
+                 if mode != "emulator" and mode in self.authorized_modes),
+                None,
+            )
             if next_mode:
                 self.mode = next_mode
                 self.return_to_market = self.mode == "dead"
-                self._update_mode_tab_style()
-                self._update_movement_mode_visibility()
                 self._schedule_save()
-        self.taunt_panel.setVisible(self.mode == "taunt" and "taunt" in self.authorized_modes)
+            elif "emulator" in self.authorized_modes:
+                self._emulator_page_selected = True
+        if previous_view != (self.mode, self._emulator_page_selected):
+            self._update_mode_tab_style()
+        self._update_movement_mode_visibility()
         self._refresh_primary_action()
 
-        if self.mode == "emulator":
+        if self._emulator_page_selected:
             QTimer.singleShot(0, self._start_emulator_worker)
 
     def _mode_title(self, mode: str) -> str:
@@ -690,10 +700,11 @@ class MainWindow(LegacyMainWindow):
             "follow_heal": "自动补血、位置修正并回到基准点",
             "monitor": "只读取游戏画面并显示实时地图",
             "temple": "为时间神殿地图配置专用 BUFF 行为",
-            "emulator": "连接 ADB 并识别多个 MuMu 模拟器画面",
+            "emulator": "后台独立运行，可与其他模式同时使用",
         }.get(mode, "在当前地图循环释放 BUFF")
 
     def _update_mode_tab_style(self):
+        view_mode = "emulator" if self._emulator_page_selected else self.mode
         selected = (
             "QPushButton{background:#EAF3FF;color:#1675F8;"
             "border:1px solid #78AEF8;border-radius:11px;"
@@ -707,15 +718,15 @@ class MainWindow(LegacyMainWindow):
             "font-size:12px;font-weight:600;}"
             "QPushButton:hover{background:#F8FAFD;border-color:#AFCFFF;}"
         )
-        self.dead_flower_tab.setStyleSheet(selected if self.mode == "dead" else normal)
-        self.live_flower_tab.setStyleSheet(selected if self.mode == "live" else normal)
-        self.taunt_tab.setStyleSheet(selected if self.mode == "taunt" else normal)
+        self.dead_flower_tab.setStyleSheet(selected if view_mode == "dead" else normal)
+        self.live_flower_tab.setStyleSheet(selected if view_mode == "live" else normal)
+        self.taunt_tab.setStyleSheet(selected if view_mode == "taunt" else normal)
         self.follow_heal_tab.setStyleSheet(
-            selected if self.mode == "follow_heal" else normal
+            selected if view_mode == "follow_heal" else normal
         )
-        self.monitor_tab.setStyleSheet(selected if self.mode == "monitor" else normal)
-        self.temple_tab.setStyleSheet(selected if self.mode == "temple" else normal)
-        self.emulator_tab.setStyleSheet(selected if self.mode == "emulator" else normal)
+        self.monitor_tab.setStyleSheet(selected if view_mode == "monitor" else normal)
+        self.temple_tab.setStyleSheet(selected if view_mode == "temple" else normal)
+        self.emulator_tab.setStyleSheet(selected if view_mode == "emulator" else normal)
         if hasattr(self, "mode_icon_specs"):
             selected_button = {
                 "dead": self.dead_flower_tab,
@@ -725,7 +736,7 @@ class MainWindow(LegacyMainWindow):
                 "follow_heal": self.follow_heal_tab,
                 "monitor": self.monitor_tab,
                 "emulator": self.emulator_tab,
-            }.get(self.mode)
+            }.get(view_mode)
             for button, standard_icon in self.mode_icon_specs:
                 button.setIcon(
                     self._tinted_standard_icon(
@@ -734,21 +745,21 @@ class MainWindow(LegacyMainWindow):
                     )
                 )
         if hasattr(self, "mode_heading"):
-            self.mode_heading.setText(self._mode_title(self.mode))
-            self.mode_subtitle.setText(self._mode_description(self.mode))
+            self.mode_heading.setText(self._mode_title(view_mode))
+            self.mode_subtitle.setText(self._mode_description(view_mode))
         if hasattr(self, "tools_page_btn"):
-            self.config_page_btn.setText("设备" if self.mode == "emulator" else "配置")
-            self.tools_page_btn.setVisible(self.mode not in {"monitor", "emulator"})
-            if self.mode in {"monitor", "emulator"} and self.content_stack.currentIndex() == 2:
+            self.config_page_btn.setText("设备" if self._emulator_page_selected else "配置")
+            self.tools_page_btn.setVisible(view_mode not in {"monitor", "emulator"})
+            if view_mode in {"monitor", "emulator"} and self.content_stack.currentIndex() == 2:
                 self._show_content_page(0)
-            if self.mode == "emulator":
+            if self._emulator_page_selected:
                 self._show_content_page(3)
             elif self.content_stack.currentIndex() == 3:
                 self._show_content_page(0)
         if hasattr(self, "footer_status_mode"):
             self.footer_status_mode.setText(self._mode_title(self.mode))
         if hasattr(self, "control_footer"):
-            self.control_footer.setVisible(self.mode != "emulator")
+            self.control_footer.setVisible(not self._emulator_page_selected)
 
     def create_settings_section(self, parent_layout):
         card = QFrame()
@@ -1448,7 +1459,9 @@ class MainWindow(LegacyMainWindow):
             "mode",
             "dead" if settings.get("return_to_market", True) else "live",
         )
-        self._last_non_emulator_mode = self.mode
+        if self.mode == "emulator":
+            self.mode = "dead"
+            self._emulator_page_selected = True
         self.return_to_market = self.mode == "dead"
         self.selected_jump_key = settings.get("jump_key", "Alt")
         self.follow_heal_key = settings.get("heal_skill_key", "")
@@ -1571,7 +1584,7 @@ class MainWindow(LegacyMainWindow):
 
     def _apply_default_settings(self):
         self.mode = "dead"
-        self._last_non_emulator_mode = "dead"
+        self._emulator_page_selected = False
         self.return_to_market = True
         self.movement_mode = "none"
         self.smart_walk_anchor_pos = None
@@ -1651,11 +1664,7 @@ class MainWindow(LegacyMainWindow):
             random_value = 20
         self.settings_manager.save_settings(
             buffs=self.buffs,
-            mode=(
-                self._last_non_emulator_mode
-                if self.mode == "emulator"
-                else self.mode
-            ),
+            mode=self.mode,
             return_to_market=self.return_to_market,
             jump_key=self.selected_jump_key,
             heal_skill_key=self.follow_heal_key,
@@ -1926,9 +1935,12 @@ class MainWindow(LegacyMainWindow):
             }.get(self.temple_function, 4))
         else:
             self.movement_stack.setCurrentIndex(0)
-        is_monitor = self.mode == "monitor"
-        is_emulator = self.mode == "emulator"
-        is_taunt = self.mode == "taunt" and "taunt" in getattr(self, "authorized_modes", ())
+        is_emulator = self._emulator_page_selected
+        is_monitor = self.mode == "monitor" and not is_emulator
+        is_taunt = (
+            self.mode == "taunt" and not is_emulator
+            and "taunt" in getattr(self, "authorized_modes", ())
+        )
         self.settings_card.setVisible(not is_monitor and not is_emulator)
         self.flower_options_widget.setVisible(not is_taunt)
         self.buff_settings_subtitle.setText(
@@ -1942,8 +1954,10 @@ class MainWindow(LegacyMainWindow):
             self.mode == "live" and self.movement_mode == "smart"
         )
         self.portal_marker_btn.setVisible(
-            self.mode == "dead"
-            or (self.mode == "temple" and self.temple_function == "free_entry")
+            not is_emulator and (
+                self.mode == "dead"
+                or (self.mode == "temple" and self.temple_function == "free_entry")
+            )
         )
 
     def update_window_status_display(
@@ -1981,8 +1995,7 @@ class MainWindow(LegacyMainWindow):
         self.update_log_display()
 
     def start_worker(self):
-        if self.mode == "emulator":
-            self._start_emulator_worker()
+        if self.is_worker_running:
             return
         if self.mode not in self.authorized_modes:
             self.logger.log("当前账号未授权使用该模式")
@@ -2087,7 +2100,7 @@ class MainWindow(LegacyMainWindow):
         self._show_buff_countdown(True)
         self._set_buff_settings_enabled(False)
         for tab in (self.dead_flower_tab, self.live_flower_tab, self.temple_tab,
-                    self.follow_heal_tab, self.monitor_tab, self.emulator_tab):
+                    self.follow_heal_tab, self.monitor_tab):
             tab.setEnabled(False)
         worker.start()
         if self.remote_monitor_client:
@@ -2095,7 +2108,7 @@ class MainWindow(LegacyMainWindow):
         self._refresh_primary_action()
 
     def _start_emulator_worker(self):
-        if self.mode != "emulator" or self.emulator_worker is not None:
+        if "emulator" not in self.authorized_modes or self.emulator_worker is not None:
             return
         worker = MumuMonitorWorker(parent=self)
         self.emulator_worker = worker
@@ -2705,7 +2718,6 @@ class MainWindow(LegacyMainWindow):
         if hasattr(self, "taunt_panel"):
             self.taunt_panel.set_running(False)
             self.taunt_tab.setEnabled(True)
-            self.emulator_tab.setEnabled(True)
         if hasattr(self, "temple_function_combo"):
             self.temple_function_combo.setEnabled(True)
             for button in self.temple_function_buttons:
@@ -2714,13 +2726,27 @@ class MainWindow(LegacyMainWindow):
             self.lounge_move_max_input.setEnabled(True)
         if hasattr(self, "monitor_panel") and self.mode == "monitor":
             self.monitor_panel.reset()
-        if self.remote_monitor_client and self.mode != "emulator":
+        if self.remote_monitor_client:
             self.remote_monitor_client.publish_client_state(self.mode, False)
         self._sync_party_invite_worker()
         self._refresh_primary_action()
 
     def _refresh_primary_action(self):
-        self.taunt_tab.setEnabled(not self.is_worker_running)
+        # Keep emulator navigation and the active ordinary task accessible.
+        # Other ordinary modes remain mutually exclusive while one is running.
+        for mode, button in (
+            ("dead", self.dead_flower_tab),
+            ("live", self.live_flower_tab),
+            ("taunt", self.taunt_tab),
+            ("temple", self.temple_tab),
+            ("follow_heal", self.follow_heal_tab),
+            ("monitor", self.monitor_tab),
+        ):
+            button.setEnabled(
+                mode in self.authorized_modes
+                and (not self.is_worker_running or mode == self.mode)
+            )
+        self.emulator_tab.setEnabled("emulator" in self.authorized_modes)
         self.toggle_btn.setStyleSheet("")
         self.toggle_btn.setProperty("running", self.is_worker_running)
         if self.mode == "monitor":
@@ -2932,10 +2958,6 @@ class MainWindow(LegacyMainWindow):
 
     def handle_remote_command(self, command):
         action = command.get("action") if isinstance(command, dict) else command
-        if self.mode == "emulator" and action in {"start", "stop"}:
-            self.logger.log("模拟器实验模式暂不接受网页远程控制")
-            self.update_log_display()
-            return
         if action == "start" and not self.is_worker_running:
             self.logger.log("收到网页远程开始指令")
             self.update_log_display()

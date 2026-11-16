@@ -41,7 +41,7 @@ class EmulatorPanel(QFrame):
         title_column.setSpacing(1)
         title = QLabel("MuMu 实例")
         title.setStyleSheet("font-size:14px;font-weight:700;")
-        subtitle = QLabel("自动扫描本机实例，在线设备持续显示实时画面")
+        subtitle = QLabel("后台独立运行，可与其他模式同时使用")
         subtitle.setStyleSheet("color:#747D8D;font-size:9px;")
         title_column.addWidget(title)
         title_column.addWidget(subtitle)

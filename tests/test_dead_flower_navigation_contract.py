@@ -90,17 +90,17 @@ class DeadFlowerNavigationContractTests(unittest.TestCase):
             for node in self.worker.body
             if isinstance(node, ast.FunctionDef) and node.name == "_try_enter_portal"
         )
-        logo_call = next(
+        scene_call = next(
             node
             for node in ast.walk(enter_portal)
             if isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "_is_market_logo_visible"
+            and node.func.attr == "_detect_location"
         )
-        retry_keyword = next(
-            keyword for keyword in logo_call.keywords if keyword.arg == "retry"
+        log_keyword = next(
+            keyword for keyword in scene_call.keywords if keyword.arg == "log_result"
         )
-        self.assertFalse(ast.literal_eval(retry_keyword.value))
+        self.assertFalse(ast.literal_eval(log_keyword.value))
 
 
 if __name__ == "__main__":

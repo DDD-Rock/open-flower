@@ -82,7 +82,8 @@ class SettingsManager:
                       taunt_interval_min_ms: int = DEFAULT_TAUNT_INTERVAL_MS[0],
                       taunt_interval_max_ms: int = DEFAULT_TAUNT_INTERVAL_MS[1],
                       taunt_hold_min_ms: int = DEFAULT_TAUNT_HOLD_MS[0],
-                      taunt_hold_max_ms: int = DEFAULT_TAUNT_HOLD_MS[1]):
+                      taunt_hold_max_ms: int = DEFAULT_TAUNT_HOLD_MS[1],
+                      taunt_verification_enabled: bool = False):
         """
         保存设置到 INI 文件
         
@@ -146,6 +147,7 @@ class SettingsManager:
             "taunt_interval_max_ms": str(taunt_interval_max_ms),
             "taunt_hold_min_ms": str(taunt_hold_min_ms),
             "taunt_hold_max_ms": str(taunt_hold_max_ms),
+            "taunt_verification_enabled": str(bool(taunt_verification_enabled)),
             "heal_skill_key": heal_skill_key,
             "teleport_skill_key": teleport_skill_key,
             "follow_heal_anchor_x": anchor_x,
@@ -254,6 +256,8 @@ class SettingsManager:
                 "taunt_platform_id": self.config.get("General", "taunt_platform_id", fallback=""),
                 "taunt_jump_key": self.config.get("General", "taunt_jump_key", fallback="Alt"),
                 "taunt_skill_key": self.config.get("General", "taunt_skill_key", fallback=""),
+                "taunt_verification_enabled": self.config.getboolean(
+                    "General", "taunt_verification_enabled", fallback=False),
                 "heal_skill_key": self.config.get("General", "heal_skill_key", fallback=""),
                 "teleport_skill_key": self.config.get("General", "teleport_skill_key", fallback=""),
                 "follow_heal_anchor_pos": self._load_optional_pair(

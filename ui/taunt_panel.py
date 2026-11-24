@@ -2,7 +2,7 @@
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
-    QDialog, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
+    QCheckBox, QDialog, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
     QPushButton, QSpinBox, QVBoxLayout, QWidget,
 )
 
@@ -66,6 +66,23 @@ class TauntPanel(QWidget):
         timing_hint = QLabel("每组跳后随机 70–150 毫秒按挑衅，再过 70–90 毫秒松跳；间隔从松开挑衅到下一次起跳计算。未设挑衅键时仅短跳。可在上方选配 BUFF，到期时松开方向、跳跃和挑衅键，原地放完 BUFF 后继续跳走和挑衅。静止 2 秒松键重试，失焦暂停，回到游戏后重新起跳。")
         timing_hint.setWordWrap(True)
         layout.addWidget(timing_hint)
+        self.verification_checkbox = QCheckBox("测谎检测并喊话（默认关闭）")
+        self.verification_checkbox.setToolTip(
+            "检测鼠标跟随／寻找透明图形（包括开始前的暗色玩法说明框）、紫色符文诅咒横幅、蓝色输入答案面板三种提示。"
+            "透明图形说明框在全画面按标题和说明文字特征定位，不固定屏幕位置；确认后提前喊话。"
+            "支持缩放和关键短语容错，强匹配立即确认，较弱匹配连续两次再确认。"
+            "全部使用图像特征识别，不启动 OCR。"
+            "勾选即开启独立低频检测，无需启动挑衅；后台截图不依赖游戏焦点。"
+            "一旦疑似就停止挑衅并松键，不会自动恢复；确认后按回车 → 随机 1–9 → 回车喊话两次，"
+            "每条独立随机，两次间随机短暂停顿；同一提示不再重复喊话。"
+            "确认需要喊话时立即激活游戏窗口，再发送；发送途中失焦会松键并重新激活，续发剩余步骤。"
+            "未取得游戏焦点时不输入，保留通知重试；不发送其他通知。"
+            "低配电脑可保持关闭，不进行额外截图和识别。")
+        self.verification_checkbox.toggled.connect(lambda _: self.changed.emit())
+        layout.addWidget(self.verification_checkbox)
+        self.verification_status = QLabel("测谎检测：未开启")
+        self.verification_status.setWordWrap(True)
+        layout.addWidget(self.verification_status)
         self.status = QLabel("待机")
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
@@ -113,6 +130,7 @@ class TauntPanel(QWidget):
             "taunt_interval_max_ms": self.interval_max.value(),
             "taunt_hold_min_ms": self.hold_min.value(),
             "taunt_hold_max_ms": self.hold_max.value(),
+            "taunt_verification_enabled": self.verification_checkbox.isChecked(),
         }
 
     def worker_options(self):
@@ -141,6 +159,9 @@ class TauntPanel(QWidget):
         self._reload_platforms(platform_id=platform_id)
 
     def restore_settings(self, settings):
+        self.verification_checkbox.blockSignals(True)
+        self.verification_checkbox.setChecked(settings.get("taunt_verification_enabled", False))
+        self.verification_checkbox.blockSignals(False)
         self.jump_key = settings.get("taunt_jump_key") or "Alt"
         self.jump_button.setText(self.jump_key)
         self.skill_key = settings.get("taunt_skill_key") or ""

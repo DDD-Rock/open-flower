@@ -45,7 +45,8 @@ class DeadFlowerWorker(QThread):
     PLAYER_RECOVERY_JUMP_INTERVAL = 0.45
     STUCK_TIMEOUT_SECONDS = 0.9
     FINE_ADJUST_DURATION_MS = (180, 280)
-    PORTAL_TRANSITION_CHECK_ATTEMPTS = 3
+    PORTAL_PRESS_DURATION_MS = (180, 260)
+    PORTAL_RETRY_DELAY_SECONDS = 1.2
 
     def __init__(
         self,
@@ -595,6 +596,7 @@ class DeadFlowerWorker(QThread):
         direct_approach_direction = None
         fine_adjusting = False
         entered_portal = False
+        next_scene_check_at = 0.0
 
         initial_player = None
         initial_deadline = time.monotonic() + 2.0
@@ -651,6 +653,18 @@ class DeadFlowerWorker(QThread):
                 # 确保 key-up 发送给游戏窗口，再根据当前位置重新按方向键。
                 self.human.release_all()
 
+            # 黑屏或已经离开市场时，只等待目标场景，不再移动、跳跃或试按上键。
+            # 微调前每次都检查新截图，普通导航按场景检测间隔检查。
+            if fine_adjusting or time.monotonic() >= next_scene_check_at:
+                location = self._detect_location(log_result=False)
+                next_scene_check_at = time.monotonic() + self.SCENE_CHECK_INTERVAL
+                if location != "market":
+                    self.human.stop_move()
+                    current_direction = None
+                    entered_portal = True
+                    self.log_update.emit("市场场景已变化或正在加载，停止导航并等待传送")
+                    break
+
             recovered_by_jump = False
             player_pos = self.monitor.find_player_position_once()
             
@@ -699,6 +713,11 @@ class DeadFlowerWorker(QThread):
             needed_direction = 'right' if dx > 0 else 'left'
             if fine_adjusting:
                 if not self._ensure_game_focus("传送门微调"):
+                    break
+                if not self.is_running:
+                    break
+                if self._detect_location(log_result=False) != "market":
+                    entered_portal = True
                     break
                 self.log_update.emit(
                     f"向{'右' if needed_direction == 'right' else '左'}微调后尝试进入传送门"
@@ -787,23 +806,39 @@ class DeadFlowerWorker(QThread):
         return False
 
     def _try_enter_portal(self) -> bool:
-        """按上键后确认市场标志已连续消失，避免黑屏时继续微调。"""
-        if not self._ensure_game_focus("进入传送门"):
-            return False
-        self.human.use_portal()
+        """短按上键后停止输入；只有持续确认仍在市场，才允许微调重试。
 
-        consecutive_logo_misses = 0
-        for _ in range(self.PORTAL_TRANSITION_CHECK_ATTEMPTS):
-            if not self.is_running:
+        True 表示交给场景等待流程，不代表已经确认到达怪物地图。
+        """
+        if not self.is_running or not self._ensure_game_focus("进入传送门"):
+            return False
+        self.human.stop_move()
+        if not self.is_running:
+            return False
+        if self._detect_location(log_result=False) != "market":
+            self.log_update.emit("未确认仍在市场，暂停按上并等待场景")
+            return True
+        if not self.is_running:
+            return False
+
+        # 不在按住上键时截图或识别，避免这些耗时操作延长按键。
+        # 不使用通用 use_portal 的 200–800ms 长按，以免上键跨过加载阶段。
+        try:
+            self.human.keyboard.press(Key.up)
+            self._interruptible_sleep(random.uniform(*self.PORTAL_PRESS_DURATION_MS) / 1000.0)
+        finally:
+            self.human.keyboard.release(Key.up)
+
+        retry_after = time.monotonic() + self.PORTAL_RETRY_DELAY_SECONDS
+        while self.is_running:
+            location = self._detect_location(log_result=False)
+            if location != "market":
+                self.log_update.emit("已触发传送或场景正在加载，停止输入并等待切换")
+                return True
+            remaining = retry_after - time.monotonic()
+            if remaining <= 0:
                 return False
-            if self._is_market_logo_visible(retry=False):
-                consecutive_logo_misses = 0
-            else:
-                consecutive_logo_misses += 1
-                if consecutive_logo_misses >= 2:
-                    self.log_update.emit("已触发传送，等待切换场景")
-                    return True
-            self._interruptible_sleep(0.08)
+            self._interruptible_sleep(min(self.SCENE_CHECK_INTERVAL, remaining))
         return False
 
     def _sleep_navigation_frame(self, frame_started: float):

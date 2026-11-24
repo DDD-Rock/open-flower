@@ -106,6 +106,10 @@ class MainWindow(LegacyMainWindow):
         self.monitor_safe_zone = None
         self.monitor_zone_stabilizer = SafeZoneStabilizer()
         self._monitor_verification_present = False
+        self._taunt_verification_worker = None
+        self._taunt_verification_timer = None
+        self._taunt_verification_next_lookup = 0.0
+        self._closing = False
         super().__init__()
         self._emulator_ui_timer = QTimer(self)
         self._emulator_ui_timer.setInterval(40)
@@ -117,6 +121,11 @@ class MainWindow(LegacyMainWindow):
         if authorized_modes is None:
             authorized_modes = self.DEFAULT_AUTHORIZED_MODES
         self.apply_authorized_modes(authorized_modes)
+        self._taunt_verification_timer = QTimer(self)
+        self._taunt_verification_timer.setInterval(1000)
+        self._taunt_verification_timer.timeout.connect(self._sync_taunt_verification)
+        self._taunt_verification_timer.start()
+        self._sync_taunt_verification()
 
     def init_ui(self):
         self._loading_settings = True
@@ -680,6 +689,7 @@ class MainWindow(LegacyMainWindow):
 
         if self._emulator_page_selected:
             QTimer.singleShot(0, self._start_emulator_worker)
+        self._sync_taunt_verification()
 
     def _mode_title(self, mode: str) -> str:
         return {
@@ -892,6 +902,7 @@ class MainWindow(LegacyMainWindow):
         parent_layout.addWidget(self.monitor_panel)
         self.taunt_panel = TauntPanel(self.map_topologies)
         self.taunt_panel.changed.connect(self._schedule_save)
+        self.taunt_panel.verification_checkbox.toggled.connect(self._on_taunt_verification_toggled)
         self.taunt_panel.manage_maps_requested.connect(self.on_manage_maps)
         self.taunt_panel.setVisible(False)
         parent_layout.addWidget(self.taunt_panel)
@@ -2063,6 +2074,101 @@ class MainWindow(LegacyMainWindow):
             self.remote_monitor_client.publish_client_state(self.mode, True)
         self._refresh_primary_action()
 
+    def _on_taunt_verification_toggled(self, checked):
+        self._sync_taunt_verification()
+        self._sync_party_invite_worker()
+
+    def _sync_taunt_verification(self):
+        if not hasattr(self, "taunt_panel") or self._loading_settings:
+            return
+        checked = self.taunt_panel.verification_checkbox.isChecked()
+        authorized = "taunt" in getattr(self, "authorized_modes", set())
+        if self._closing or not checked or not authorized:
+            self._stop_taunt_verification()
+            self.taunt_panel.verification_status.setText(
+                "测谎检测：未开启" if not checked else "测谎检测：当前账号未授权")
+            return
+        hwnd = self.game_window_hwnd
+        if not self.window_selector or not hwnd or not self.window_selector.is_window_valid(hwnd):
+            self._stop_taunt_verification()
+            if self.window_selector and time.monotonic() >= self._taunt_verification_next_lookup:
+                self._taunt_verification_next_lookup = time.monotonic() + 5.0
+                try:
+                    window = self.window_selector.auto_detect_game_window()
+                    if window:
+                        hwnd = self.game_window_hwnd = window["hwnd"]
+                        self.is_window_identified = True
+                        self.game_config.set_resolution(*window["size"])
+                        self.update_window_status_display()
+                except Exception as error:
+                    self.taunt_panel.verification_status.setText(f"测谎检测：等待游戏窗口（{error}）")
+                    return
+            if not self.window_selector or not hwnd or not self.window_selector.is_window_valid(hwnd):
+                self.taunt_panel.verification_status.setText("测谎检测：已勾选，等待游戏窗口")
+                return
+        current = self._taunt_verification_worker
+        if current is not None and current.hwnd == hwnd and current.isRunning():
+            return
+        self._stop_taunt_verification()
+        # 未勾选时不导入识别模块，不创建截图线程。
+        try:
+            from workers.taunt_verification_worker import TauntVerificationWorker
+            service = TauntVerificationWorker(hwnd, self.window_selector, parent=self)
+        except Exception as error:
+            message = f"测谎检测：初始化失败（{error}），可取消勾选后继续使用其他功能"
+            if self.taunt_panel.verification_status.text() != message:
+                self.taunt_panel.verification_status.setText(message)
+                self.on_status_update(message)
+            return
+        service.log_update.connect(self._on_taunt_verification_log)
+        service.suspected.connect(self._on_taunt_verification_suspected)
+        service.cleared.connect(self._sync_party_invite_worker)
+        service.finished.connect(lambda current=service: self._on_taunt_verification_finished(current))
+        self._taunt_verification_worker = service
+        if isinstance(self.worker, TauntWorker):
+            self.worker.set_verification_watch(service)
+            service.set_taunt_worker(self.worker)
+        self.taunt_panel.verification_status.setText("测谎检测：正在启动独立后台识别")
+        service.start()
+
+    def _stop_taunt_verification(self):
+        service = self._taunt_verification_worker
+        if service is None:
+            return
+        self._taunt_verification_worker = None
+        if isinstance(self.worker, TauntWorker):
+            self.worker.set_verification_watch(None)
+        service.stop()
+        service.wait(2000)
+
+    def _on_taunt_verification_finished(self, service):
+        if self._taunt_verification_worker is service:
+            self._taunt_verification_worker = None
+            if isinstance(self.worker, TauntWorker):
+                self.worker.set_verification_watch(None)
+        service.deleteLater()
+
+    def _on_taunt_verification_log(self, message):
+        if self.sender() is not self._taunt_verification_worker:
+            return
+        self.taunt_panel.verification_status.setText(message)
+        self.on_status_update(message)
+
+    def _on_taunt_verification_suspected(self, kind):
+        if self.sender() is not self._taunt_verification_worker:
+            return
+        self._stop_party_invite_worker()
+        if isinstance(self.worker, TauntWorker):
+            self.stop_worker()
+        self.taunt_panel.status.setText(f"疑似测谎（{kind}），挑衅已停止，需手动重新启动")
+
+    def _sync_party_invite_worker(self, log_missing_requirements=False):
+        service = self._taunt_verification_worker
+        if self._closing or (service is not None and service.blocks_taunt()):
+            self._stop_party_invite_worker()
+            return
+        super()._sync_party_invite_worker(log_missing_requirements)
+
     def _start_taunt_worker(self):
         if self.is_worker_running or self.worker is not None:
             return
@@ -2075,12 +2181,23 @@ class MainWindow(LegacyMainWindow):
         if not self._ensure_game_window_available("启动挑衅模式"):
             QMessageBox.warning(self, "提示", "未找到游戏窗口，请确保游戏已启动")
             return
+        self._sync_taunt_verification()
+        service = self._taunt_verification_worker
+        if self.taunt_panel.verification_checkbox.isChecked() and service is None:
+            self.on_status_update("独立测谎检测尚未就绪，请等待游戏窗口识别完成")
+            return
+        if service is not None:
+            state = service.snapshot()
+            if state.candidate or state.present or service.is_notifying():
+                self.on_status_update("当前存在疑似验证或待发送通知，暂不能启动挑衅")
+                return
         try:
             worker = TauntWorker(
                 self.game_window_hwnd, topology, platform_id,
                 jump_key=self.taunt_panel.jump_key,
                 window_selector=self.window_selector, parent=self,
                 buffs=self.buffs,
+                verification_watch=service,
                 **self.taunt_panel.worker_options(),
             )
         except ValueError as error:
@@ -2095,6 +2212,8 @@ class MainWindow(LegacyMainWindow):
         worker.position_update.connect(self.taunt_panel.update_position)
         worker.finished.connect(lambda current=worker: self.on_worker_finished(current))
         self.worker = worker
+        if service is not None:
+            service.set_taunt_worker(worker)
         self.is_worker_running = True
         self.taunt_panel.set_running(True)
         self._show_buff_countdown(True)
@@ -2711,6 +2830,8 @@ class MainWindow(LegacyMainWindow):
             if self.monitor_worker is monitor_worker:
                 self._on_monitor_stopped(monitor_worker)
         super().stop_worker()
+        if self._taunt_verification_worker is not None:
+            self._taunt_verification_worker.set_taunt_worker(None)
         if hasattr(self, "monitor_tab"):
             self.monitor_tab.setEnabled(True)
         if hasattr(self, "temple_tab"):
@@ -3302,6 +3423,10 @@ class MainWindow(LegacyMainWindow):
             self.centralWidget().setFocus()
 
     def closeEvent(self, event):
+        self._closing = True
+        if self._taunt_verification_timer is not None:
+            self._taunt_verification_timer.stop()
+        self._stop_taunt_verification()
         self._persist_settings()
         for dialog in list(self._emulator_settings_dialogs.values()):
             dialog.close()

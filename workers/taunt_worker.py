@@ -40,7 +40,8 @@ class TauntWorker(QThread):
                  interval_min_ms=DEFAULT_TAUNT_INTERVAL_MS[0],
                  interval_max_ms=DEFAULT_TAUNT_INTERVAL_MS[1],
                  hold_min_ms=DEFAULT_TAUNT_HOLD_MS[0],
-                 hold_max_ms=DEFAULT_TAUNT_HOLD_MS[1], buffs=None):
+                 hold_max_ms=DEFAULT_TAUNT_HOLD_MS[1], buffs=None,
+                 verification_watch=None):
         super().__init__(parent)
         self.hwnd = hwnd
         self.topology = topology
@@ -74,6 +75,7 @@ class TauntWorker(QThread):
         self.buff_next_cast = {}
         self._last_buff_countdown = None
         self._held_buff_key = None
+        self._verification_watch = verification_watch
         self.skill_interval = tuple(value / 1000 for value in normalize_taunt_range(
             interval_min_ms, interval_max_ms, DEFAULT_TAUNT_INTERVAL_MS))
         self.skill_hold = tuple(value / 1000 for value in normalize_taunt_range(
@@ -130,6 +132,18 @@ class TauntWorker(QThread):
         if self.isRunning() and QThread.currentThread() is not self:
             self.wait(2000)
 
+    def set_verification_watch(self, watch):
+        with self._input_lock:
+            self._verification_watch = watch
+
+    def stop_for_verification(self):
+        already_stopped = self._stop_event.is_set()
+        self._stop_event.set()
+        self.requestInterruption()
+        self._release_keys()
+        if not already_stopped:
+            self.log_update.emit("发现疑似测谎，已停止挑衅并松开全部动作按键；需手动重新启动")
+
     def run(self):
         try:
             if self.window_selector and not self._stop_event.is_set():
@@ -145,7 +159,7 @@ class TauntWorker(QThread):
                 if self.window_selector and not self.window_selector.is_window_valid(self.hwnd):
                     raise RuntimeError("游戏窗口已关闭或不可用，挑衅模式已停止")
                 self._update_buff_countdown()
-                if not self._input_allowed():
+                if not self._input_allowed(check_verification=False):
                     self._wait(self.FRAME_INTERVAL)
                     continue
                 if self._focus_paused:
@@ -154,6 +168,12 @@ class TauntWorker(QThread):
                     map_checked = minimap_ready = False
                     map_validation_failures = 0
                     self.log_update.emit("游戏窗口已恢复焦点，正在重新定位并启动跳走")
+                if self._handle_verification():
+                    missing_since, missing_paused, last_x = None, False, None
+                    map_checked = minimap_ready = False
+                    map_validation_failures = 0
+                    self._wait(self.FRAME_INTERVAL)
+                    continue
                 if not minimap_ready:
                     region = self.monitor.auto_detect_dark_region()
                     if not self._input_allowed():
@@ -305,7 +325,21 @@ class TauntWorker(QThread):
             self._release_keys()
         return True
 
-    def _input_allowed(self):
+    def _handle_verification(self):
+        watch = self._verification_watch
+        if watch is None:
+            return False
+        state = watch.snapshot()
+        if state.candidate or state.present:
+            self.stop_for_verification()
+            return True
+        if not state.ready or watch.is_notifying():
+            self._release_keys()
+            self.direction = None
+            return True
+        return False
+
+    def _input_allowed(self, *, check_verification=True):
         if self._stop_event.is_set():
             return False
         if self.window_selector and not self.window_selector.is_window_foreground(self.hwnd):
@@ -314,6 +348,8 @@ class TauntWorker(QThread):
             if not self._focus_paused:
                 self._focus_paused = True
                 self.log_update.emit("游戏窗口失去焦点，挑衅模式已暂停，等待回到游戏")
+            return False
+        if check_verification and self._handle_verification():
             return False
         return True
 
@@ -340,20 +376,22 @@ class TauntWorker(QThread):
             return
         self._hold_movement(direction)
 
-    def _wait_for_input(self, seconds):
-        # 换向或起跳的短暂停顿期间也检查焦点，避免把后续按键发给其他窗口。
+    def _wait_for_input(self, seconds, *, check_verification=True):
+        # 换向、BUFF 和喊话等待期间也检查焦点，避免将后续按键发给其他窗口。
         while seconds > 0:
-            if not self._input_allowed() or self._focus_paused:
+            if not self._input_allowed(check_verification=check_verification) or self._focus_paused:
                 return False
             self._update_buff_countdown()
-            self._tick_actions()
+            if check_verification:
+                self._tick_actions()
             step = min(seconds, self.FRAME_INTERVAL)
             if self._action_deadline is not None:
                 step = min(step, max(0.001, self._action_deadline - time.monotonic()))
             if not self._wait(step):
                 return False
             seconds -= step
-        return self._input_allowed() and not self._focus_paused
+        return (self._input_allowed(check_verification=check_verification)
+                and not self._focus_paused)
 
     def _start_jump_cycle(self):
         with self._input_lock:

@@ -23,6 +23,7 @@ class MumuDeadFlowerWorker(MumuSmartWalkWorker):
     # client; each instance also refines this from its own visible movement.
     DEFAULT_WALK_SPEED = 10.0
     PORTAL_TOLERANCE = 1.5
+    PORTAL_PRESS_DURATION_MS = (180, 260)
     POSITION_SEARCH_SECONDS = 8.0
     MAX_NAVIGATION_SECONDS = 12.0
 
@@ -323,7 +324,8 @@ class MumuDeadFlowerWorker(MumuSmartWalkWorker):
         if x is None or abs(x - portal[0]) > self.PORTAL_TOLERANCE:
             self._verify_portal_position = True
             return
-        if self._press_key("Up", (180, 260)):
+        # Release Up before waiting for loading, so it is not held on the destination portal.
+        if self._press_key("Up", self.PORTAL_PRESS_DURATION_MS):
             self._phase = "leaving"
             self._transition_until = time.monotonic() + 30
             self._emit_status("已按上进入出口，等待离开市场")

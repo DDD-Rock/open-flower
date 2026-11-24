@@ -23,8 +23,7 @@ class TauntWorker(QThread):
     position_update = pyqtSignal(float, str)
     countdown_update = pyqtSignal(dict)
     FRAME_INTERVAL = 1 / 30
-    MISSING_PLAYER_GRACE = 0.15
-    MISSING_PLAYER_TIMEOUT = 5.0
+    INITIAL_PLAYER_TIMEOUT = 5.0
     MAP_VALIDATION_ATTEMPTS = 5
     MAP_VALIDATION_RETRY_DELAY = 0.12
     EDGE_MARGIN_PIXELS = 3.0
@@ -150,8 +149,6 @@ class TauntWorker(QThread):
                 self.window_selector.ensure_window_focus(self.hwnd)
             self.monitor.start_capture()
             missing_since = None
-            missing_paused = False
-            last_x = None
             map_checked = False
             minimap_ready = False
             map_validation_failures = 0
@@ -164,12 +161,12 @@ class TauntWorker(QThread):
                     continue
                 if self._focus_paused:
                     self._focus_paused = False
-                    missing_since, missing_paused, last_x = None, False, None
+                    missing_since = None
                     map_checked = minimap_ready = False
                     map_validation_failures = 0
                     self.log_update.emit("游戏窗口已恢复焦点，正在重新定位并启动跳走")
                 if self._handle_verification():
-                    missing_since, missing_paused, last_x = None, False, None
+                    missing_since = None
                     map_checked = minimap_ready = False
                     map_validation_failures = 0
                     self._wait(self.FRAME_INTERVAL)
@@ -217,37 +214,30 @@ class TauntWorker(QThread):
                 if point is None:
                     if missing_since is None:
                         missing_since = now
-                    elapsed = now - missing_since
-                    # 黄点会闪烁；远离边界时容忍极短漏帧，避免反复松键。
-                    near_edge = last_x is None or image is None
-                    if not near_edge:
-                        left_turn, right_turn = self._turn_bounds(image.shape[1])
-                        padding = self.EDGE_MARGIN_PIXELS / image.shape[1]
-                        near_edge = (
-                            self.direction == "right" and last_x >= right_turn - padding
-                        ) or (
-                            self.direction == "left" and last_x <= left_turn + padding
+                        self.log_update.emit(
+                            "未识别到玩家黄点，沿用原方向继续跳走和挑衅"
+                            if self.direction else "尚未识别到玩家黄点，等待初始定位"
                         )
-                    if near_edge or elapsed >= self.MISSING_PLAYER_GRACE:
-                        self._release_keys()
-                        if not missing_paused:
-                            self.log_update.emit("未识别到玩家黄点，已松键等待重新定位")
-                            missing_paused = True
-                    if elapsed >= self.MISSING_PLAYER_TIMEOUT:
-                        raise RuntimeError("持续未识别到玩家黄点，挑衅模式已停止")
+                    if self.direction is not None:
+                        # 漏识别时继续移动和动作组，变换位置后再用新黄点判断折返。
+                        if self._cast_due_buffs():
+                            missing_since = None
+                            continue
+                        self._hold_movement(self.direction)
+                    elif now - missing_since >= self.INITIAL_PLAYER_TIMEOUT:
+                        raise RuntimeError("初始定位未识别到玩家黄点，请确认小地图后重新启动")
                 else:
                     if missing_since is not None:
-                        # 短暂闪烁只暂停计时；频繁闪烁不能让卡住检测永远重新计时。
+                        # 无黄点期间不累计静止时间，也不丢掉此前有效的静止采样。
                         with self._input_lock:
                             if self._movement_since is not None:
                                 self._movement_since += now - missing_since
                     missing_since = None
-                    missing_paused = False
                     width = image.shape[1]
                     last_x = float(point[0]) / width
                     if self._cast_due_buffs():
                         # BUFF 动画期间可能落地或被击退；重新采集黄点后再决定方向。
-                        missing_since, missing_paused, last_x = None, False, None
+                        missing_since = None
                         continue
                     self.direction = self._next_direction(last_x, width)
                     if self._movement_stalled(last_x, width, now):

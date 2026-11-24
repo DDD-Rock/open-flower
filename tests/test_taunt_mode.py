@@ -199,7 +199,7 @@ class TauntMovementTests(unittest.TestCase):
         self.assertEqual(self.keyboard.press.call_args_list,
                          [call(Key.right), call(Key.space)] * 3)
 
-    def test_a_missing_marker_pauses_stuck_tracking_during_the_flicker_grace(self):
+    def test_a_missing_marker_pauses_stuck_tracking_until_detection_recovers(self):
         self.monitor_type.find_player_position_in_image.side_effect = [
             ((60, 20), ""), ((60, 20), ""), (None, ""), ((60, 20), ""),
         ]
@@ -267,29 +267,40 @@ class TauntMovementTests(unittest.TestCase):
         self.assertNotIn("未识别到玩家黄点，已松键等待重新定位", messages)
         self.assertEqual(self.keyboard.press.call_args_list, [call(Key.right), call(Key.space)])
 
-    def test_sustained_marker_loss_releases_keys_and_then_stops(self):
+    def test_sustained_marker_loss_keeps_moving_and_turns_when_detection_recovers(self):
         self.monitor_type.find_player_position_in_image.side_effect = [
             ((60, 20), ""), (None, ""), (None, ""), (None, ""),
+            ((178, 20), ""),
         ]
-        messages, errors = [], []
+        messages, errors, positions = [], [], []
         self.worker.log_update.connect(messages.append)
         self.worker.error_signal.connect(errors.append)
-        self.run_at_frame_times([0.0, 1.0, 1.2, 6.1])
-        self.assertIn("未识别到玩家黄点，已松键等待重新定位", messages)
-        self.assertIn("持续未识别", errors[0])
-        self.assertEqual(self.keyboard.method_calls, [
-            call.press(Key.right), call.press(Key.space),
-            call.release(Key.space), call.release(Key.right),
-        ])
+        def position(x, direction):
+            positions.append((x, direction))
+            if len(positions) == 2:
+                self.worker._stop_event.set()
+        def wait(_):
+            if 2 <= self.monitor_type.find_player_position_in_image.call_count <= 4:
+                self.assertEqual(self.worker._held_direction, Key.right)
+                self.assertNotIn(call(Key.right), self.keyboard.release.call_args_list)
+            return True
+        self.worker.position_update.connect(position)
+        self.worker._wait.side_effect = wait
+        self.run_at_frame_times([0.0, 1.0, 1.2, 60.0, 60.1])
+        self.assertEqual(errors, [])
+        self.assertEqual(positions, [(60.0, "right"), (178.0, "left")])
+        self.assertEqual(sum("沿用原方向" in message for message in messages), 1)
+        self.assertEqual(self.keyboard.press.call_args_list.count(call(Key.right)), 1)
+        self.assertEqual(self.keyboard.press.call_args_list.count(call(Key.left)), 1)
 
-    def test_marker_loss_near_the_boundary_releases_keys_immediately(self):
+    def test_marker_loss_near_the_boundary_keeps_the_same_direction(self):
         self.monitor_type.find_player_position_in_image.side_effect = [
             ((60, 20), ""), ((165, 20), ""), (None, ""),
         ]
         def wait(_):
             if self.monitor_type.find_player_position_in_image.call_count == 3:
-                self.keyboard.release.assert_any_call(Key.right)
-                self.keyboard.release.assert_any_call(Key.space)
+                self.keyboard.release.assert_not_called()
+                self.assertEqual(self.worker._held_direction, Key.right)
                 self.worker._stop_event.set()
             return True
         self.worker._wait.side_effect = wait
@@ -298,6 +309,38 @@ class TauntMovementTests(unittest.TestCase):
             call.press(Key.right), call.press(Key.space),
             call.release(Key.right), call.release(Key.space),
         ])
+
+    def test_initial_marker_loss_waits_without_guessing_a_direction(self):
+        self.monitor_type.find_player_position_in_image.return_value = (None, "")
+        errors = []
+        self.worker.error_signal.connect(errors.append)
+        self.run_at_frame_times([0.0, 5.1])
+        self.keyboard.press.assert_not_called()
+        self.assertEqual(len(errors), 1)
+        self.assertIn("初始定位", errors[0])
+
+    def test_marker_loss_still_casts_due_buffs_and_resumes_the_same_direction(self):
+        self.monitor_type.find_player_position_in_image.side_effect = [
+            ((60, 20), ""), (None, ""), (None, ""),
+        ]
+        errors = []
+        self.worker.error_signal.connect(errors.append)
+        def cast_due_buffs():
+            if self.monitor_type.find_player_position_in_image.call_count == 2:
+                self.worker._release_keys()
+                return True
+            return False
+        def wait(_):
+            if self.monitor_type.find_player_position_in_image.call_count == 3:
+                self.assertEqual(self.worker._held_direction, Key.right)
+                self.worker._stop_event.set()
+            return True
+        self.worker._wait.side_effect = wait
+        with patch.object(self.worker, "_cast_due_buffs", side_effect=cast_due_buffs) as cast:
+            self.run_at_frame_times([0.0, 1.0, 6.1])
+        self.assertEqual(errors, [])
+        self.assertEqual(cast.call_count, 3)
+        self.assertEqual(self.keyboard.press.call_args_list.count(call(Key.right)), 2)
 
     def test_focus_loss_pauses_without_error_and_stop_while_paused_never_resumes(self):
         self.worker._hold_movement("right")
@@ -694,15 +737,18 @@ class TauntMovementTests(unittest.TestCase):
         self.assertFalse(self.worker._jump_held)
         self.assertTrue(self.worker._movement_stalled(0.3, 200, 12.0))
 
-    def test_live_frame_loop_keeps_tracking_and_turning_while_pulsing_the_skill(self):
+    def test_live_frame_loop_keeps_pulsing_during_marker_loss_and_turns_after_recovery(self):
         self.enable_skill(interval_min_ms=80, interval_max_ms=80,
                           hold_min_ms=40, hold_max_ms=40)
         self.monitor_type.find_player_position_in_image.side_effect = [
-            ((60, 20), "")] * 5 + [((178, 20), "")] * 25
+            ((60, 20), "")] * 5 + [(None, "")] * 350 + [((178, 20), "")] * 25
         updates, errors = [], []
         clock = [10.0]
         def wait(seconds):
             clock[0] += seconds
+            if 6 <= self.monitor_type.find_player_position_in_image.call_count <= 355:
+                self.assertEqual(self.worker._held_direction, Key.right)
+                self.assertNotIn(call(Key.right), self.keyboard.release.call_args_list)
             return True
         def position(x, direction):
             updates.append((x, direction))
@@ -714,6 +760,7 @@ class TauntMovementTests(unittest.TestCase):
         with patch("workers.taunt_worker.time.monotonic", side_effect=lambda: clock[0]):
             self.worker.run()
         self.assertEqual(errors, [])
+        self.assertGreater(clock[0], 15.0)
         self.assertEqual(len(updates), 30)
         self.assertEqual(updates[4][1], "right")
         self.assertEqual(updates[5][1], "left")
@@ -724,7 +771,7 @@ class TauntMovementTests(unittest.TestCase):
         self.assertGreater(presses.count(call("c")), 2)
         self.assertEqual(presses.count(call("c")), self.keyboard.release.call_args_list.count(call("c")))
 
-    def test_missing_player_releases_a_held_skill_with_the_movement_keys(self):
+    def test_stop_during_marker_loss_releases_a_held_skill_with_the_movement_keys(self):
         self.enable_skill()
         self.worker._hold_movement("right")
         self.worker._skill_held = True
